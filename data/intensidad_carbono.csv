@@ -1,0 +1,10 @@
+﻿ID_Region,Region_Pais_Ubicacion,Entorno_Ejecucion,Intensidad_Carbono_gCO2eq_kWh,PUE_Promedio,Nivel_Dano_Ambiental
+REG_001,Chile (Sistema Eléctrico Nacional),Datacenter Local / Cloud,250,1.30 (Promedio comercial),Moderado
+REG_002,Suecia,Cloud: AWS (eu-north-1),12,1.15 (Optimizado),Mínimo (Verde)
+REG_003,Francia,Cloud: Azure (France Central),55,1.15 (Optimizado),Mínimo (Nuclear)
+REG_004,Canadá (Quebec),Cloud: AWS (ca-central1),32,1.15 (Optimizado),Mínimo (Hidroeléctrica)
+REG_005,EEUU (Virginia),Cloud: AWS (us-east-1),360,1.18 (Estándar),Alto
+REG_006,Alemania (Frankfurt),Cloud: AWS / GCP / Azure,380,1.20 (Estándar),Alto
+REG_007,Sudáfrica (Ciudad del Cabo),Cloud: AWS (af-south-1),850,1.25 (Estándar),Muy Alto (Carbón)
+REG_008,India (Mumbai),Cloud: AWS (ap-south-1),710,1.25 (Estándar),Muy Alto (Carbón)
+REG_009,"Chile (Padre Hurtado, RM)",Laboratorio Local (Personal),~250 (Red Metropolitana),2.00+ (Ineficiente),Alto (Penalización por PUE)

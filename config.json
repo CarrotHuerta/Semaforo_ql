@@ -1,0 +1,19 @@
+{
+  "default_user": "nacha",
+  "users": [
+    {
+      "username": "nacha",
+      "display_name": "Nacha",
+      "role": "Administrador",
+      "profile_photo": "img/nacha.png",
+      "password": "654321"
+    },
+    {
+      "username": "maxine",
+      "display_name": "Maxine",
+      "role": "Usuario",
+      "profile_photo": "img/maxine.jpg",
+      "password": "123456"
+    }
+  ]
+}

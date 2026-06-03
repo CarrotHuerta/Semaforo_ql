@@ -1,0 +1,27 @@
+﻿ID_Hardware,Fabricante,Modelo,Categoria,Arquitectura_Anio,VRAM_GB,Ancho_Banda_GBs,TDP_Max_Watts,FP16_FP32_TFLOPS,Eficiencia_Tokens_Watt,Huella_CO2e_kg
+HW_N001,NVIDIA,B200 (SXM6),Datacenter,Blackwell (2024),192,"8,000","4,500",5.00 (FP16),~23.70,~180 kg
+HW_N002,NVIDIA,H100 (SXM5),Datacenter,Hopper (2023),80,"3,350",700,"1,979.0 (FP16)",~14.00,~150 kg
+HW_N003,NVIDIA,A100 (SXM4),Datacenter,Ampere (2020),80,"2,039",400,312.0 (FP16),~4.50,~120 kg
+HW_A001,AMD,Instinct MI300X,Datacenter,CDNA3 (2023),192,"5,300",750,"1,300.0 (FP16)",~12.50,~160 kg
+HW_N010,NVIDIA,RTX 5090,Consumidor,Blackwell (2025),32,"1,536",600,~210.0 (FP16),~0.95,~100 kg
+HW_N011,NVIDIA,RTX 4090,Consumidor,Ada Lovelace (2022),24,"1,008",450,165.2 (FP16),~0.85,~90 kg
+HW_N012,NVIDIA,RTX 4080,Consumidor,Ada Lovelace (2022),16,717,320,97.5 (FP16),~0.70,~80 kg
+HW_N013,NVIDIA,RTX 4070 Ti,Consumidor,Ada Lovelace (2023),12,504,285,68.2 (FP16),~0.60,~70 kg
+HW_N014,NVIDIA,RTX 4060,Consumidor,Ada Lovelace (2023),8,272,115,30.3 (FP16),~0.45,~50 kg
+HW_N015,NVIDIA,RTX 3090,Consumidor,Ampere (2020),24,936,350,71.0 (FP16),~0.55,~85 kg
+HW_N016,NVIDIA,RTX 3080,Consumidor,Ampere (2020),10,760,320,59.5 (FP16),~0.45,~80 kg
+HW_N017,NVIDIA,RTX 3070,Consumidor,Ampere (2020),8,448,220,40.6 (FP16),~0.38,~70 kg
+HW_N018,NVIDIA,RTX 3060,Consumidor,Ampere (2021),12,360,170,25.8 (FP16),~0.35,~65 kg
+HW_N019,NVIDIA,RTX 2080 Ti,Consumidor,Turing (2018),11,616,250,26.9 (FP16),~0.22,~75 kg
+HW_N020,NVIDIA,RTX 2080,Consumidor,Turing (2018),8,448,215,20.1 (FP16),~0.20,~70 kg
+HW_N021,NVIDIA,RTX 2070,Consumidor,Turing (2018),8,448,175,15.0 (FP16),~0.18,~65 kg
+HW_N022,NVIDIA,RTX 2060,Consumidor,Turing (2019),6,336,160,10.3 (FP16),~0.15,~60 kg
+HW_N023,NVIDIA,GTX 1080 Ti,Consumidor,Pascal (2017),11,484,250,11.3 (FP32),~0.08,~70 kg
+HW_N024,NVIDIA,GTX 1080,Consumidor,Pascal (2016),8,320,180,8.9 (FP32),~0.07,~65 kg
+HW_N025,NVIDIA,GTX 1070,Consumidor,Pascal (2016),8,256,150,6.5 (FP32),~0.06,~60 kg
+HW_N026,NVIDIA,GTX 1060 (6GB),Consumidor,Pascal (2016),6,192,120,4.4 (FP32),~0.04,~50 kg
+HW_N027,NVIDIA,GTX 1660 Ti,Consumidor,Turing (2019),6,288,120,10.9 (FP16),~0.12,~55 kg
+HW_A003,AMD,RX 7900 XTX,Consumidor,RDNA 3 (2022),24,960,355,122.8 (FP16),~0.65,~85 kg
+HW_A004,AMD,RX 6800 XT,Consumidor,RDNA 2 (2020),16,512,300,41.5 (FP16),~0.35,~75 kg
+HW_A005,AMD,RX 5700 XT,Consumidor,RDNA 1 (2019),8,448,225,19.5 (FP16),~0.18,~65 kg
+HW_A006,AMD,RX 580 (8GB),Consumidor,Polaris (2017),8,256,185,6.2 (FP32),~0.05,~60 kg

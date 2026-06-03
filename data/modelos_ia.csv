@@ -1,0 +1,41 @@
+﻿ID_Modelo,Nombre_Modelo,Empresa_Creador,Dominio,Parametros_Billones,VRAM_Minima_GB_FP16_INT8,Consumo_Energetico_Base,Unidad_Medida,Multiplicador_Razonamiento
+MOD_001,Llama 3.3,Meta,LLM,70.0 B,140 / 40,0.40 J,por Token,1x
+MOD_002,Llama 3.1,Meta,LLM,405.0 B,810 / 230,2.35 J,por Token,1x
+MOD_003,Llama 3.1,Meta,LLM,8.0 B,16 / 8,0.12 J,por Token,1x
+MOD_004,Llama 3.2-Vision,Meta,Multimodal,11.0 B,22 / 12,0.18 J,por Token,1x
+MOD_005,Llama 3.2,Meta,SLM,3.0 B,6 / 4,0.05 J,por Token,1x
+MOD_006,Llama 3.2,Meta,SLM,1.0 B,2 / 1.5,0.02 J,por Token,1x
+MOD_007,DeepSeek V3,DeepSeek,LLM (MoE),671.0 B,1400 / 350,0.65 J,por Token,1x
+MOD_008,DeepSeek R1,DeepSeek,LLM (Razonam.),671.0 B,1400 / 350,0.65 J,por Token,25x a 50x
+MOD_009,DeepSeek R1-Distill,Varios,LLM,32.0 B,64 / 24,0.35 J,por Token,5x a 10x
+MOD_010,Qwen 2.5-Max,Alibaba,LLM,72.0 B,144 / 42,0.45 J,por Token,1x
+MOD_011,Qwen 2.5-Coder,Alibaba,LLM,32.0 B,64 / 24,0.35 J,por Token,1x
+MOD_012,Qwen 2.5,Alibaba,SLM,7.0 B,14 / 6,0.11 J,por Token,1x
+MOD_013,Qwen 2.5,Alibaba,SLM,1.5 B,3 / 2,0.03 J,por Token,1x
+MOD_014,Mistral Large 2,Mistral AI,LLM,123.0 B,246 / 70,0.85 J,por Token,1x
+MOD_015,Mixtral 8x22B,Mistral AI,LLM (MoE),141.0 B,282 / 80,0.52 J,por Token,1x
+MOD_016,Mistral Small 3,Mistral AI,LLM,24.0 B,48 / 16,0.25 J,por Token,1x
+MOD_017,Gemma 2,Google,LLM,27.0 B,54 / 16,0.28 J,por Token,1x
+MOD_018,Gemma 2,Google,SLM,9.0 B,18 / 8,0.14 J,por Token,1x
+MOD_019,Gemma 2,Google,SLM,2.0 B,4 / 2,0.04 J,por Token,1x
+MOD_020,Phi-4,Microsoft,SLM,14.0 B,28 / 10,0.18 J,por Token,1x
+MOD_021,Phi-3 Mini,Microsoft,SLM,3.8 B,8 / 4,0.06 J,por Token,1x
+MOD_022,Command R+,Cohere,LLM,104.0 B,208 / 60,0.70 J,por Token,1x
+MOD_023,Grok,xAI,LLM (MoE),314.0 B,628 / 160,1.80 J,por Token,1x
+MOD_024,Falcon 180B,TII,LLM,180.0 B,360 / 100,1.15 J,por Token,1x
+MOD_025,GPT-NeoX,EleutherAI,LLM,20.0 B,40 / 12,0.22 J,por Token,1x
+MOD_026,BGE-M3,BAAI,Embedding,0.5 B,2 / 1,0.01 J,por Token,1x
+MOD_027,Nomic-Embed-Text,Nomic AI,Embedding,0.1 B,1 / 0.5,0.005 J,por Token,1x
+MOD_028,BERT Base,Google,Tradicional,0.1 B,1 / 0.5,0.005 J,por Token,1x
+MOD_029,Flux.1 [Schnell],Black Forest,Imagen (Gen),12.0 B,24 / 12,"1,800.0 J",por Imagen,1x
+MOD_030,Flux.1 [Dev],Black Forest,Imagen (Gen),12.0 B,24 / 16,"4,200.0 J",por Imagen,1x
+MOD_031,Stable Diffusion 3,Stability AI,Imagen (Gen),8.0 B,16 / 8,"4,500.0 J",por Imagen,1x
+MOD_032,SDXL 1.0,Stability AI,Imagen (Gen),3.5 B,8 / 6,"2,200.0 J",por Imagen,1x
+MOD_033,Stable Diffusion 1.5,Stability AI,Imagen (Gen),0.8 B,4 / 2,800.0 J,por Imagen,1x
+MOD_034,LLaVA v1.5,Varios,Multimodal,13.0 B,26 / 10,250.0 J,por Imagen,1x
+MOD_035,YOLOv10,Ultralytics,Visión CV,0.02 B,< 1 / < 1,0.5 J,por Inferencia,1x
+MOD_036,Whisper Large v3,OpenAI,Audio (ASR),1.5 B,8 / 4,15.0 J,por Minuto,1x
+MOD_037,Whisper Tiny,OpenAI,Audio (ASR),0.03 B,1 / < 1,1.5 J,por Minuto,1x
+MOD_038,Bark,Suno,Audio (TTS),1.2 B,8 / 4,25.0 J,por Segundo,1x
+MOD_039,SeamlessM4T,Meta,Audio (Trad.),2.3 B,10 / 5,20.0 J,por Minuto,1x
+MOD_040,XGBoost/Random For.,Varios,Tabular / ML,,CPU / RAM,0.001 J,por Inferencia,1x
