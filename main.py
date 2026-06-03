@@ -3,6 +3,7 @@ import json
 import math
 import os
 import sys
+from db import load_db_rows
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
@@ -121,11 +122,19 @@ def load_config():
 
 
 def load_csv_rows(filename):
+    if filename == "modelos_ia.csv":
+        return load_db_rows("modelos_ia_csv")
+    elif filename == "intensidad_carbono.csv":
+        return load_db_rows("intensidad_carbono_csv")
+    elif filename == "hardware.csv":
+        return load_db_rows("hardware_csv")
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(base_dir, "data", filename)
     if not os.path.isfile(data_path):
         return []
     try:
+        import csv
         with open(data_path, "r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             rows = []
