@@ -947,6 +947,8 @@ class HomeView(QWidget):
                     full_text = f"Carbon Impact: {score:.1f} | Green Score: {green_score:.1f}/100.\n{base_desc}{tip}"
 
                 card.update_description(full_text)
+            else:
+                card.update_description(card.default_description)
 
 
 class EnvironmentalPerformanceView(QWidget):
@@ -1586,12 +1588,17 @@ class AdminMenuView(QWidget):
     def export_html_report(self):
         score = "N/A"
         gs = "N/A"
-        if hasattr(self, 'main_window') and self.main_window and hasattr(self.main_window, 'current_score') and self.main_window.current_score is not None:
-            score = f"{self.main_window.current_score:.2f}"
-            gs = f"{max(0.0, 100.0 - (self.main_window.current_score / 5.0)):.1f}"
+        details_dict = {}
+        if hasattr(self, 'main_window') and self.main_window:
+            if hasattr(self.main_window, 'current_score') and self.main_window.current_score is not None:
+                score = f"{self.main_window.current_score:.2f}"
+                gs = f"{max(0.0, 100.0 - (self.main_window.current_score / 5.0)):.1f}"
+
+            if hasattr(self.main_window, 'selection_state'):
+                details_dict = self.main_window.selection_state.copy()
 
         import export_handler
-        export_handler.generate_and_save_report(self, score, gs)
+        export_handler.generate_and_save_report(self, score, gs, details_dict)
 
 
 class PatternPanel(QWidget):
@@ -2334,7 +2341,29 @@ class DashboardWindow(QMainWindow):
             "Sesion": "Session",
             "Alertas": "Alerts",
             "Auditoria": "Audit",
-            "Idioma y zona horaria": "Language & Timezone"
+            "Idioma y zona horaria": "Language & Timezone",
+            "Tu nivel de Huella de Carbono es alto. Se recomienda revisar el consumo energético y la configuración de hardware.": "Your Carbon Footprint level is high. It is recommended to review energy consumption and hardware configuration.",
+            "Tu nivel de Huella de Carbono es estándar. Se mantiene estable, pero existen oportunidades de mejora.": "Your Carbon Footprint level is standard. It remains stable, but there are opportunities for improvement.",
+            "Tu nivel de Huella de Carbono es bajo y se mantiene con muy poco uso adicional.": "Your Carbon Footprint level is low and is maintained with very little additional use.",
+            "¿Cómo se calcula?": "How is it calculated?",
+            "Se estima con energía, hardware, tiempo de proceso y región/proveedor.": "It is estimated with energy, hardware, processing time, and region/provider.",
+            "Cerrar sesion en otros equipos": "Sign out from other devices",
+            "Salir de la cuenta": "Sign out",
+            "Editar perfil": "Edit profile",
+            "Actualizar foto": "Update photo",
+            "Datos personales": "Personal data",
+            "Notificaciones": "Notifications",
+            "Accesibilidad": "Accessibility",
+            "Cambiar contrasena": "Change password",
+            "Verificacion de 2 pasos": "2-step verification",
+            "Crear usuario": "Create user",
+            "Resetear contrasena": "Reset password",
+            "Desactivar usuario": "Deactivate user",
+            "Backup y restauracion": "Backup & restore",
+            "Integraciones": "Integrations",
+            "Registro de actividad": "Activity log",
+            "Centro de ayuda": "Help center",
+            "Documentación API": "API Documentation"
         }
         self.reverse_translations = {v: k for k, v in self.translations.items()}
 
@@ -2411,7 +2440,9 @@ class DashboardWindow(QMainWindow):
         self.current_lang = "en" if self.current_lang == "es" else "es"
 
         from PySide6.QtWidgets import QLabel, QPushButton
+        from PySide6.QtGui import QAction
 
+        # Translate QLabels and QPushButtons
         for widget in self.findChildren(QLabel) + self.findChildren(QPushButton):
             if hasattr(widget, "text"):
                 current_text = widget.text()
@@ -2419,6 +2450,21 @@ class DashboardWindow(QMainWindow):
                     widget.setText(self.translations[current_text])
                 elif self.current_lang == "es" and current_text in self.reverse_translations:
                     widget.setText(self.reverse_translations[current_text])
+
+        # Translate Menu Actions
+        for action in self.findChildren(QAction):
+            if hasattr(action, "text"):
+                current_text = action.text()
+                if self.current_lang == "en" and current_text in self.translations:
+                    action.setText(self.translations[current_text])
+                elif self.current_lang == "es" and current_text in self.reverse_translations:
+                    action.setText(self.reverse_translations[current_text])
+
+        # Force re-render of active card with correct language
+        if hasattr(self, 'home_view') and hasattr(self, 'current_score'):
+            for key, card in self.home_view.status_cards.items():
+                if card.property("selected"):
+                    self.home_view.set_semaforo_level(key, self.current_score)
 
         self._update_semaforo()
 
