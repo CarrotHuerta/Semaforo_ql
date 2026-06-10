@@ -661,6 +661,7 @@ class StatusCard(QFrame):
         large=False,
         parent=None,
     ):
+        self.default_description = description
         super().__init__(parent)
         self.setObjectName("statusCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1589,27 +1590,8 @@ class AdminMenuView(QWidget):
             score = f"{self.main_window.current_score:.2f}"
             gs = f"{max(0.0, 100.0 - (self.main_window.current_score / 5.0)):.1f}"
 
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<title>Reporte Semáforo IA</title>
-<style>
-body {{ font-family: sans-serif; background-color: #0b0b0b; color: white; margin: 20px; }}
-h1 {{ color: #4ade80; }}
-</style>
-</head>
-<body>
-<h1>Reporte de Impacto - Semáforo IA</h1>
-<p>Score de Impacto de Carbono: {score}</p>
-<p>Green Score (0-100): {gs}</p>
-<!-- The HTML is generated in memory for export, as requested -->
-</body>
-</html>"""
-        QMessageBox.information(
-            self,
-            "Éxito",
-            f"El reporte HTML ha sido generado en memoria exitosamente.\n\nSimulación de descarga completada.\n\nContenido HTML:\n{html_content[:150]}..."
-        )
+        import export_handler
+        export_handler.generate_and_save_report(self, score, gs)
 
 
 class PatternPanel(QWidget):
@@ -2156,11 +2138,6 @@ class Sidebar(QFrame):
         compact_trigger_layout.addWidget(avatar_compact, 0, Qt.AlignHCenter)
 
         # Language Toggle Button
-        self.lang_btn = QPushButton("EN")
-        self.lang_btn.setObjectName("langBtn")
-        self.lang_btn.setFixedSize(QSize(30, 30))
-        self.lang_btn.setStyleSheet("QPushButton { background-color: #2a2a2a; color: white; border-radius: 15px; font-weight: bold; } QPushButton:hover { background-color: #3a3a3a; }")
-
         self.user_card_expanded = QWidget()
         self.user_card_expanded.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         expanded_layout = QHBoxLayout(self.user_card_expanded)
@@ -2168,7 +2145,6 @@ class Sidebar(QFrame):
         expanded_layout.setSpacing(12)
         expanded_layout.addWidget(avatar_expanded)
         expanded_layout.addWidget(self.user_info, 1)
-        expanded_layout.addWidget(self.lang_btn, 0, Qt.AlignRight)
 
         self.user_card_compact = QWidget()
         self.user_card_compact.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2178,11 +2154,6 @@ class Sidebar(QFrame):
         compact_layout.addWidget(self.user_compact_trigger, 0, Qt.AlignHCenter)
 
         self.user_card_compact.setVisible(False)
-        self.lang_btn_compact = QPushButton("EN")
-        self.lang_btn_compact.setObjectName("langBtnCompact")
-        self.lang_btn_compact.setFixedSize(QSize(30, 30))
-        self.lang_btn_compact.setStyleSheet("QPushButton { background-color: #2a2a2a; color: white; border-radius: 15px; font-weight: bold; } QPushButton:hover { background-color: #3a3a3a; }")
-        compact_layout.addWidget(self.lang_btn_compact, 0, Qt.AlignHCenter)
 
         card_layout.addWidget(self.user_card_expanded)
         card_layout.addWidget(self.user_card_compact)
@@ -2212,7 +2183,9 @@ class Sidebar(QFrame):
 
         add_header("Preferencias")
         add_action("Notificaciones")
-        add_action("Idioma y zona horaria")
+
+        self.lang_action = menu.addAction("Idioma y zona horaria")
+
         add_action("Accesibilidad")
         menu.addSeparator()
 
@@ -2326,12 +2299,51 @@ class DashboardWindow(QMainWindow):
         self.current_score = None
         self.current_lang = "es"
 
+        self.translations = {
+            "Inicio": "Home",
+            "Modelos": "Models",
+            "Impacto Ambiental": "Environmental Impact",
+            "Costos FinOps": "FinOps Costs",
+            "Comparativas": "Comparisons",
+            "Hardware": "Hardware",
+            "Cloud": "Cloud",
+            "Historial": "History",
+            "Ajustes": "Settings",
+            "Administracion": "Administration",
+            "SEMÁFORO IA": "AI TRAFFIC LIGHT",
+            "Huella de Carbono Alta": "High Carbon Footprint",
+            "Huella de Carbono Moderada": "Moderate Carbon Footprint",
+            "Huella de Carbono Baja": "Low Carbon Footprint",
+            "Panel de Rendimiento Ambiental": "Environmental Performance Panel",
+            "Emisiones (gCO2eq)": "Emissions (gCO2eq)",
+            "Consumo (kWh)": "Consumption (kWh)",
+            "Detalle de Componentes": "Component Details",
+            "Presupuesto": "Budget",
+            "Costo Actual": "Current Cost",
+            "Ahorro": "Savings",
+            "Catálogo de Hardware": "Hardware Catalog",
+            "Asignar Componente": "Assign Component",
+            "Configuración de Región Cloud": "Cloud Region Configuration",
+            "Proveedor": "Provider",
+            "Región": "Region",
+            "TDP / Eficiencia": "TDP / Efficiency",
+            "Exportar reporte": "Export Report",
+            "Usuarios": "Users",
+            "Sistema": "System",
+            "Soporte y documentación": "Support & Docs",
+            "Sesion": "Session",
+            "Alertas": "Alerts",
+            "Auditoria": "Audit",
+            "Idioma y zona horaria": "Language & Timezone"
+        }
+        self.reverse_translations = {v: k for k, v in self.translations.items()}
+
         self.home_view = HomeView()
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
         self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
 
-        sidebar.lang_btn.clicked.connect(self._toggle_language)
+        sidebar.lang_action.triggered.connect(self._toggle_language)
         self.header_title = self.home_view.findChild(QLabel, "pageTitle")
 
         self._add_nav_item(sidebar, "Inicio", make_home_icon(), self.home_view)
@@ -2362,7 +2374,6 @@ class DashboardWindow(QMainWindow):
         )
 
         sidebar.button_group.buttons()[0].setChecked(True)
-        sidebar.lang_btn_compact.clicked.connect(self._toggle_language)
         self.stack.setCurrentIndex(0)
 
     def _add_nav_item(self, sidebar, label, icon, widget):
@@ -2397,18 +2408,18 @@ class DashboardWindow(QMainWindow):
         self._update_semaforo()
 
     def _toggle_language(self):
-        if self.current_lang == "es":
-            self.current_lang = "en"
-            if self.sender():
-                self.sender().setText("ES")
-            if self.header_title:
-                self.header_title.setText("AI TRAFFIC LIGHT")
-        else:
-            self.current_lang = "es"
-            if self.sender():
-                self.sender().setText("EN")
-            if self.header_title:
-                self.header_title.setText("SEMÁFORO IA")
+        self.current_lang = "en" if self.current_lang == "es" else "es"
+
+        from PySide6.QtWidgets import QLabel, QPushButton
+
+        for widget in self.findChildren(QLabel) + self.findChildren(QPushButton):
+            if hasattr(widget, "text"):
+                current_text = widget.text()
+                if self.current_lang == "en" and current_text in self.translations:
+                    widget.setText(self.translations[current_text])
+                elif self.current_lang == "es" and current_text in self.reverse_translations:
+                    widget.setText(self.reverse_translations[current_text])
+
         self._update_semaforo()
 
     def _update_semaforo(self):
