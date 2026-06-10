@@ -713,11 +713,14 @@ class StatusCard(QFrame):
         else:
             note_layout.setContentsMargins(12, 10, 12, 10)
 
-        note_label = make_label(description, "statusNoteText")
-        note_label.setWordWrap(True)
-        note_layout.addWidget(note_label)
+        self.note_label = make_label(description, "statusNoteText")
+        self.note_label.setWordWrap(True)
+        note_layout.addWidget(self.note_label)
 
         layout.addWidget(note)
+
+    def update_description(self, new_text):
+        self.note_label.setText(new_text)
 
     def set_selected(self, selected):
         self.setProperty("selected", bool(selected))
@@ -909,9 +912,40 @@ class HomeView(QWidget):
         layout.addLayout(cards_layout, 1)
         layout.addWidget(info_bar)
 
-    def set_semaforo_level(self, level):
+    def set_semaforo_level(self, level, score=None):
         for key, card in self.status_cards.items():
             card.set_selected(level == key)
+            if level == key and score is not None:
+                # Dynamic green score and tips
+                green_score = max(0.0, 100.0 - (score / 5.0))
+
+                # Check language dynamically
+                lang = getattr(self.window(), "current_lang", "es")
+
+                if lang == "es":
+                    base_desc = "Tu nivel de Huella de Carbono es bajo."
+                    if level == "alto": base_desc = "Nivel ALTO."
+                    elif level == "moderado": base_desc = "Nivel MODERADO."
+
+                    tip = ""
+                    if green_score < 50: tip = "\n💡 Consejo para mejorar tu Green Score: Mueve tus cargas a una región con menor intensidad o usa hardware con menor TDP."
+                    elif green_score < 80: tip = "\n💡 Consejo: Optimiza la duración de tus procesos para acercarte a un Green Score de 100."
+                    else: tip = "\n✨ ¡Excelente Green Score! Tu configuración es altamente eficiente."
+
+                    full_text = f"Impacto de Carbono: {score:.1f} | Green Score: {green_score:.1f}/100.\n{base_desc}{tip}"
+                else:
+                    base_desc = "Your Carbon Footprint is low."
+                    if level == "alto": base_desc = "HIGH Level."
+                    elif level == "moderado": base_desc = "MODERATE Level."
+
+                    tip = ""
+                    if green_score < 50: tip = "\n💡 Tip to improve Green Score: Move workloads to a lower-intensity region or use lower TDP hardware."
+                    elif green_score < 80: tip = "\n💡 Tip: Optimize process duration to get closer to a 100 Green Score."
+                    else: tip = "\n✨ Excellent Green Score! Highly efficient config."
+
+                    full_text = f"Carbon Impact: {score:.1f} | Green Score: {green_score:.1f}/100.\n{base_desc}{tip}"
+
+                card.update_description(full_text)
 
 
 class EnvironmentalPerformanceView(QWidget):
@@ -1414,8 +1448,9 @@ class MenuSection(QFrame):
 
 
 class UserMenuView(QWidget):
-    def __init__(self, user_profile, on_logout=None, parent=None):
+    def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1480,8 +1515,9 @@ class UserMenuView(QWidget):
 
 
 class AdminMenuView(QWidget):
-    def __init__(self, user_profile, on_logout=None, parent=None):
+    def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1547,29 +1583,32 @@ class AdminMenuView(QWidget):
         layout.addLayout(bottom_row)
 
     def export_html_report(self):
-        # Generate the HTML data but mock the disk save with an alert showing the HTML was generated
-        html_content = """<!DOCTYPE html>
+        score = "N/A"
+        gs = "N/A"
+        if hasattr(self, 'main_window') and self.main_window and hasattr(self.main_window, 'current_score') and self.main_window.current_score is not None:
+            score = f"{self.main_window.current_score:.2f}"
+            gs = f"{max(0.0, 100.0 - (self.main_window.current_score / 5.0)):.1f}"
+
+        html_content = f"""<!DOCTYPE html>
 <html>
 <head>
 <title>Reporte Semáforo IA</title>
 <style>
-body { font-family: sans-serif; background-color: #0b0b0b; color: white; margin: 20px; }
-h1 { color: #4ade80; }
+body {{ font-family: sans-serif; background-color: #0b0b0b; color: white; margin: 20px; }}
+h1 {{ color: #4ade80; }}
 </style>
 </head>
 <body>
 <h1>Reporte de Impacto - Semáforo IA</h1>
-<p>Nivel de Impacto: Simulado</p>
-<p>Emisiones: Simulado gCO2eq</p>
-<p>Costo: Simulado USD</p>
+<p>Score de Impacto de Carbono: {score}</p>
+<p>Green Score (0-100): {gs}</p>
 <!-- The HTML is generated in memory for export, as requested -->
 </body>
 </html>"""
-        # Simulate download with an alert showing success, keeping the generated HTML in memory
         QMessageBox.information(
             self,
             "Éxito",
-            f"El reporte HTML ha sido generado en memoria exitosamente.\n\nSimulación de descarga completada.\n\nContenido HTML:\n{html_content[:100]}..."
+            f"El reporte HTML ha sido generado en memoria exitosamente.\n\nSimulación de descarga completada.\n\nContenido HTML:\n{html_content[:150]}..."
         )
 
 
@@ -1981,8 +2020,9 @@ class MenuTriggerWidget(QWidget):
 
 
 class Sidebar(QFrame):
-    def __init__(self, user_profile, on_logout=None, parent=None):
+    def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
         self.setObjectName("sidebar")
         self.expanded_width = 240
         self.collapsed_width = 76
@@ -2115,6 +2155,12 @@ class Sidebar(QFrame):
         avatar_compact.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         compact_trigger_layout.addWidget(avatar_compact, 0, Qt.AlignHCenter)
 
+        # Language Toggle Button
+        self.lang_btn = QPushButton("EN")
+        self.lang_btn.setObjectName("langBtn")
+        self.lang_btn.setFixedSize(QSize(30, 30))
+        self.lang_btn.setStyleSheet("QPushButton { background-color: #2a2a2a; color: white; border-radius: 15px; font-weight: bold; } QPushButton:hover { background-color: #3a3a3a; }")
+
         self.user_card_expanded = QWidget()
         self.user_card_expanded.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         expanded_layout = QHBoxLayout(self.user_card_expanded)
@@ -2122,6 +2168,7 @@ class Sidebar(QFrame):
         expanded_layout.setSpacing(12)
         expanded_layout.addWidget(avatar_expanded)
         expanded_layout.addWidget(self.user_info, 1)
+        expanded_layout.addWidget(self.lang_btn, 0, Qt.AlignRight)
 
         self.user_card_compact = QWidget()
         self.user_card_compact.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2131,6 +2178,11 @@ class Sidebar(QFrame):
         compact_layout.addWidget(self.user_compact_trigger, 0, Qt.AlignHCenter)
 
         self.user_card_compact.setVisible(False)
+        self.lang_btn_compact = QPushButton("EN")
+        self.lang_btn_compact.setObjectName("langBtnCompact")
+        self.lang_btn_compact.setFixedSize(QSize(30, 30))
+        self.lang_btn_compact.setStyleSheet("QPushButton { background-color: #2a2a2a; color: white; border-radius: 15px; font-weight: bold; } QPushButton:hover { background-color: #3a3a3a; }")
+        compact_layout.addWidget(self.lang_btn_compact, 0, Qt.AlignHCenter)
 
         card_layout.addWidget(self.user_card_expanded)
         card_layout.addWidget(self.user_card_compact)
@@ -2271,11 +2323,16 @@ class DashboardWindow(QMainWindow):
             "hardware": "",
             "hardware_tdp": None,
         }
+        self.current_score = None
+        self.current_lang = "es"
 
         self.home_view = HomeView()
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
         self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
+
+        sidebar.lang_btn.clicked.connect(self._toggle_language)
+        self.header_title = self.home_view.findChild(QLabel, "pageTitle")
 
         self._add_nav_item(sidebar, "Inicio", make_home_icon(), self.home_view)
         self._add_nav_item(sidebar, "Modelos", make_grid_icon(), self.models_view)
@@ -2297,7 +2354,15 @@ class DashboardWindow(QMainWindow):
         self._add_nav_item(sidebar, "Historial", make_clock_icon(), HistoryView())
         self._add_nav_item(sidebar, "Ajustes", make_gear_icon(), SettingsView())
 
+        self._add_nav_item(
+            sidebar,
+            "Administracion",
+            make_gear_icon(),
+            AdminMenuView(user_profile, on_logout=self._handle_logout, main_window=self),
+        )
+
         sidebar.button_group.buttons()[0].setChecked(True)
+        sidebar.lang_btn_compact.clicked.connect(self._toggle_language)
         self.stack.setCurrentIndex(0)
 
     def _add_nav_item(self, sidebar, label, icon, widget):
@@ -2331,6 +2396,21 @@ class DashboardWindow(QMainWindow):
         self.selection_state["hardware_tdp"] = hardware_tdp
         self._update_semaforo()
 
+    def _toggle_language(self):
+        if self.current_lang == "es":
+            self.current_lang = "en"
+            if self.sender():
+                self.sender().setText("ES")
+            if self.header_title:
+                self.header_title.setText("AI TRAFFIC LIGHT")
+        else:
+            self.current_lang = "es"
+            if self.sender():
+                self.sender().setText("EN")
+            if self.header_title:
+                self.header_title.setText("SEMÁFORO IA")
+        self._update_semaforo()
+
     def _update_semaforo(self):
         if not self.home_view:
             return
@@ -2344,10 +2424,12 @@ class DashboardWindow(QMainWindow):
         model_energy = self.selection_state.get("model_energy")
 
         if not (provider and region and model and hardware):
-            self.home_view.set_semaforo_level(None)
+            self.home_view.set_semaforo_level(None, None)
+            self.current_score = None
             return
         if intensity is None or tdp is None:
-            self.home_view.set_semaforo_level(None)
+            self.home_view.set_semaforo_level(None, None)
+            self.current_score = None
             return
 
         model_factor = 1.0
@@ -2355,13 +2437,14 @@ class DashboardWindow(QMainWindow):
             model_factor += math.log10(model_energy + 1.0)
 
         score = intensity * (tdp / 1000.0) * model_factor
+        self.current_score = score
         if score >= 350:
             level = "alto"
         elif score >= 150:
             level = "moderado"
         else:
             level = "bajo"
-        self.home_view.set_semaforo_level(level)
+        self.home_view.set_semaforo_level(level, score)
 
 
 def apply_stylesheet(app):
