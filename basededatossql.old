@@ -28,7 +28,7 @@ CREATE TABLE Perfil_Usuario (
 	contrasena VARCHAR(30) NOT NULL,
 	rol_sistema tipo_rol DEFAULT 'usuario' NOT NULL,
 	limite_gasto_local NUMERIC(18,2),
-	limite_carbono_local NUMERIC(18,4) 
+	limite_carbono_local NUMERIC(18,4)
 	);
 
 CREATE TABLE Configuracion_parametros (
@@ -47,11 +47,10 @@ CREATE TABLE proyecto (
     id_divisa INTEGER NOT NULL,
     nombre_proyecto VARCHAR(150) NOT NULL,
     justificacion_base TEXT DEFAULT NULL,
-    estado_proyecto tipo_estado_proyecto NOT NULL DEFAULT 'Activo',
+    estado_proyecto tipo_estado_proyecto NOT NULL DEFAULT 'activo',
     presupuesto_eco_mensual NUMERIC(18, 2) DEFAUlT NULL,
     limite_carbono_mensual NUMERIC(18, 4) DEFAULT NULL,
-    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	CONSTRAINT FK_proyecto_usuario FOREIGN KEY (id_usuario) REFERENCES Perfil_Usuario (id_usuario),
     CONSTRAINT FK_proyecto_divisa FOREIGN KEY (id_divisa) REFERENCES divisa_moneda (id_divisa)
 );
@@ -62,11 +61,13 @@ CREATE TABLE region_geografica (
 	id_proveedor INTEGER NOT NULL,
     nombre_region VARCHAR(100) UNIQUE NOT NULL,
 	proveedor_cloud VARCHAR (100) DEFAULT NULL,
+	entorno_ejecucion VARCHAR(100) DEFAULT NULL,
+	pue_promedio VARCHAR(100) DEFAULT NULL,
+	nivel_dano_ambiental VARCHAR(100) DEFAULT NULL,
     factor_emision_gCO2eq NUMERIC(10, 4) NOT NULL,
     indice_wsi NUMERIC(8, 4) NOT NULL,
     es_renovable BOOLEAN NOT NULL DEFAULT FALSE,
-    fecha_actualizacion_factor DATE NOT NULL,
-
+    fecha_actualizacion_factor DATE NOT NULL
 );
 
 
@@ -78,7 +79,7 @@ CREATE TABLE instancia_cloud (
     costo_por_hora_usd NUMERIC(12, 6) NOT NULL,
     consumo_promedio_watts NUMERIC(10, 4) NOT NULL,
     fecha_sincronizacion TIMESTAMP NOT NULL,
- 
+
     CONSTRAINT UQ_inst_nombre_prov UNIQUE (nombre_instancia, proveedor_cloud),
     CONSTRAINT FK_instancia_region FOREIGN KEY (id_region) REFERENCES region_geografica (id_region)
 );
@@ -88,7 +89,7 @@ CREATE TABLE intensidad_carbono_horaria (
     id_region INTEGER NOT NULL,
     hora_dia SMALLINT NOT NULL,
     intensidad_gCO2eq NUMERIC(10, 4) CHECK(hora_dia BETWEEN 0 AND 23) NOT NULL,
- 
+
     CONSTRAINT UQ_region_hora UNIQUE (id_region, hora_dia),
     CONSTRAINT FK_intensidad_region FOREIGN KEY (id_region) REFERENCES region_geografica (id_region)
 );
@@ -100,7 +101,7 @@ CREATE TABLE matriz_energetica_local (
     pue_oficial NUMERIC(6, 4) NOT NULL,
     wue_oficial NUMERIC(6, 4) NOT NULL,
     tecnica_refrigeracion tipo_refrigeracion DEFAULT 'aire' NOT NULL,
-    lectura_flujometro_manual NUMERIC(10, 4) DEFAULT NULL 
+    lectura_flujometro_manual NUMERIC(10, 4) DEFAULT NULL
 );
 
 CREATE TABLE Fuente_emision (
@@ -115,7 +116,7 @@ CREATE TABLE composicion_matriz (
     id_matriz INTEGER NOT NULL,
     id_fuente INTEGER NOT NULL,
     porcentaje_uso NUMERIC(5, 2) NOT NULL CHECK (porcentaje_uso BETWEEN 0 AND 100),
- 
+
     PRIMARY KEY (id_matriz, id_fuente),
     CONSTRAINT FK_comp_matriz FOREIGN KEY (id_matriz) REFERENCES matriz_energetica_local (id_matriz),
     CONSTRAINT FK_comp_fuente FOREIGN KEY (id_fuente) REFERENCES fuente_emision (id_fuente)
@@ -125,8 +126,16 @@ CREATE TABLE composicion_matriz (
 CREATE TABLE Componente_hardware (
 	id_componente SERIAL PRIMARY KEY,
 	id_componente_sucesor INTEGER DEFAULT NULL,
-	etiqueta_hardware VARCHAR(100) NOT NULL
-	categoria_hardware tipo_categoria_hardware NOT NULL
+	etiqueta_hardware VARCHAR(100) NOT NULL,
+	fabricante VARCHAR(100) DEFAULT NULL,
+	modelo_hw VARCHAR(100) DEFAULT NULL,
+	arquitectura_anio VARCHAR(100) DEFAULT NULL,
+	vram_gb VARCHAR(50) DEFAULT NULL,
+	ancho_banda_gbs VARCHAR(50) DEFAULT NULL,
+	fp16_fp32_tflops VARCHAR(50) DEFAULT NULL,
+	eficiencia_tokens_watt VARCHAR(50) DEFAULT NULL,
+	huella_co2e_kg VARCHAR(50) DEFAULT NULL,
+	categoria_hardware tipo_categoria_hardware NOT NULL,
 	TDP_estandar_watts NUMERIC(8, 2) NOT NULL,
 	costo_unitario NUMERIC(12, 2)NOT NULL,
 	tipo_origen tipo_origen_hardware NOT NULL DEFAULT 'catalogo',
@@ -143,7 +152,7 @@ CREATE TABLE Plantilla_hardware (
 	nombre_plantilla VARCHAR(150) NOT NULL,
 	estado_plantilla tipo_estado_plantilla NOT NULL DEFAULT 'activa',
 	fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	
+
 	CONSTRAINT FK_plantilla_usuario FOREIGN KEY (id_usuario) REFERENCES Perfil_Usuario (id_usuario)
 );
 
@@ -151,13 +160,54 @@ CREATE TABLE Plantilla_hardware (
 CREATE TABLE detalle_plantilla (
 	id_plantilla INTEGER NOT NULL,
 	id_componente INTEGER NOT NULL,
-	cantidad_plantilla INTEGER NOT NULL CHECK (cantidad > 0),
-	
+	cantidad_plantilla INTEGER NOT NULL CHECK (cantidad_plantilla > 0),
+
 	PRIMARY KEY (id_plantilla, id_componente),
 	CONSTRAINT fk_dp_plantilla FOREIGN KEY (id_plantilla)REFERENCES plantilla_hardware (id_plantilla),
     CONSTRAINT fk_dp_componente FOREIGN KEY (id_componente)REFERENCES componente_hardware (id_componente)
 );
 
+
+
+
+CREATE TABLE sensor_onpremise (
+    id_sensor SERIAL PRIMARY KEY,
+    direccion_ip VARCHAR(45) UNIQUE NOT NULL,
+    protocolo_conexion tipo_protocolo NOT NULL,
+    puerto INTEGER CHECK (puerto BETWEEN 1 AND 65535) NOT NULL,
+    ubicacion_fisica VARCHAR(200) DEFAULT NULL
+);
+
+CREATE TABLE modelo (
+    id_modelo SERIAL PRIMARY KEY,
+    id_proyecto INTEGER NOT NULL,
+    id_plantilla INTEGER DEFAULT NULL,
+    id_region INTEGER DEFAULT NULL,
+    id_matriz INTEGER DEFAULT NULL,
+	id_instancia INTEGER DEFAULT NULL,
+	id_sensor INTEGER DEFAULT NULL,
+    nombre_modelo VARCHAR(150) NOT NULL,
+    empresa_creador VARCHAR(100) DEFAULT NULL,
+    parametros_billones VARCHAR(50) DEFAULT NULL,
+    vram_minima_gb_fp16_int8 VARCHAR(50) DEFAULT NULL,
+    consumo_energetico_base VARCHAR(50) DEFAULT NULL,
+    unidad_medida VARCHAR(50) DEFAULT NULL,
+    multiplicador_razonamiento VARCHAR(50) DEFAULT NULL,
+    descripcion_contexto TEXT DEFAULT NULL,
+    estado_operativo tipo_estado_operativo DEFAULT 'activo' NOT NULL,
+    green_score NUMERIC(5, 2) DEFAULT NULL,
+    es_cloud BOOLEAN NOT NULL DEFAULT FALSE,
+    usa_generador_respaldo BOOLEAN NOT NULL DEFAULT FALSE,
+    costo_predecido_ia NUMERIC(18, 2) DEFAULT NULL,
+    duracion_predecida_ia BIGINT DEFAULT NULL,
+
+    CONSTRAINT FK_modelo_proyecto FOREIGN KEY (id_proyecto) REFERENCES proyecto (id_proyecto),
+    CONSTRAINT FK_modelo_plantilla FOREIGN KEY (id_plantilla) REFERENCES plantilla_hardware (id_plantilla),
+    CONSTRAINT FK_modelo_region FOREIGN KEY (id_region) REFERENCES region_geografica (id_region),
+    CONSTRAINT FK_modelo_matriz FOREIGN KEY (id_matriz) REFERENCES matriz_energetica_local (id_matriz),
+	CONSTRAINT FK_modelo_instancia FOREIGN KEY (id_instancia) REFERENCES instancia_cloud (id_instancia),
+	CONSTRAINT FK_modelo_sensor FOREIGN KEY (id_sensor) REFERENCES sensor_onpremise (id_sensor)
+);
 
 CREATE TABLE composicion_modelo (
     id_modelo INTEGER  NOT NULL,
@@ -170,6 +220,20 @@ CREATE TABLE composicion_modelo (
 );
 
 
+
+CREATE TABLE historial_ejecucion(
+    id_ejecucion SERIAL PRIMARY KEY,
+    id_modelo INTEGER NOT NULL,
+    fecha_hora_ejecucion TIMESTAMP NOT NULL,
+    costo_calculado_usd NUMERIC(18, 4) DEFAULT NULL,
+    emision_calculada_gCO2eq NUMERIC(18, 4) DEFAULT NULL,
+    consumo_calculado_kwh NUMERIC(18, 6) DEFAULT NULL,
+    volumen_agua_estimado_lts NUMERIC(18, 4) DEFAULT NULL,
+    tiempo_ejecucion_ms BIGINT DEFAULT NULL,
+
+    CONSTRAINT FK_historial_modelo FOREIGN KEY (id_modelo) REFERENCES modelo (id_modelo)
+);
+
 CREATE TABLE log_excepcion (
     id_log SERIAL PRIMARY KEY,
 	id_ejecucion INTEGER NOT NULL,
@@ -181,13 +245,6 @@ CREATE TABLE log_excepcion (
 );
 
 
-CREATE TABLE sensor_onpremise (
-    id_sensor SERIAL PRIMARY KEY,
-    direccion_ip VARCHAR(45) UNIQUE NOT NULL,
-    protocolo_conexion tipo_protocolo NOT NULL,
-    puerto INTEGER CHECK (puerto BETWEEN 1 AND 65535) NOT NULL,
-    ubicacion_fisica VARCHAR(200) DEFAULT NULL
-);
 
 
 CREATE TABLE lectura_telemetria (
@@ -201,43 +258,7 @@ CREATE TABLE lectura_telemetria (
     CONSTRAINT FK_lectura_modelo FOREIGN KEY (id_modelo) REFERENCES modelo (id_modelo)
 );
 
-CREATE TABLE modelo (
-    id_modelo SERIAL PRIMARY KEY,
-    id_proyecto INTEGER NOT NULL,
-    id_plantilla INTEGER DEFAULT NULL,
-    id_region INTEGER DEFAULT NULL,
-    id_matriz INTEGER DEFAULT NULL,
-	id_instancia INTEGER DEFAULT NULL,
-	id_sensor INTEGER DEFAULT NULL,
-    nombre_modelo VARCHAR(150) NOT NULL,
-    descripcion_contexto TEXT DEFAULT NULL,
-    estado_operativo tipo_estado_operativo DEFAULT 'activo' NOT NULL,
-    green_score NUMERIC(5, 2) DEFAULT NULL,
-    es_cloud BOOLEAN NOT NULL DEFAULT FALSE,
-    usa_generador_respaldo BOOLEAN NOT NULL DEFAULT FALSE,
-    costo_predecido_ia NUMERIC(18, 2) DEFAULT NULL,
-    duracion_predecida_ia BIGINT DEFAULT NULL,
- 
-    CONSTRAINT FK_modelo_proyecto FOREIGN KEY (id_proyecto) REFERENCES proyecto (id_proyecto),
-    CONSTRAINT FK_modelo_plantilla FOREIGN KEY (id_plantilla) REFERENCES plantilla_hardware (id_plantilla),
-    CONSTRAINT FK_modelo_region FOREIGN KEY (id_region) REFERENCES region_geografica (id_region),
-    CONSTRAINT FK_modelo_matriz FOREIGN KEY (id_matriz) REFERENCES matriz_energetica_local (id_matriz)
-	CONSTRAINT FK_modelo_instancia FOREIGN KEY (id_matriz) REFERENCES instancia_cloud (id_instancia)
-	CONSTRAINT FK_modelo_sensor FOREIGN KEY (id_matriz) REFERENCES sensor_fisico (id_sensor)
-);
 
-CREATE TABLE historial_ejecucion(
-    id_ejecucion SERIAL PRIMARY KEY,
-    id_modelo INTEGER NOT NULL,
-    fecha_hora_ejecucion TIMESTAMP NOT NULL,
-    costo_calculado_usd NUMERIC(18, 4) DEFAULT NULL,
-    emision_calculada_gCO2eq NUMERIC(18, 4) DEFAULT NULL,
-    consumo_calculado_kwh NUMERIC(18, 6) DEFAULT NULL,
-    volumen_agua_estimado_lts NUMERIC(18, 4) DEFAULT NULL,
-    tiempo_ejecucion_ms BIGINT DEFAULT NULL,
- 
-    CONSTRAINT FK_historial_modelo FOREIGN KEY (id_modelo) REFERENCES modelo (id_modelo)
-);
 
 CREATE TABLE recomendacion (
     id_recomendacion SERIAL PRIMARY KEY,
@@ -245,7 +266,7 @@ CREATE TABLE recomendacion (
     tipo_sugerencia tipo_sugerencia NOT NULL,
     mensaje_recomendacion TEXT NOT NULL,
     estado_silenciado BOOLEAN NOT NULL DEFAULT FALSE,
- 
+
     CONSTRAINT FK_rec_modelo FOREIGN KEY (id_modelo) REFERENCES modelo (id_modelo)
 );
 
@@ -259,7 +280,7 @@ CREATE TABLE registro_alerta (
     fecha_emision TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     nivel_criticidad tipo_criticidad NOT NULL,
     leido BOOLEAN NOT NULL DEFAULT FALSE,
- 
+
     CONSTRAINT FK_alert_proyecto FOREIGN KEY (id_proyecto) REFERENCES proyecto (id_proyecto),
     CONSTRAINT FK_alert_modelo FOREIGN KEY (id_modelo) REFERENCES modelo (id_modelo)
 );
@@ -268,6 +289,6 @@ CREATE TABLE registro_alerta (
 
 ALTER TABLE componente_hardware
     ADD CONSTRAINT FK_comp_sucesor FOREIGN KEY (id_componente_sucesor) REFERENCES componente_hardware (id_componente);
- 
+
 CREATE INDEX idx_comp_sucesor ON componente_hardware (id_componente_sucesor)
     WHERE id_componente_sucesor IS NOT NULL;

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GreenOps / FinOps Simulator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .progress-bar-inner { transition: width 0.3s ease; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // Mock Data
+        const hardwareCatalog = [
+            { id: 1, name: "NVIDIA RTX 4090", type: "GPU", tdp: 450, costPerHour: 1.5, year: 2022 },
+            { id: 2, name: "NVIDIA H100", type: "GPU", tdp: 700, costPerHour: 4.0, year: 2023 },
+            { id: 3, name: "AMD EPYC 9654", type: "CPU", tdp: 360, costPerHour: 2.5, year: 2022 },
+            { id: 4, name: "Intel Xeon 8480+", type: "CPU", tdp: 350, costPerHour: 2.2, year: 2023 },
+            { id: 5, name: "Intel Core i9-9900K", type: "CPU", tdp: 95, costPerHour: 0.5, year: 2018 }
+        ];
+
+        const regions = [
+            { id: 1, name: "US East (N. Virginia)", factor: 400, isArid: false, energy: "Mixta 60%" },
+            { id: 2, name: "EU West (Irlanda)", factor: 200, isArid: false, energy: "Eólica 78%" },
+            { id: 3, name: "Asia Pacific (Mumbai)", factor: 700, isArid: true, energy: "Carbón 85%" }
+        ];
+
+        const dict = {
+            es: {
+                title: "Simulador GreenOps / FinOps",
+                language: "Idioma",
+                budget: "Presupuesto",
+                ecoLimit: "Límite Ecológico",
+                region: "Región",
+                environment: "Entorno",
+                hardware: "Hardware",
+                time: "Tiempo Ejecución (h)",
+                cost: "Costo",
+                energy: "Consumo Energético",
+                emissions: "Emisiones CO2eq",
+                water: "Uso de Agua (WUE)",
+                greenScore: "Green Score",
+                rightsizing: "Sugerencia: Considera un hardware más moderno para mayor eficiencia.",
+                carbonShift: "Sugerencia: Posponer ejecución a la noche podría ahorrar un 40% de CO2.",
+                cloud: "Cloud",
+                onpremise: "On-Premise",
+                diesel: "Generador Diésel (Contingencia)",
+                liquidCooling: "Inmersión Líquida",
+                settings: "Configuración",
+                export: "Exportar",
+                pdf: "Exportar PDF",
+                json: "Exportar JSON",
+                csv: "Exportar CSV",
+                threshold: "Umbrales (%)",
+                green: "Verde",
+                yellow: "Amarillo",
+                red: "Rojo",
+                financialBreaker: "¡ALERTA! Presupuesto superado. Operaciones detenidas."
+            },
+            en: {
+                title: "GreenOps / FinOps Simulator",
+                language: "Language",
+                budget: "Budget",
+                ecoLimit: "Eco Limit",
+                region: "Region",
+                environment: "Environment",
+                hardware: "Hardware",
+                time: "Execution Time (h)",
+                cost: "Cost",
+                energy: "Energy Consumption",
+                emissions: "CO2eq Emissions",
+                water: "Water Usage (WUE)",
+                greenScore: "Green Score",
+                rightsizing: "Suggestion: Consider more modern hardware for better efficiency.",
+                carbonShift: "Suggestion: Shifting execution to night time could save 40% CO2.",
+                cloud: "Cloud",
+                onpremise: "On-Premise",
+                diesel: "Diesel Generator (Contingency)",
+                liquidCooling: "Liquid Cooling",
+                settings: "Settings",
+                export: "Export",
+                pdf: "Export PDF",
+                json: "Export JSON",
+                csv: "Export CSV",
+                threshold: "Thresholds (%)",
+                green: "Green",
+                yellow: "Yellow",
+                red: "Red",
+                financialBreaker: "ALERT! Budget exceeded. Operations halted."
+            }
+        };
+
+        const App = () => {
+            const [lang, setLang] = useState('es');
+            const t = dict[lang];
+
+            // Config
+            const [budget, setBudget] = useState(1000);
+            const [ecoLimit, setEcoLimit] = useState(500000); // gCO2
+            const [greenThresh, setGreenThresh] = useState(50);
+            const [yellowThresh, setYellowThresh] = useState(90);
+
+            // Inputs
+            const [hw1, setHw1] = useState(hardwareCatalog[0]);
+            const [hw2, setHw2] = useState(hardwareCatalog[1]);
+            const [region, setRegion] = useState(regions[0]);
+            const [isCloud, setIsCloud] = useState(true);
+            const [pue, setPue] = useState(1.2);
+            const [wue, setWue] = useState(1.5);
+            const [isDiesel, setIsDiesel] = useState(false);
+            const [isLiquid, setIsLiquid] = useState(false);
+            const [hours, setHours] = useState(24);
+
+            // Calculations
+            const calculateMetrics = (hw) => {
+                let currentPue = isCloud ? 1.15 : pue;
+                let currentWue = isLiquid ? 0 : wue;
+                let emissionFactor = region.factor;
+
+                if (isDiesel) emissionFactor *= 3; // Severe penalty
+                if (isLiquid) currentPue = Math.max(1.0, currentPue - 0.1);
+
+                const energyKwh = (hw.tdp / 1000) * hours * currentPue;
+                let emissions = energyKwh * emissionFactor;
+                const cost = hw.costPerHour * hours;
+                let waterLiters = energyKwh * currentWue;
+
+                if (region.isArid) waterLiters *= 1.5; // Water stress penalty
+
+                return { energyKwh, emissions, cost, waterLiters };
+            };
+
+            const m1 = calculateMetrics(hw1);
+            const m2 = calculateMetrics(hw2);
+
+            // Breaker
+            const isBreakerTripped = m1.cost > budget;
+
+            // Handlers
+            const handleGreenChange = (e) => {
+                const val = Number(e.target.value);
+                if (val < yellowThresh) setGreenThresh(val);
+            };
+
+            const handleYellowChange = (e) => {
+                const val = Number(e.target.value);
+                if (val > greenThresh && val <= 100) setYellowThresh(val);
+            };
+
+            const getColor = (percent) => {
+                if (percent < greenThresh) return 'bg-green-500';
+                if (percent < yellowThresh) return 'bg-yellow-500';
+                return 'bg-red-500';
+            };
+
+            const formatEmissions = (g) => {
+                if (g > 10000) return (g / 1000).toFixed(2) + ' kg';
+                return g.toFixed(2) + ' g';
+            };
+
+            const exportMock = (type) => {
+                alert(`Exporting ${type}... (Simulated)`);
+            };
+
+            const getGreenScore = (m) => {
+                const costScore = Math.max(0, 100 - (m.cost / budget) * 100);
+                const ecoScore = Math.max(0, 100 - (m.emissions / ecoLimit) * 100);
+                const avg = (costScore + ecoScore) / 2;
+                if (avg > 80) return 'A';
+                if (avg > 60) return 'B';
+                if (avg > 40) return 'C';
+                return 'D';
+            };
+
+            const formatTime = (h) => {
+                if (h < 1/3600) return (h * 3600000).toFixed(0) + " ms";
+                const totalSeconds = h * 3600;
+                const hrs = Math.floor(totalSeconds / 3600);
+                const mins = Math.floor((totalSeconds % 3600) / 60);
+                const secs = Math.floor(totalSeconds % 60);
+                return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-100 p-4">
+                    {/* Header */}
+                    <div className="flex justify-between items-center bg-white p-4 shadow rounded mb-4">
+                        <h1 className="text-2xl font-bold text-gray-800">{t.title}</h1>
+                        <div className="flex gap-4 items-center">
+                            <span className="font-medium">{t.language}:</span>
+                            <button onClick={() => setLang('es')} className={`px-3 py-1 rounded ${lang==='es'?'bg-blue-600 text-white':'bg-gray-200'}`}>ES</button>
+                            <button onClick={() => setLang('en')} className={`px-3 py-1 rounded ${lang==='en'?'bg-blue-600 text-white':'bg-gray-200'}`}>EN</button>
+                        </div>
+                    </div>
+
+                    {isBreakerTripped && (
+                        <div className="bg-red-600 text-white p-4 rounded mb-4 font-bold animate-pulse text-center text-xl">
+                            {t.financialBreaker}
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        {/* Sidebar Config */}
+                        <div className="bg-white p-4 shadow rounded space-y-4">
+                            <h2 className="text-xl font-bold border-b pb-2">{t.settings}</h2>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.budget} ($)</label>
+                                <input type="number" value={budget} onChange={e=>setBudget(e.target.value)} className="w-full border p-2 rounded" />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.ecoLimit} (gCO2eq)</label>
+                                <input type="number" value={ecoLimit} onChange={e=>setEcoLimit(e.target.value)} className="w-full border p-2 rounded" />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.threshold}</label>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <div className="w-4 h-4 bg-green-500 rounded-full"></div>
+                                    <input type="number" value={greenThresh} onChange={handleGreenChange} className="w-16 border p-1" />
+                                    <span className="text-sm">/</span>
+                                    <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
+                                    <input type="number" value={yellowThresh} onChange={handleYellowChange} className="w-16 border p-1" />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.region}</label>
+                                <select className="w-full border p-2 rounded" value={region.id} onChange={e => setRegion(regions.find(r=>r.id==e.target.value))}>
+                                    {regions.map(r => <option key={r.id} value={r.id}>{r.name} ({r.energy})</option>)}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.environment}</label>
+                                <div className="flex gap-2 mt-1">
+                                    <button onClick={()=>setIsCloud(true)} className={`flex-1 py-1 rounded ${isCloud?'bg-blue-600 text-white':'bg-gray-200'}`}>{t.cloud}</button>
+                                    <button onClick={()=>setIsCloud(false)} className={`flex-1 py-1 rounded ${!isCloud?'bg-blue-600 text-white':'bg-gray-200'}`}>{t.onpremise}</button>
+                                </div>
+                            </div>
+
+                            {!isCloud && (
+                                <>
+                                    <div>
+                                        <label className="block text-sm font-medium">PUE Local</label>
+                                        <input type="number" step="0.1" value={pue} onChange={e=>setPue(Number(e.target.value))} className="w-full border p-2 rounded" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium">WUE Local</label>
+                                        <input type="number" step="0.1" value={wue} onChange={e=>setWue(Number(e.target.value))} className="w-full border p-2 rounded" />
+                                    </div>
+                                </>
+                            )}
+
+                            <div className="space-y-2 pt-2 border-t">
+                                <label className="flex items-center gap-2">
+                                    <input type="checkbox" checked={isDiesel} onChange={e=>setIsDiesel(e.target.checked)} />
+                                    <span className="text-sm text-red-600 font-bold">{t.diesel}</span>
+                                </label>
+                                <label className="flex items-center gap-2">
+                                    <input type="checkbox" checked={isLiquid} onChange={e=>setIsLiquid(e.target.checked)} />
+                                    <span className="text-sm text-blue-600 font-bold">{t.liquidCooling}</span>
+                                </label>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium">{t.time}</label>
+                                <input type="number" value={hours} onChange={e=>setHours(e.target.value)} className="w-full border p-2 rounded" />
+                            </div>
+
+                        </div>
+
+                        {/* Main Panels */}
+                        <div className="lg:col-span-2 space-y-4">
+                            {/* Global Limits */}
+                            <div className="bg-white p-4 shadow rounded flex flex-col md:flex-row gap-4">
+                                <div className="flex-1">
+                                    <div className="flex justify-between text-sm mb-1">
+                                        <span>{t.budget} Usado</span>
+                                        <span>${m1.cost.toFixed(2)} / ${budget}</span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                                        <div className={`h-4 progress-bar-inner ${getColor((m1.cost/budget)*100)}`} style={{width: `${Math.min(100, (m1.cost/budget)*100)}%`}}></div>
+                                    </div>
+                                </div>
+                                <div className="flex-1">
+                                    <div className="flex justify-between text-sm mb-1">
+                                        <span>{t.ecoLimit} Usado</span>
+                                        <span>{formatEmissions(m1.emissions)} / {formatEmissions(Number(ecoLimit))}</span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                                        <div className={`h-4 progress-bar-inner ${getColor((m1.emissions/ecoLimit)*100)}`} style={{width: `${Math.min(100, (m1.emissions/ecoLimit)*100)}%`}}></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Comparator */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {/* Model 1 */}
+                                <div className={`p-4 shadow rounded ${isBreakerTripped?'bg-red-50':'bg-white'}`}>
+                                    <select className="w-full border p-2 rounded mb-4 font-bold" value={hw1.id} onChange={e=>setHw1(hardwareCatalog.find(h=>h.id==e.target.value))}>
+                                        {hardwareCatalog.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+                                    </select>
+
+                                    <div className="space-y-3">
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.cost}</span>
+                                            <span className="font-bold text-lg">${m1.cost.toFixed(2)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.energy}</span>
+                                            <span className="font-bold">{m1.energyKwh.toFixed(2)} kWh</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.emissions}</span>
+                                            <span className="font-bold text-green-600">{formatEmissions(m1.emissions)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.water}</span>
+                                            <span className={`font-bold ${region.isArid?'text-red-500':'text-blue-500'}`}>{m1.waterLiters.toFixed(2)} L</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.greenScore}</span>
+                                            <span className="font-black text-2xl px-3 py-1 bg-green-100 text-green-800 rounded-full">{getGreenScore(m1)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">Formato Tiempo</span>
+                                            <span className="font-mono text-sm">{formatTime(hours)}</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Suggestions */}
+                                    {hw1.year < 2020 && (
+                                        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 text-blue-800 rounded text-sm">
+                                            💡 {t.rightsizing}
+                                        </div>
+                                    )}
+                                    {(m1.emissions/ecoLimit)*100 > greenThresh && (m1.emissions/ecoLimit)*100 < yellowThresh && (
+                                        <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded text-sm">
+                                            ⚠️ {t.carbonShift}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Model 2 */}
+                                <div className="bg-white p-4 shadow rounded opacity-75 hover:opacity-100 transition">
+                                    <select className="w-full border p-2 rounded mb-4 font-bold text-gray-600" value={hw2.id} onChange={e=>setHw2(hardwareCatalog.find(h=>h.id==e.target.value))}>
+                                        {hardwareCatalog.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+                                    </select>
+
+                                    <div className="space-y-3">
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.cost}</span>
+                                            <span className="font-bold text-lg">${m2.cost.toFixed(2)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.energy}</span>
+                                            <span className="font-bold">{m2.energyKwh.toFixed(2)} kWh</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.emissions}</span>
+                                            <span className="font-bold text-green-600">{formatEmissions(m2.emissions)}</span>
+                                        </div>
+                                        <div className="flex justify-between items-center border-b pb-2">
+                                            <span className="text-gray-600">{t.water}</span>
+                                            <span className="font-bold text-blue-500">{m2.waterLiters.toFixed(2)} L</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Export Bar */}
+                            <div className="bg-white p-4 shadow rounded flex gap-4">
+                                <span className="font-bold self-center mr-4">{t.export}:</span>
+                                <button onClick={()=>exportMock('PDF')} className="bg-red-500 text-white px-4 py-2 rounded shadow hover:bg-red-600">{t.pdf}</button>
+                                <button onClick={()=>exportMock('JSON')} className="bg-gray-800 text-white px-4 py-2 rounded shadow hover:bg-gray-900">{t.json}</button>
+                                <button onClick={()=>exportMock('CSV')} className="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700">{t.csv}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
