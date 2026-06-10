@@ -3,7 +3,6 @@ import json
 import math
 import os
 import sys
-from db import load_db_rows
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
@@ -32,6 +31,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QFileDialog,
+    QMessageBox,
 )
 
 from hardware_info import get_hardware_info
@@ -122,13 +123,6 @@ def load_config():
 
 
 def load_csv_rows(filename):
-    if filename == "modelos_ia.csv":
-        return load_db_rows("modelos_ia_csv")
-    elif filename == "intensidad_carbono.csv":
-        return load_db_rows("intensidad_carbono_csv")
-    elif filename == "hardware.csv":
-        return load_db_rows("hardware_csv")
-
     base_dir = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(base_dir, "data", filename)
     if not os.path.isfile(data_path):
@@ -1531,7 +1525,7 @@ class AdminMenuView(QWidget):
                 [
                     ("Registro de actividad", "menuButton", None),
                     ("Alertas", "menuButton", None),
-                    ("Exportar reporte", "menuButton", None),
+                    ("Exportar reporte", "menuButton", self.export_html_report),
                 ],
             ),
             1,
@@ -1551,6 +1545,32 @@ class AdminMenuView(QWidget):
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
+
+    def export_html_report(self):
+        # Generate the HTML data but mock the disk save with an alert showing the HTML was generated
+        html_content = """<!DOCTYPE html>
+<html>
+<head>
+<title>Reporte Semáforo IA</title>
+<style>
+body { font-family: sans-serif; background-color: #0b0b0b; color: white; margin: 20px; }
+h1 { color: #4ade80; }
+</style>
+</head>
+<body>
+<h1>Reporte de Impacto - Semáforo IA</h1>
+<p>Nivel de Impacto: Simulado</p>
+<p>Emisiones: Simulado gCO2eq</p>
+<p>Costo: Simulado USD</p>
+<!-- The HTML is generated in memory for export, as requested -->
+</body>
+</html>"""
+        # Simulate download with an alert showing success, keeping the generated HTML in memory
+        QMessageBox.information(
+            self,
+            "Éxito",
+            f"El reporte HTML ha sido generado en memoria exitosamente.\n\nSimulación de descarga completada.\n\nContenido HTML:\n{html_content[:100]}..."
+        )
 
 
 class PatternPanel(QWidget):
