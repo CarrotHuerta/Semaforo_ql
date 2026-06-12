@@ -3,7 +3,7 @@ import json
 import math
 import os
 import sys
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QPolygonF,
 )
 from PySide6.QtWidgets import (
+    QGraphicsDropShadowEffect,
     QApplication,
     QButtonGroup,
     QComboBox,
@@ -506,6 +507,59 @@ def make_bulb_icon(size=22, color="#f2f2f2"):
     return make_line_icon(size, color, draw)
 
 
+
+class HoverAnimMixin:
+    def setup_hover_anim(self, effect, base_blur=20, hover_blur=40, base_color=(0,0,0,100), hover_color=(0,0,0,180)):
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        from PySide6.QtGui import QColor
+        self._anim_effect = effect
+        self._base_blur = base_blur
+        self._hover_blur = hover_blur
+        self.setAttribute(Qt.WA_Hover, True)
+
+        self._blur_anim = QPropertyAnimation(self._anim_effect, b"blurRadius")
+        self._blur_anim.setDuration(250)
+        self._blur_anim.setEasingCurve(QEasingCurve.OutQuad)
+
+        self._color_anim = QPropertyAnimation(self._anim_effect, b"color")
+        self._color_anim.setDuration(250)
+        self._color_anim.setEasingCurve(QEasingCurve.OutQuad)
+        self._base_c = QColor(*base_color)
+        self._hover_c = QColor(*hover_color)
+
+    def enterEvent(self, event):
+        if hasattr(self, '_blur_anim'):
+            self._blur_anim.stop()
+            self._blur_anim.setStartValue(self._anim_effect.blurRadius())
+            self._blur_anim.setEndValue(self._hover_blur)
+            self._blur_anim.start()
+
+            self._color_anim.stop()
+            self._color_anim.setStartValue(self._anim_effect.color())
+            self._color_anim.setEndValue(self._hover_c)
+            self._color_anim.start()
+        try:
+            super().enterEvent(event)
+        except AttributeError:
+            pass
+
+    def leaveEvent(self, event):
+        if hasattr(self, '_blur_anim'):
+            self._blur_anim.stop()
+            self._blur_anim.setStartValue(self._anim_effect.blurRadius())
+            self._blur_anim.setEndValue(self._base_blur)
+            self._blur_anim.start()
+
+            self._color_anim.stop()
+            self._color_anim.setStartValue(self._anim_effect.color())
+            self._color_anim.setEndValue(self._base_c)
+            self._color_anim.start()
+        try:
+            super().leaveEvent(event)
+        except AttributeError:
+            pass
+
+
 class MetricCard(QFrame):
     def __init__(
         self,
@@ -650,7 +704,7 @@ class DetailsPanel(QFrame):
             label.setText(value)
 
 
-class StatusCard(QFrame):
+class StatusCard(HoverAnimMixin, QFrame):
     def __init__(
         self,
         tone_color,
@@ -730,14 +784,13 @@ class StatusCard(QFrame):
         note_layout.addWidget(self.note_label)
 
         layout.addWidget(note)
-
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        from PySide6.QtGui import QColor
         effect = QGraphicsDropShadowEffect()
         effect.setBlurRadius(20)
         effect.setColor(QColor(0, 0, 0, 100))
         effect.setOffset(0, 4)
         self.setGraphicsEffect(effect)
+        self.setup_hover_anim(effect, 20, 40, (0,0,0,100), (0,0,0,150))
+
 
 
     def update_description(self, new_text):
@@ -784,7 +837,7 @@ class InfoBar(QFrame):
         layout.addLayout(text_layout, 1)
 
 
-class InfoCard(QFrame):
+class InfoCard(HoverAnimMixin, QFrame):
     def __init__(self, title, value, parent=None):
         super().__init__(parent)
         self.setObjectName("infoCard")
@@ -797,14 +850,13 @@ class InfoCard(QFrame):
         layout.addWidget(make_label(title, "infoCardTitle"))
         self.value_label = make_label(value, "infoCardValue")
         layout.addWidget(self.value_label)
-
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        from PySide6.QtGui import QColor
         effect = QGraphicsDropShadowEffect()
         effect.setBlurRadius(20)
         effect.setColor(QColor(0, 0, 0, 100))
         effect.setOffset(0, 4)
         self.setGraphicsEffect(effect)
+        self.setup_hover_anim(effect, 20, 40, (0,0,0,100), (0,0,0,150))
+
 
 
     def set_value(self, value):
@@ -2050,6 +2102,12 @@ class Sidebar(QFrame):
         self.is_collapsed = False
         self.nav_buttons = []
 
+        self.anim_group = QParallelAnimationGroup()
+        self.anim_min = QPropertyAnimation(self, b"minimumWidth")
+        self.anim_max = QPropertyAnimation(self, b"maximumWidth")
+        self.anim_group.addAnimation(self.anim_min)
+        self.anim_group.addAnimation(self.anim_max)
+
         self.button_group = QButtonGroup(self)
         self.button_group.setExclusive(True)
 
@@ -2261,8 +2319,20 @@ class Sidebar(QFrame):
         self._apply_sidebar_state()
 
     def _apply_sidebar_state(self):
-        width = self.collapsed_width if self.is_collapsed else self.expanded_width
-        self.setFixedWidth(width)
+        target_width = self.collapsed_width if self.is_collapsed else self.expanded_width
+
+        self.anim_min.setStartValue(self.width())
+        self.anim_min.setEndValue(target_width)
+        self.anim_min.setDuration(300)
+        self.anim_min.setEasingCurve(QEasingCurve.InOutQuad)
+
+        self.anim_max.setStartValue(self.width())
+        self.anim_max.setEndValue(target_width)
+        self.anim_max.setDuration(300)
+        self.anim_max.setEasingCurve(QEasingCurve.InOutQuad)
+
+        self.anim_group.start()
+
         self.brand_icon.setVisible(not self.is_collapsed)
         self.brand_title.setVisible(not self.is_collapsed)
         self.user_card_expanded.setVisible(not self.is_collapsed)
@@ -2313,6 +2383,15 @@ class DashboardWindow(QMainWindow):
 
         sidebar = Sidebar(user_profile, self._handle_logout)
         self.stack = QStackedWidget()
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+        self.fade_effect = QGraphicsOpacityEffect(self.stack)
+        self.stack.setGraphicsEffect(self.fade_effect)
+        self.fade_anim = QPropertyAnimation(self.fade_effect, b"opacity")
+        self.fade_anim.setDuration(350)
+        self.fade_anim.setStartValue(0.0)
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.setEasingCurve(QEasingCurve.InOutQuad)
 
         content_frame = QFrame()
         content_frame.setObjectName("contentFrame")
@@ -2485,7 +2564,11 @@ class DashboardWindow(QMainWindow):
     def _add_nav_item(self, sidebar, label, icon, widget):
         button = sidebar.add_nav_button(label, icon)
         index = self.stack.addWidget(widget)
-        button.clicked.connect(lambda checked=False, idx=index: self.stack.setCurrentIndex(idx))
+        def on_click(checked=False, idx=index):
+            if self.stack.currentIndex() != idx:
+                self.stack.setCurrentIndex(idx)
+                self.fade_anim.start()
+        button.clicked.connect(on_click)
         return button
 
     def _handle_logout(self):
