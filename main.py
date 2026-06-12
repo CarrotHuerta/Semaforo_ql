@@ -681,12 +681,23 @@ class StatusCard(QFrame):
         circle.setObjectName("statusCircle")
         circle_size = 116 if large else 88
         circle.setFixedSize(circle_size, circle_size)
+
+
         circle.setStyleSheet(
             "QFrame {"
             f"  background-color: {tone_color};"
             f"  border-radius: {circle_size // 2}px;"
             "}"
         )
+
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        from PySide6.QtGui import QColor
+        effect = QGraphicsDropShadowEffect()
+        effect.setBlurRadius(40)
+        effect.setColor(QColor(tone_color))
+        effect.setOffset(0, 0)
+        circle.setGraphicsEffect(effect)
+
 
         layout.addWidget(circle, 0, Qt.AlignHCenter)
         layout.addWidget(make_separator("statusDivider"))
@@ -719,6 +730,15 @@ class StatusCard(QFrame):
         note_layout.addWidget(self.note_label)
 
         layout.addWidget(note)
+
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        from PySide6.QtGui import QColor
+        effect = QGraphicsDropShadowEffect()
+        effect.setBlurRadius(20)
+        effect.setColor(QColor(0, 0, 0, 100))
+        effect.setOffset(0, 4)
+        self.setGraphicsEffect(effect)
+
 
     def update_description(self, new_text):
         self.note_label.setText(new_text)
@@ -777,6 +797,15 @@ class InfoCard(QFrame):
         layout.addWidget(make_label(title, "infoCardTitle"))
         self.value_label = make_label(value, "infoCardValue")
         layout.addWidget(self.value_label)
+
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        from PySide6.QtGui import QColor
+        effect = QGraphicsDropShadowEffect()
+        effect.setBlurRadius(20)
+        effect.setColor(QColor(0, 0, 0, 100))
+        effect.setOffset(0, 4)
+        self.setGraphicsEffect(effect)
+
 
     def set_value(self, value):
         self.value_label.setText(value)
@@ -1959,7 +1988,7 @@ class HardwareCatalogView(QWidget):
     def _parse_tdp_filter(self, text):
         if not text:
             return None
-        if "todos" in text.lower():
+        if "todos" in text.lower() or "all" in text.lower():
             return None
         return parse_number(text)
 
@@ -2317,7 +2346,7 @@ class DashboardWindow(QMainWindow):
             "Historial": "History",
             "Ajustes": "Settings",
             "Administracion": "Administration",
-            "SEMÁFORO IA": "AI TRAFFIC LIGHT",
+            "SEMÁFORO IA": "AI TRAFFIC",
             "Huella de Carbono Alta": "High Carbon Footprint",
             "Huella de Carbono Moderada": "Moderate Carbon Footprint",
             "Huella de Carbono Baja": "Low Carbon Footprint",
@@ -2364,6 +2393,54 @@ class DashboardWindow(QMainWindow):
             "Registro de actividad": "Activity log",
             "Centro de ayuda": "Help center",
             "Documentación API": "API Documentation"
+        ,
+            "Ahorro estimado": "Estimated Savings",
+            "Asignar": "Assign",
+            "Bienvenido de Vuelta": "Welcome Back",
+            "Buscar componente...": "Search component...",
+            "Básico": "Basic",
+            "Componente": "Component",
+            "Consumo Energético": "Energy Consumption",
+            "Continuar": "Continue",
+            "Contraseña": "Password",
+            "Costo actual": "Current Cost",
+            "Cuenta": "Account",
+            "Desglose por servicio": "Service Breakdown",
+            "Detalles del Cálculo": "Calculation Details",
+            "Dominios": "Domains",
+            "Emisiones ejecución": "Execution Emissions",
+            "Emisiones entrenamiento": "Training Emissions",
+            "Empresas": "Companies",
+            "Estado": "Status",
+            "Hardware detectado": "Detected Hardware",
+            "Implementar al menos una de estas medidas debería ser suficiente para retornar al rango verde en la próxima evaluación.": "Implementing at least one of these measures should be enough to return to the green range in the next evaluation.",
+            "Ingrese un usuario": "Enter a username",
+            "Latencia media": "Average Latency",
+            "Login": "Login",
+            "Modelos activos": "Active Models",
+            "Modelos disponibles": "Available Models",
+            "Modelos recientes": "Recent Models",
+            "Precisión promedio": "Average Precision",
+            "Preferencias generales": "General Preferences",
+            "Presupuesto mensual": "Monthly Budget",
+            "Profesional": "Professional",
+            "Región activa": "Active Region",
+
+            "Servicios activos": "Active Services",
+            "TDP máx: 125W": "Max TDP: 125W",
+            "TDP máx: 225W": "Max TDP: 225W",
+            "TDP máx: 400W": "Max TDP: 400W",
+            "TDP máx: todos": "Max TDP: all",
+            "Tiempo de Procesamiento": "Processing Time",
+            "Tipo": "Type",
+            "Tu nivel de huella de carbono se encuentra en un rango de advertencia. Si bien el sistema opera dentro de márgenes aceptables, se han detectado parámetros que incrementan innecesariamente las emisiones de CO2 y el consumo energético. Es recomendable tomar acción antes de que el nivel escale a rango crítico.": "Your carbon footprint level is in a warning range. Although the system operates within acceptable margins, parameters have been detected that unnecessarily increase CO2 emissions and energy consumption. It is recommended to take action before the level escalates to a critical range.",
+            "Usuario": "User",
+            "Usuarios disponibles": "Available Users",
+            "Vista en construcción": "View under construction",
+            "Últimas ejecuciones": "Latest Executions",
+            "• <b>Región de ejecución:</b> Migrar las cargas de trabajo a regiones con menor factor de emisión, como Europa del Norte o Canada Central, puede reducir significativamente las emisiones sin afectar el rendimiento.": "• <b>Execution Region:</b> Migrating workloads to regions with a lower emission factor, such as Northern Europe or Central Canada, can significantly reduce emissions without affecting performance.",
+            "• <b>Tiempo de procesamiento:</b> Optimizar los hiperparámetros del modelo o aplicar técnicas de early stopping puede disminuir el tiempo de cómputo y, con ello, el consumo energético asociado.": "• <b>Processing Time:</b> Optimizing model hyperparameters or applying early stopping techniques can decrease computation time and, consequently, associated energy consumption.",
+            "• <b>Hardware:</b> Considerar el uso de aceleradores más eficientes energéticamente o ajustar la asignación de recursos para evitar capacidad ociosa durante la ejecución.": "• <b>Hardware:</b> Consider using more energy-efficient accelerators or adjusting resource allocation to avoid idle capacity during execution."
         }
         self.reverse_translations = {v: k for k, v in self.translations.items()}
 
@@ -2442,6 +2519,7 @@ class DashboardWindow(QMainWindow):
         from PySide6.QtWidgets import QLabel, QPushButton
         from PySide6.QtGui import QAction
 
+
         # Translate QLabels and QPushButtons
         for widget in self.findChildren(QLabel) + self.findChildren(QPushButton):
             if hasattr(widget, "text"):
@@ -2451,6 +2529,36 @@ class DashboardWindow(QMainWindow):
                 elif self.current_lang == "es" and current_text in self.reverse_translations:
                     widget.setText(self.reverse_translations[current_text])
 
+        # Also translate default descriptions in StatusCards
+        if hasattr(self, 'home_view'):
+            for card in self.home_view.status_cards.values():
+                if self.current_lang == "en" and card.default_description in self.translations:
+                    card.default_description = self.translations[card.default_description]
+                elif self.current_lang == "es" and card.default_description in self.reverse_translations:
+                    card.default_description = self.reverse_translations[card.default_description]
+
+                # If not currently selected (i.e. showing default description), update it visually
+                if not card.property("selected"):
+                    card.update_description(card.default_description)
+
+
+
+        from PySide6.QtWidgets import QLineEdit, QComboBox
+        for widget in self.findChildren(QLineEdit):
+            if hasattr(widget, "placeholderText"):
+                current_text = widget.placeholderText()
+                if self.current_lang == "en" and current_text in self.translations:
+                    widget.setPlaceholderText(self.translations[current_text])
+                elif self.current_lang == "es" and current_text in self.reverse_translations:
+                    widget.setPlaceholderText(self.reverse_translations[current_text])
+
+        for widget in self.findChildren(QComboBox):
+            for i in range(widget.count()):
+                current_text = widget.itemText(i)
+                if self.current_lang == "en" and current_text in self.translations:
+                    widget.setItemText(i, self.translations[current_text])
+                elif self.current_lang == "es" and current_text in self.reverse_translations:
+                    widget.setItemText(i, self.reverse_translations[current_text])
         # Translate Menu Actions
         for action in self.findChildren(QAction):
             if hasattr(action, "text"):
