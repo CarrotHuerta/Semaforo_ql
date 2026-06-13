@@ -896,6 +896,33 @@ class HomeView(QWidget):
         layout.addLayout(header_layout)
         layout.addWidget(make_separator("separator"))
 
+        # Alert/Warning bar CU 11.2, 38.2
+        self.alert_bar = QFrame()
+        self.alert_bar.setObjectName("statusCard")
+        self.alert_bar.setProperty("level", "alto")
+        self.alert_bar.setStyleSheet("background-color: #b60f0f; border-radius: 8px;")
+        alert_layout = QHBoxLayout(self.alert_bar)
+        alert_layout.setContentsMargins(14, 10, 14, 10)
+        alert_layout.setSpacing(14)
+
+        alert_text = make_label("¡Alerta Crítica! Límite de emisiones proyectado al 95%.", "infoTitle")
+        alert_layout.addWidget(alert_text, 1)
+
+        snooze_btn = QPushButton("Silenciar Advertencia por Tiempo Limitado")
+        snooze_btn.setObjectName("secondaryButton")
+        snooze_btn.setCursor(Qt.PointingHandCursor)
+        snooze_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
+
+        close_btn = QPushButton("Cerrar")
+        close_btn.setObjectName("secondaryButton")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
+
+        alert_layout.addWidget(snooze_btn)
+        alert_layout.addWidget(close_btn)
+
+        layout.addWidget(self.alert_bar)
+
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(18)
 
@@ -1032,11 +1059,51 @@ class EnvironmentalPerformanceView(QWidget):
         bottom_row.addWidget(details_panel, 1)
         bottom_row.addWidget(activity_panel, 1)
 
+        # CU 63.1, 63.2 (Ecological Limit & Insignia)
+        from PySide6.QtWidgets import QProgressBar
+        eco_limit_layout = QHBoxLayout()
+        eco_limit_layout.setSpacing(18)
+
+        eco_panel = QFrame()
+        eco_panel.setObjectName("detailsPanel")
+        eco_panel_layout = QVBoxLayout(eco_panel)
+        eco_panel_layout.setContentsMargins(18, 14, 18, 14)
+
+        eco_title_row = QHBoxLayout()
+        eco_title_row.addWidget(make_label("% Límite Ecológico Utilizado", "kpiTitle"))
+
+        insignia_label = make_label("⭐ Insignia eficiencia: Uso < 50%", "infoText")
+        insignia_label.setStyleSheet("color: #4eb541;")
+        eco_title_row.addWidget(insignia_label, 0, Qt.AlignRight)
+
+        eco_panel_layout.addLayout(eco_title_row)
+
+        self.eco_bar = QProgressBar()
+        self.eco_bar.setRange(0, 100)
+        self.eco_bar.setValue(45) # Under 50% for badge
+        self.eco_bar.setTextVisible(True)
+        self.eco_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #2a2a2a;
+                border-radius: 5px;
+                text-align: center;
+                background-color: #141414;
+            }
+            QProgressBar::chunk {
+                background-color: #4eb541;
+                border-radius: 5px;
+            }
+        """)
+        eco_panel_layout.addWidget(self.eco_bar)
+
+        eco_limit_layout.addWidget(eco_panel, 1)
+
         main_layout.addLayout(header_layout)
         main_layout.addWidget(make_separator("separator"))
         main_layout.addLayout(emissions_layout)
         main_layout.addLayout(metrics_layout)
         main_layout.addLayout(bottom_row)
+        main_layout.addLayout(eco_limit_layout)
 
 
 class CarbonDetailView(QWidget):
@@ -1099,6 +1166,30 @@ class CarbonDetailView(QWidget):
         button.setCursor(Qt.PointingHandCursor)
         button.setFixedWidth(160)
 
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        abort_btn = QPushButton("Abortar simulación")
+        abort_btn.setObjectName("secondaryButton")
+        abort_btn.setCursor(Qt.PointingHandCursor)
+        abort_btn.clicked.connect(lambda: QMessageBox.information(self, "Simulación Abortada", "Proceso local detenido y variables reiniciadas."))
+
+        apply_btn = QPushButton("Aplicar recomendación")
+        apply_btn.setObjectName("primaryButton")
+        apply_btn.setCursor(Qt.PointingHandCursor)
+        apply_btn.clicked.connect(lambda: QMessageBox.information(self, "Recomendación Aplicada", "Variables del modelo reconfiguradas en memoria."))
+
+        minimize_btn = QPushButton("Minimizar consejo")
+        minimize_btn.setObjectName("secondaryButton")
+        minimize_btn.setCursor(Qt.PointingHandCursor)
+        minimize_btn.clicked.connect(lambda: panel.setVisible(False))
+
+        btn_row.addWidget(button)
+        btn_row.addWidget(apply_btn)
+        btn_row.addWidget(abort_btn)
+        btn_row.addWidget(minimize_btn)
+        btn_row.setAlignment(Qt.AlignHCenter)
+
         panel_layout.addWidget(icon, 0, Qt.AlignHCenter)
         panel_layout.addWidget(title)
         panel_layout.addWidget(body)
@@ -1106,7 +1197,7 @@ class CarbonDetailView(QWidget):
         panel_layout.addWidget(bullet_2)
         panel_layout.addWidget(bullet_3)
         panel_layout.addWidget(footer)
-        panel_layout.addWidget(button, 0, Qt.AlignHCenter)
+        panel_layout.addLayout(btn_row)
 
         layout.addWidget(panel, 1)
 
@@ -1200,9 +1291,44 @@ class ModelsView(QWidget):
         if self.model_combo.count():
             self._handle_model_change(self.model_combo.currentText())
 
+        # Buttons CU 14.1, 14.2
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        soft_del_btn = QPushButton("Eliminar (Soft)")
+        soft_del_btn.setObjectName("secondaryButton")
+        soft_del_btn.setCursor(Qt.PointingHandCursor)
+        soft_del_btn.clicked.connect(self._handle_soft_delete)
+
+        hard_del_btn = QPushButton("Destruir (Hard)")
+        hard_del_btn.setObjectName("secondaryButton")
+        hard_del_btn.setStyleSheet("color: #ff4d4d;")
+        hard_del_btn.setCursor(Qt.PointingHandCursor)
+        hard_del_btn.clicked.connect(self._handle_hard_delete)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(soft_del_btn)
+        btn_layout.addWidget(hard_del_btn)
+
+        selector_layout.addLayout(btn_layout)
+
         layout.addLayout(cards)
         layout.addWidget(selector_panel)
         layout.addWidget(list_panel)
+
+    def _handle_soft_delete(self):
+        curr_idx = self.model_combo.currentIndex()
+        if curr_idx >= 0:
+            QMessageBox.information(self, "Baja Lógica", "El modelo se ha marcado como 'Inactivo/Oculto' en los cálculos históricos.")
+            self.model_combo.removeItem(curr_idx)
+
+    def _handle_hard_delete(self):
+        curr_idx = self.model_combo.currentIndex()
+        if curr_idx >= 0:
+            reply = QMessageBox.question(self, "Advertencia", "Se destruirá irremediablemente la información del modelo local. ¿Continuar?", QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                QMessageBox.information(self, "Borrado Físico", "Registro purgado totalmente del disco.")
+                self.model_combo.removeItem(curr_idx)
 
     def _build_selector(self, label_text, combo):
         wrapper = QFrame()
@@ -1234,11 +1360,26 @@ class FinOpsView(QWidget):
         layout.addWidget(make_label("Costos FinOps", "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
+        header_row = QHBoxLayout()
+        header_row.addWidget(make_label("Costos FinOps", "pageTitle"), 1)
+
+        self.currency_combo = ChevronComboBox()
+        self.currency_combo.addItems(["CLP ($)", "USD (U$D)", "EUR (€)"])
+        self.currency_combo.setFixedWidth(120)
+        self.currency_combo.currentTextChanged.connect(self._update_currency)
+        header_row.addWidget(self.currency_combo)
+
+        layout.addLayout(header_row)
+        layout.addWidget(make_separator("separator"))
+
         cards = QHBoxLayout()
         cards.setSpacing(18)
-        cards.addWidget(InfoCard("Costo actual", "$4.820.000"), 1)
-        cards.addWidget(InfoCard("Presupuesto mensual", "$7.500.000"), 1)
-        cards.addWidget(InfoCard("Ahorro estimado", "$1.120.000"), 1)
+        self.card_actual = InfoCard("Costo actual", "$4.820.000")
+        self.card_presupuesto = InfoCard("Presupuesto mensual", "$7.500.000")
+        self.card_ahorro = InfoCard("Ahorro estimado", "$1.120.000")
+        cards.addWidget(self.card_actual, 1)
+        cards.addWidget(self.card_presupuesto, 1)
+        cards.addWidget(self.card_ahorro, 1)
 
         items = [
             "GPU compute — 48% del gasto",
@@ -1248,8 +1389,38 @@ class FinOpsView(QWidget):
         ]
         list_panel = ListPanel("Desglose por servicio", items)
 
+        # Budget bar CU 62.1, 62.2
+        from PySide6.QtWidgets import QProgressBar
+        budget_panel = QFrame()
+        budget_panel.setObjectName("detailsPanel")
+        budget_layout = QVBoxLayout(budget_panel)
+        budget_layout.setContentsMargins(18, 14, 18, 14)
+        budget_layout.addWidget(make_label("% Presupuesto Límite Utilizado", "kpiTitle"))
+        self.budget_bar = QProgressBar()
+        self.budget_bar.setRange(0, 100)
+        # 4.82M / 7.5M is roughly 64%
+        self.budget_bar.setValue(64)
+        self.budget_bar.setTextVisible(True)
+        budget_layout.addWidget(self.budget_bar)
+
         layout.addLayout(cards)
+        layout.addWidget(budget_panel)
         layout.addWidget(list_panel)
+
+    def _update_currency(self, currency_str):
+        # Dummy conversion for UI demonstration
+        if "USD" in currency_str:
+            self.card_actual.findChild(QLabel, "infoValue").setText("U$D 5.100.00")
+            self.card_presupuesto.findChild(QLabel, "infoValue").setText("U$D 7.950.00")
+            self.card_ahorro.findChild(QLabel, "infoValue").setText("U$D 1.185.00")
+        elif "EUR" in currency_str:
+            self.card_actual.findChild(QLabel, "infoValue").setText("€ 4.700.00")
+            self.card_presupuesto.findChild(QLabel, "infoValue").setText("€ 7.300.00")
+            self.card_ahorro.findChild(QLabel, "infoValue").setText("€ 1.090.00")
+        else:
+            self.card_actual.findChild(QLabel, "infoValue").setText("$4.820.000")
+            self.card_presupuesto.findChild(QLabel, "infoValue").setText("$7.500.000")
+            self.card_ahorro.findChild(QLabel, "infoValue").setText("$1.120.000")
 
 
 class CloudView(QWidget):
@@ -1411,6 +1582,142 @@ class SettingsView(QWidget):
 
         layout.addWidget(list_panel)
 
+        # CU 15.2, 37.2 (System & Notifications)
+        system_layout = QVBoxLayout()
+        system_layout.setSpacing(10)
+
+        sys_title = make_label("Sistema y Notificaciones", "kpiTitle")
+        system_layout.addWidget(sys_title)
+
+        sys_row = QHBoxLayout()
+        sys_row.setSpacing(15)
+
+        backup_btn = QPushButton("Crear Respaldo")
+        backup_btn.setObjectName("secondaryButton")
+        backup_btn.setCursor(Qt.PointingHandCursor)
+        backup_btn.clicked.connect(lambda: QMessageBox.information(self, "Respaldo", "Archivo de backup único generado en directorio externo."))
+
+        from PySide6.QtWidgets import QCheckBox
+        notif_cb = QCheckBox("Generar Avisos al OS")
+        notif_cb.setChecked(True)
+        notif_cb.setStyleSheet("color: white;")
+        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, "Notificaciones", f"Avisos al OS {'activados' if state else 'desactivados'} permanentemente."))
+
+        sys_row.addWidget(backup_btn)
+        sys_row.addWidget(notif_cb)
+        sys_row.addStretch()
+
+        system_layout.addLayout(sys_row)
+        layout.addLayout(system_layout)
+
+        # CU 35.1, 35.2, 36.1, 36.2, 47.1, 47.2
+        env_hw_layout = QVBoxLayout()
+        env_hw_layout.setSpacing(10)
+
+        env_title = make_label("Entorno y Hardware On-Premise", "kpiTitle")
+        env_hw_layout.addWidget(env_title)
+
+        env_btn_row = QHBoxLayout()
+        env_btn_row.setSpacing(10)
+        sync_env_btn = QPushButton("Sincronizar Factores Oficiales")
+        sync_env_btn.setObjectName("secondaryButton")
+        sync_env_btn.clicked.connect(lambda: QMessageBox.information(self, "Sincronización", "Factores de emisión actualizados desde fuente meteorológica oficial."))
+
+        revert_env_btn = QPushButton("Restablecer a fecha pasada")
+        revert_env_btn.setObjectName("secondaryButton")
+        revert_env_btn.clicked.connect(lambda: QMessageBox.information(self, "Reversión", "Diccionario ambiental restablecido a datos del año pasado."))
+
+        ping_hw_btn = QPushButton("Probar Enlace Sensor On-Premise")
+        ping_hw_btn.setObjectName("secondaryButton")
+        ping_hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Sondeo Activo", "Conexión activa con hardware de corriente On-Premise exitosa."))
+
+        env_btn_row.addWidget(sync_env_btn)
+        env_btn_row.addWidget(revert_env_btn)
+        env_btn_row.addWidget(ping_hw_btn)
+        env_btn_row.addStretch()
+        env_hw_layout.addLayout(env_btn_row)
+
+        local_metrics_row = QHBoxLayout()
+        local_metrics_row.setSpacing(10)
+        pue_input = QLineEdit()
+        pue_input.setPlaceholderText("PUE Local (Ej. 1.2)")
+        pue_input.setFixedWidth(120)
+
+        green_energy_input = QLineEdit()
+        green_energy_input.setPlaceholderText("% Energía Verde Privada")
+        green_energy_input.setFixedWidth(160)
+
+        save_metrics_btn = QPushButton("Guardar Métricas")
+        save_metrics_btn.setObjectName("primaryButton")
+        save_metrics_btn.clicked.connect(lambda: QMessageBox.information(self, "Métricas Locales", "Métricas PUE y Energía Verde sobrescritas localmente."))
+
+        local_metrics_row.addWidget(make_label("PUE Local:", "infoText"))
+        local_metrics_row.addWidget(pue_input)
+        local_metrics_row.addWidget(make_label("% Verde:", "infoText"))
+        local_metrics_row.addWidget(green_energy_input)
+        local_metrics_row.addWidget(save_metrics_btn)
+        local_metrics_row.addStretch()
+
+        env_hw_layout.addLayout(local_metrics_row)
+        layout.addLayout(env_hw_layout)
+
+        # CU 19.1, 19.2, 34.1, 34.2 (Thresholds & Financial)
+        thresh_fin_layout = QVBoxLayout()
+        thresh_fin_layout.setSpacing(10)
+
+        thresh_title = make_label("Umbrales y Financiero", "kpiTitle")
+        thresh_fin_layout.addWidget(thresh_title)
+
+        thresh_row = QHBoxLayout()
+        thresh_row.setSpacing(10)
+
+        green_input = QLineEdit()
+        green_input.setPlaceholderText("Verde Max (%)")
+        green_input.setFixedWidth(100)
+
+        yellow_input = QLineEdit()
+        yellow_input.setPlaceholderText("Amarillo Max (%)")
+        yellow_input.setFixedWidth(100)
+
+        red_input = QLineEdit()
+        red_input.setPlaceholderText("Rojo Min (%)")
+        red_input.setFixedWidth(100)
+
+        save_thresh_btn = QPushButton("Guardar Umbrales")
+        save_thresh_btn.setObjectName("primaryButton")
+        save_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, "Umbrales", "Nuevos rangos guardados y aplicados."))
+
+        reset_thresh_btn = QPushButton("Restablecer a fábrica")
+        reset_thresh_btn.setObjectName("secondaryButton")
+        reset_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, "Umbrales", "Variables devueltas a predeterminadas de origen."))
+
+        thresh_row.addWidget(green_input)
+        thresh_row.addWidget(yellow_input)
+        thresh_row.addWidget(red_input)
+        thresh_row.addWidget(save_thresh_btn)
+        thresh_row.addWidget(reset_thresh_btn)
+        thresh_row.addStretch()
+
+        fin_row = QHBoxLayout()
+        fin_row.setSpacing(10)
+
+        api_key_input = QLineEdit()
+        api_key_input.setPlaceholderText("API Key Financiera (ej. AWS/Azure)")
+        api_key_input.setEchoMode(QLineEdit.Password)
+        api_key_input.setFixedWidth(250)
+
+        sync_tarifas_btn = QPushButton("Sincronizar Tarifas")
+        sync_tarifas_btn.setObjectName("secondaryButton")
+        sync_tarifas_btn.clicked.connect(lambda: QMessageBox.information(self, "Tarifas", "Registros tarifarios locales sobrescritos con precios vigentes de mercado."))
+
+        fin_row.addWidget(make_label("API Key:", "infoText"))
+        fin_row.addWidget(api_key_input)
+        fin_row.addWidget(sync_tarifas_btn)
+        fin_row.addStretch()
+
+        thresh_fin_layout.addLayout(thresh_row)
+        thresh_fin_layout.addLayout(fin_row)
+        layout.addLayout(thresh_fin_layout)
 
 class AccountHeaderCard(QFrame):
     def __init__(self, user_profile, parent=None):
@@ -1698,6 +2005,8 @@ class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.failed_attempts = 0 # CU 55.2
+
         self.config = load_config()
         self.setWindowTitle("Semáforo IA - Login")
         self.resize(1100, 640)
@@ -1756,13 +2065,13 @@ class LoginWindow(QMainWindow):
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
 
-        login_button = QPushButton("Continuar")
-        login_button.setObjectName("loginButton")
-        login_button.setCursor(Qt.PointingHandCursor)
-        login_button.setFixedWidth(140)
-        login_button.clicked.connect(self.handle_login)
+        self.login_button = QPushButton("Continuar")
+        self.login_button.setObjectName("loginButton")
+        self.login_button.setCursor(Qt.PointingHandCursor)
+        self.login_button.setFixedWidth(140)
+        self.login_button.clicked.connect(self.handle_login)
 
-        right_layout.addWidget(login_button, 0, Qt.AlignLeft)
+        right_layout.addWidget(self.login_button, 0, Qt.AlignLeft)
         right_layout.addSpacing(10)
 
         users_label = make_label("Usuarios disponibles", "loginHint")
@@ -1783,6 +2092,10 @@ class LoginWindow(QMainWindow):
         self.password_input.returnPressed.connect(self.handle_login)
 
     def handle_login(self):
+        if self.failed_attempts >= 3:
+            self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+            return
+
         username = self.username_input.text().strip()
         if not username:
             self._set_error("Ingresa un usuario válido.")
@@ -1790,13 +2103,23 @@ class LoginWindow(QMainWindow):
 
         profile = find_user_profile(self.config, username)
         if not profile:
-            self._set_error("Usuario no encontrado. Usa nacha o maxine.")
+            self.failed_attempts += 1
+            if self.failed_attempts >= 3:
+                self.login_button.setEnabled(False)
+                self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+            else:
+                self._set_error("Usuario no encontrado. Usa nacha o maxine.")
             return
 
         password = self.password_input.text()
         expected = str(profile.get("password", ""))
         if expected and password != expected:
-            self._set_error("Contraseña incorrecta.")
+            self.failed_attempts += 1
+            if self.failed_attempts >= 3:
+                self.login_button.setEnabled(False)
+                self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+            else:
+                self._set_error("Contraseña incorrecta.")
             return
 
         self.error_label.setVisible(False)
