@@ -508,58 +508,6 @@ def make_bulb_icon(size=22, color="#f2f2f2"):
 
 
 
-class HoverAnimMixin:
-    def setup_hover_anim(self, effect, base_blur=20, hover_blur=40, base_color=(0,0,0,100), hover_color=(0,0,0,180)):
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-        from PySide6.QtGui import QColor
-        self._anim_effect = effect
-        self._base_blur = base_blur
-        self._hover_blur = hover_blur
-        self.setAttribute(Qt.WA_Hover, True)
-
-        self._blur_anim = QPropertyAnimation(self._anim_effect, b"blurRadius")
-        self._blur_anim.setDuration(250)
-        self._blur_anim.setEasingCurve(QEasingCurve.OutQuad)
-
-        self._color_anim = QPropertyAnimation(self._anim_effect, b"color")
-        self._color_anim.setDuration(250)
-        self._color_anim.setEasingCurve(QEasingCurve.OutQuad)
-        self._base_c = QColor(*base_color)
-        self._hover_c = QColor(*hover_color)
-
-    def enterEvent(self, event):
-        if hasattr(self, '_blur_anim'):
-            self._blur_anim.stop()
-            self._blur_anim.setStartValue(self._anim_effect.blurRadius())
-            self._blur_anim.setEndValue(self._hover_blur)
-            self._blur_anim.start()
-
-            self._color_anim.stop()
-            self._color_anim.setStartValue(self._anim_effect.color())
-            self._color_anim.setEndValue(self._hover_c)
-            self._color_anim.start()
-        try:
-            super().enterEvent(event)
-        except AttributeError:
-            pass
-
-    def leaveEvent(self, event):
-        if hasattr(self, '_blur_anim'):
-            self._blur_anim.stop()
-            self._blur_anim.setStartValue(self._anim_effect.blurRadius())
-            self._blur_anim.setEndValue(self._base_blur)
-            self._blur_anim.start()
-
-            self._color_anim.stop()
-            self._color_anim.setStartValue(self._anim_effect.color())
-            self._color_anim.setEndValue(self._base_c)
-            self._color_anim.start()
-        try:
-            super().leaveEvent(event)
-        except AttributeError:
-            pass
-
-
 class MetricCard(QFrame):
     def __init__(
         self,
@@ -704,7 +652,7 @@ class DetailsPanel(QFrame):
             label.setText(value)
 
 
-class StatusCard(HoverAnimMixin, QFrame):
+class StatusCard(QFrame):
     def __init__(
         self,
         tone_color,
@@ -789,7 +737,6 @@ class StatusCard(HoverAnimMixin, QFrame):
         effect.setColor(QColor(0, 0, 0, 100))
         effect.setOffset(0, 4)
         self.setGraphicsEffect(effect)
-        self.setup_hover_anim(effect, 20, 40, (0,0,0,100), (0,0,0,150))
 
 
 
@@ -837,7 +784,7 @@ class InfoBar(QFrame):
         layout.addLayout(text_layout, 1)
 
 
-class InfoCard(HoverAnimMixin, QFrame):
+class InfoCard(QFrame):
     def __init__(self, title, value, parent=None):
         super().__init__(parent)
         self.setObjectName("infoCard")
@@ -855,7 +802,6 @@ class InfoCard(HoverAnimMixin, QFrame):
         effect.setColor(QColor(0, 0, 0, 100))
         effect.setOffset(0, 4)
         self.setGraphicsEffect(effect)
-        self.setup_hover_anim(effect, 20, 40, (0,0,0,100), (0,0,0,150))
 
 
 
@@ -2382,6 +2328,7 @@ class DashboardWindow(QMainWindow):
             user_profile = get_default_user(config)
 
         sidebar = Sidebar(user_profile, self._handle_logout)
+        self.sidebar = sidebar
         self.stack = QStackedWidget()
         from PySide6.QtWidgets import QGraphicsOpacityEffect
         from PySide6.QtCore import QPropertyAnimation, QEasingCurve
@@ -2392,6 +2339,7 @@ class DashboardWindow(QMainWindow):
         self.fade_anim.setStartValue(0.0)
         self.fade_anim.setEndValue(1.0)
         self.fade_anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self.fade_anim.finished.connect(lambda: self.fade_effect.setEnabled(False))
 
         content_frame = QFrame()
         content_frame.setObjectName("contentFrame")
@@ -2566,6 +2514,7 @@ class DashboardWindow(QMainWindow):
         index = self.stack.addWidget(widget)
         def on_click(checked=False, idx=index):
             if self.stack.currentIndex() != idx:
+                self.fade_effect.setEnabled(True)
                 self.stack.setCurrentIndex(idx)
                 self.fade_anim.start()
         button.clicked.connect(on_click)
