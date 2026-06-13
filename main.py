@@ -1182,12 +1182,36 @@ class CarbonDetailView(QWidget):
         minimize_btn = QPushButton("Minimizar consejo")
         minimize_btn.setObjectName("secondaryButton")
         minimize_btn.setCursor(Qt.PointingHandCursor)
-        minimize_btn.clicked.connect(lambda: panel.setVisible(False))
+
+        def toggle_minimize():
+            is_visible = body.isVisible()
+            body.setVisible(not is_visible)
+            bullet_1.setVisible(not is_visible)
+            bullet_2.setVisible(not is_visible)
+            bullet_3.setVisible(not is_visible)
+            footer.setVisible(not is_visible)
+            button.setVisible(not is_visible)
+            apply_btn.setVisible(not is_visible)
+            abort_btn.setVisible(not is_visible)
+
+            if is_visible:
+                minimize_btn.setText("Maximizar consejo")
+                panel_layout.setContentsMargins(32, 14, 32, 14)
+            else:
+                minimize_btn.setText("Minimizar consejo")
+                panel_layout.setContentsMargins(32, 28, 32, 28)
+
+        minimize_btn.clicked.connect(toggle_minimize)
 
         btn_row.addWidget(button)
         btn_row.addWidget(apply_btn)
         btn_row.addWidget(abort_btn)
-        btn_row.addWidget(minimize_btn)
+
+        # Move minimize button to its own layout so it stays visible when others are hidden
+        min_btn_layout = QHBoxLayout()
+        min_btn_layout.addWidget(minimize_btn)
+        min_btn_layout.setAlignment(Qt.AlignHCenter)
+
         btn_row.setAlignment(Qt.AlignHCenter)
 
         panel_layout.addWidget(icon, 0, Qt.AlignHCenter)
@@ -1198,6 +1222,7 @@ class CarbonDetailView(QWidget):
         panel_layout.addWidget(bullet_3)
         panel_layout.addWidget(footer)
         panel_layout.addLayout(btn_row)
+        panel_layout.addLayout(min_btn_layout)
 
         layout.addWidget(panel, 1)
 
@@ -1301,8 +1326,7 @@ class ModelsView(QWidget):
         soft_del_btn.clicked.connect(self._handle_soft_delete)
 
         hard_del_btn = QPushButton("Destruir (Hard)")
-        hard_del_btn.setObjectName("secondaryButton")
-        hard_del_btn.setStyleSheet("color: #ff4d4d;")
+        hard_del_btn.setObjectName("dangerButton")
         hard_del_btn.setCursor(Qt.PointingHandCursor)
         hard_del_btn.clicked.connect(self._handle_hard_delete)
 
@@ -3482,6 +3506,32 @@ def apply_stylesheet(app):
         "}"
         "QPushButton#primaryButton:hover {"
         "  background-color: #1a1a1a;"
+        "}"
+        "QPushButton#secondaryButton {"
+        "  background-color: transparent;"
+        "  border: 1px solid #5a5a5a;"
+        "  border-radius: 12px;"
+        "  padding: 8px 20px;"
+        "  font-weight: 600;"
+        "  color: #d8d8d8;"
+        "}"
+        "QPushButton#secondaryButton:hover {"
+        "  background-color: #171717;"
+        "  border: 1px solid #a0a0a0;"
+        "  color: #ffffff;"
+        "}"
+        "QPushButton#dangerButton {"
+        "  background-color: transparent;"
+        "  border: 1px solid #b60f0f;"
+        "  border-radius: 12px;"
+        "  padding: 8px 20px;"
+        "  font-weight: 600;"
+        "  color: #ff6b6b;"
+        "}"
+        "QPushButton#dangerButton:hover {"
+        "  background-color: #3a1010;"
+        "  border: 1px solid #ff4d4d;"
+        "  color: #ffffff;"
         "}"
     )
 
