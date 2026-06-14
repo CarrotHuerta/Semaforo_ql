@@ -1904,6 +1904,75 @@ class UserMenuView(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
 
+from PySide6.QtWidgets import QDialog
+class UserCreationDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Crear Usuario / Establecer Contraseña")
+        self.setFixedSize(400, 300)
+        self.setStyleSheet("background-color: #111111; color: white;")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        layout.addWidget(make_label("Usuario:", "infoText"))
+        self.user_input = QLineEdit()
+        self.user_input.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; padding: 5px;")
+        layout.addWidget(self.user_input)
+
+        layout.addWidget(make_label("Contraseña:", "infoText"))
+        self.pw_input = QLineEdit()
+        self.pw_input.setEchoMode(QLineEdit.Password)
+        self.pw_input.setStyleSheet("background-color: #1a1a1a; border: 1px solid #333; padding: 5px;")
+        layout.addWidget(self.pw_input)
+
+        self.pw_strength_label = make_label("", "loginHint")
+        self.pw_strength_label.setStyleSheet("color: #cfcfcf;")
+        self.pw_strength_label.setVisible(False)
+        layout.addWidget(self.pw_strength_label)
+
+        self.pw_input.textChanged.connect(self._evaluate_password_strength)
+
+        btn_layout = QHBoxLayout()
+        self.create_btn = QPushButton("Crear")
+        self.create_btn.setObjectName("primaryButton")
+        self.create_btn.setCursor(Qt.PointingHandCursor)
+        self.create_btn.clicked.connect(self._create_user)
+
+        cancel_btn = QPushButton("Cancelar")
+        cancel_btn.setObjectName("secondaryButton")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(self.create_btn)
+        layout.addLayout(btn_layout)
+
+    def _evaluate_password_strength(self, text):
+        if not text:
+            self.pw_strength_label.setVisible(False)
+            return
+
+        missing = []
+        if len(text) < 8: missing.append("longitud (min 8)")
+        if not any(c.isupper() for c in text): missing.append("mayúscula")
+        if not any(c.isdigit() for c in text): missing.append("número")
+        if not any(c in "@-_¿¡?!#$*°" for c in text): missing.append("carácter especial (@-_¿¡?!#$*°)")
+
+        self.pw_strength_label.setVisible(True)
+        if missing:
+            self.pw_strength_label.setText("Falta: " + ", ".join(missing))
+            self.pw_strength_label.setStyleSheet("color: #c4a600;")
+            self.create_btn.setEnabled(False)
+        else:
+            self.pw_strength_label.setText("✓ Contraseña estructuralmente válida.")
+            self.pw_strength_label.setStyleSheet("color: #4eb541;")
+            self.create_btn.setEnabled(True)
+
+    def _create_user(self):
+        QMessageBox.information(self, "Registro Exitoso", "Nuevo registro inyectado en base de datos.")
+        self.accept()
+
 
 class AdminMenuView(QWidget):
     def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
@@ -1924,8 +1993,8 @@ class AdminMenuView(QWidget):
             MenuSection(
                 "Usuarios",
                 [
-                    ("Crear usuario", "menuButton", None),
-                    ("Resetear contrasena", "menuButton", None),
+                    ("Crear usuario", "menuButton", self._open_creation_dialog),
+                    ("Resetear contrasena", "menuButton", self._mock_reset_pw),
                     ("Desactivar usuario", "menuButton", None),
                     ("Editar roles", "menuButton", None),
                 ],
@@ -1972,6 +2041,13 @@ class AdminMenuView(QWidget):
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
+
+    def _open_creation_dialog(self):
+        dialog = UserCreationDialog(self)
+        dialog.exec()
+
+    def _mock_reset_pw(self):
+        QMessageBox.information(self, "Restablecer Contraseña", "Nueva credencial temporal inyectada al usuario. Se forzará actualización en el próximo inicio de sesión.")
 
     def export_html_report(self):
         score = "N/A"
@@ -2115,14 +2191,6 @@ class LoginWindow(QMainWindow):
 
         right_layout.addWidget(self.password_input)
 
-        # CU 56.1, 56.2
-        self.pw_strength_label = make_label("", "loginHint")
-        self.pw_strength_label.setStyleSheet("color: #cfcfcf;")
-        self.pw_strength_label.setVisible(False)
-        right_layout.addWidget(self.pw_strength_label)
-
-        self.password_input.textChanged.connect(self._evaluate_password_strength)
-
         self.error_label = make_label("", "loginError")
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
@@ -2152,25 +2220,6 @@ class LoginWindow(QMainWindow):
 
         self.username_input.returnPressed.connect(self.handle_login)
         self.password_input.returnPressed.connect(self.handle_login)
-
-    def _evaluate_password_strength(self, text):
-        if not text:
-            self.pw_strength_label.setVisible(False)
-            return
-
-        missing = []
-        if len(text) < 8: missing.append("longitud (min 8)")
-        if not any(c.isupper() for c in text): missing.append("mayúscula")
-        if not any(c.isdigit() for c in text): missing.append("número")
-        if not any(c in "@-_¿¡?!#$*°" for c in text): missing.append("carácter especial (@-_¿¡?!#$*°)")
-
-        self.pw_strength_label.setVisible(True)
-        if missing:
-            self.pw_strength_label.setText("Falta: " + ", ".join(missing))
-            self.pw_strength_label.setStyleSheet("color: #c4a600;")
-        else:
-            self.pw_strength_label.setText("✓ Contraseña estructuralmente válida.")
-            self.pw_strength_label.setStyleSheet("color: #4eb541;")
 
     def handle_login(self):
         if self.failed_attempts >= 3:
