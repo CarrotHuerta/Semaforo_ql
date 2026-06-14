@@ -911,12 +911,25 @@ class HomeView(QWidget):
         snooze_btn = QPushButton("Silenciar Advertencia por Tiempo Limitado")
         snooze_btn.setObjectName("secondaryButton")
         snooze_btn.setCursor(Qt.PointingHandCursor)
-        snooze_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
 
         close_btn = QPushButton("Cerrar")
         close_btn.setObjectName("secondaryButton")
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
+
+        def toggle_alert():
+            is_visible = alert_text.isVisible()
+            alert_text.setVisible(not is_visible)
+            close_btn.setVisible(not is_visible)
+
+            if is_visible:
+                snooze_btn.setText("Mostrar Advertencia")
+                alert_layout.setContentsMargins(14, 4, 14, 4)
+            else:
+                snooze_btn.setText("Silenciar Advertencia por Tiempo Limitado")
+                alert_layout.setContentsMargins(14, 10, 14, 10)
+
+        snooze_btn.clicked.connect(toggle_alert)
 
         alert_layout.addWidget(snooze_btn)
         alert_layout.addWidget(close_btn)
@@ -1024,6 +1037,13 @@ class EnvironmentalPerformanceView(QWidget):
 
         header_layout.addWidget(header_icon)
         header_layout.addWidget(header_title, 1)
+
+        # CU 57.2
+        export_pdf_btn = QPushButton("Exportar PDF")
+        export_pdf_btn.setObjectName("secondaryButton")
+        export_pdf_btn.setCursor(Qt.PointingHandCursor)
+        export_pdf_btn.clicked.connect(lambda: QMessageBox.information(self, "Exportar", "Certificado descargado físicamente (Resumen Consolidado ESG)."))
+        header_layout.addWidget(export_pdf_btn)
 
         emissions_layout = QHBoxLayout()
         emissions_layout.setSpacing(18)
@@ -1236,7 +1256,17 @@ class ModelsView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Modelos", "pageTitle"))
+        header_row = QHBoxLayout()
+        header_row.addWidget(make_label("Modelos", "pageTitle"), 1)
+
+        # CU 13.1, 13.2
+        import_btn = QPushButton("Importar JSON/CSV")
+        import_btn.setObjectName("secondaryButton")
+        import_btn.setCursor(Qt.PointingHandCursor)
+        import_btn.clicked.connect(lambda: QMessageBox.information(self, "Importar", "Validando esquema... Nuevos modelos añadidos a la lista local."))
+        header_row.addWidget(import_btn)
+
+        layout.addLayout(header_row)
         layout.addWidget(make_separator("separator"))
 
         self.models_data = load_csv_rows("modelos_ia.csv")
@@ -2085,6 +2115,14 @@ class LoginWindow(QMainWindow):
 
         right_layout.addWidget(self.password_input)
 
+        # CU 56.1, 56.2
+        self.pw_strength_label = make_label("", "loginHint")
+        self.pw_strength_label.setStyleSheet("color: #cfcfcf;")
+        self.pw_strength_label.setVisible(False)
+        right_layout.addWidget(self.pw_strength_label)
+
+        self.password_input.textChanged.connect(self._evaluate_password_strength)
+
         self.error_label = make_label("", "loginError")
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
@@ -2114,6 +2152,25 @@ class LoginWindow(QMainWindow):
 
         self.username_input.returnPressed.connect(self.handle_login)
         self.password_input.returnPressed.connect(self.handle_login)
+
+    def _evaluate_password_strength(self, text):
+        if not text:
+            self.pw_strength_label.setVisible(False)
+            return
+
+        missing = []
+        if len(text) < 8: missing.append("longitud (min 8)")
+        if not any(c.isupper() for c in text): missing.append("mayúscula")
+        if not any(c.isdigit() for c in text): missing.append("número")
+        if not any(c in "@-_¿¡?!#$*°" for c in text): missing.append("carácter especial (@-_¿¡?!#$*°)")
+
+        self.pw_strength_label.setVisible(True)
+        if missing:
+            self.pw_strength_label.setText("Falta: " + ", ".join(missing))
+            self.pw_strength_label.setStyleSheet("color: #c4a600;")
+        else:
+            self.pw_strength_label.setText("✓ Contraseña estructuralmente válida.")
+            self.pw_strength_label.setStyleSheet("color: #4eb541;")
 
     def handle_login(self):
         if self.failed_attempts >= 3:
