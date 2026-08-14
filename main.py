@@ -2115,10 +2115,14 @@ class LoginWindow(QMainWindow):
 
         right_layout.addWidget(self.password_input)
 
+        server_ip = self.config.get("server_ip", "127.0.0.1")
+        server_port = self.config.get("server_port", 8000)
+        self.server_url = f"{server_ip}:{server_port}"
+
         right_layout.addWidget(make_label("Conexión", "loginLabel"))
         self.connection_combo = QComboBox()
         self.connection_combo.setObjectName("filterCombo")
-        self.connection_combo.addItems(["Local", "Servidor (127.0.0.1:8000)"])
+        self.connection_combo.addItems(["Local", f"Servidor ({self.server_url})"])
         self.connection_combo.setFixedHeight(40)
         right_layout.addWidget(self.connection_combo)
 
@@ -2218,7 +2222,7 @@ class LoginWindow(QMainWindow):
             import urllib.error
             import json
             req = urllib.request.Request(
-                "http://127.0.0.1:8000/login",
+                f"http://{self.server_url}/login",
                 data=json.dumps({"username": username, "password": password}).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
@@ -2380,8 +2384,14 @@ class HardwareCatalogView(QWidget):
             import urllib.request
             import urllib.error
             import json
+
+            # Extract server url from mode string (e.g. "Servidor (127.0.0.1:8000)")
+            import re
+            match = re.search(r'\((.*?)\)', mode)
+            server_url = match.group(1) if match else "127.0.0.1:8000"
+
             try:
-                with urllib.request.urlopen("http://127.0.0.1:8000/hardware") as response:
+                with urllib.request.urlopen(f"http://{server_url}/hardware") as response:
                     info = json.loads(response.read().decode("utf-8"))
             except Exception:
                 info = {}
