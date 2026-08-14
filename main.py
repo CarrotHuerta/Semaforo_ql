@@ -2115,6 +2115,13 @@ class LoginWindow(QMainWindow):
 
         right_layout.addWidget(self.password_input)
 
+        right_layout.addWidget(make_label("Conexión", "loginLabel"))
+        self.connection_combo = QComboBox()
+        self.connection_combo.setObjectName("filterCombo")
+        self.connection_combo.addItems(["Local", "Servidor (127.0.0.1:8000)"])
+        self.connection_combo.setFixedHeight(40)
+        right_layout.addWidget(self.connection_combo)
+
         # CU 56.1, 56.2
         self.pw_strength_label = make_label("", "loginHint")
         self.pw_strength_label.setStyleSheet("color: #cfcfcf;")
@@ -2182,27 +2189,61 @@ class LoginWindow(QMainWindow):
             self._set_error("Ingresa un usuario válido.")
             return
 
-        profile = find_user_profile(self.config, username)
-        if not profile:
-            self.failed_attempts += 1
-            if self.failed_attempts >= 3:
-                self.login_button.setEnabled(False)
-                self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
-            else:
-                self._set_error("Usuario no encontrado. Usa nacha o maxine.")
-            return
-
         password = self.password_input.text()
-        expected = str(profile.get("password", ""))
-        if expected and password != expected:
-            self.failed_attempts += 1
-            if self.failed_attempts >= 3:
-                self.login_button.setEnabled(False)
-                self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
-            else:
-                self._set_error("Contraseña incorrecta.")
-            return
 
+        mode = self.connection_combo.currentText()
+        if mode == "Local":
+            profile = find_user_profile(self.config, username)
+            if not profile:
+                self.failed_attempts += 1
+                if self.failed_attempts >= 3:
+                    self.login_button.setEnabled(False)
+                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                else:
+                    self._set_error("Usuario no encontrado.")
+                return
+
+            expected = str(profile.get("password", ""))
+            if expected and password != expected:
+                self.failed_attempts += 1
+                if self.failed_attempts >= 3:
+                    self.login_button.setEnabled(False)
+                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                else:
+                    self._set_error("Contraseña incorrecta.")
+                return
+        else:
+            # Server Mode
+            import urllib.request
+            import urllib.error
+            import json
+            req = urllib.request.Request(
+                "http://127.0.0.1:8000/login",
+                data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            try:
+                with urllib.request.urlopen(req) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    profile = res_data.get("user")
+            except urllib.error.HTTPError as e:
+                self.failed_attempts += 1
+                try:
+                    error_msg = json.loads(e.read().decode("utf-8")).get("error", "Error de autenticación.")
+                except Exception:
+                    error_msg = "Error de autenticación."
+
+                if self.failed_attempts >= 3:
+                    self.login_button.setEnabled(False)
+                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                else:
+                    self._set_error(error_msg)
+                return
+            except urllib.error.URLError:
+                self._set_error("No se pudo conectar al servidor.")
+                return
+
+        profile["connection_mode"] = mode
         self.error_label.setVisible(False)
         self.dashboard = DashboardWindow(profile)
         self.dashboard.show()
@@ -2239,9 +2280,10 @@ class CatalogRow(QFrame):
 
 
 class HardwareCatalogView(QWidget):
-    def __init__(self, on_assign=None, parent=None):
+    def __init__(self, on_assign=None, parent=None, profile=None):
         super().__init__(parent)
         self.on_assign = on_assign
+        self.profile = profile or {}
 
         self._hardware_loaded = False
         self.hardware_rows = load_csv_rows("hardware.csv")
@@ -2330,7 +2372,20 @@ class HardwareCatalogView(QWidget):
             QTimer.singleShot(50, self._load_hardware)
 
     def _load_hardware(self):
-        info = get_hardware_info()
+        mode = self.profile.get("connection_mode", "Local")
+        info = {}
+        if mode == "Local":
+            info = get_hardware_info()
+        else:
+            import urllib.request
+            import urllib.error
+            import json
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:8000/hardware") as response:
+                    info = json.loads(response.read().decode("utf-8"))
+            except Exception:
+                info = {}
+
         values = [
             info.get("cpu", "No detectado"),
             info.get("gpu", "No detectado"),
@@ -2877,7 +2932,7 @@ class DashboardWindow(QMainWindow):
 
         self.home_view = HomeView()
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
-        self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign)
+        self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
 
         sidebar.lang_action.triggered.connect(self._toggle_language)
