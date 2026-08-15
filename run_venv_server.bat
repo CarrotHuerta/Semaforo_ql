@@ -7,6 +7,13 @@ if %errorlevel% neq 0 (
     echo [OK] Puerto 6767 abierto.
 )
 
+echo Activando entorno virtual...
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
+) else (
+    echo [Advertencia] No se encontro venv\Scripts\activate.bat. Asegurate de tener el entorno virtual creado.
+)
+
 echo Starting Semáforo IA Server...
 python server.py
 pause
