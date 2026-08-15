@@ -1,5 +1,7 @@
 {
   "default_user": "nacha",
+  "server_ip": "127.0.0.1",
+  "server_port": 6767,
   "users": [
     {
       "username": "nacha",

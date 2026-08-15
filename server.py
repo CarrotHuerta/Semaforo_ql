@@ -63,8 +63,10 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-def run(port=8000):
-    server_address = ('', port)
+def run():
+    config = load_config()
+    port = config.get("server_port", 8000)
+    server_address = ('0.0.0.0', port)
     socketserver.TCPServer.allow_reuse_address = True
     httpd = socketserver.TCPServer(server_address, SimpleHandler)
     print(f"Servidor corriendo en el puerto {port}")
