@@ -2116,15 +2116,34 @@ class LoginWindow(QMainWindow):
         right_layout.addWidget(self.password_input)
 
         server_ip = self.config.get("server_ip", "127.0.0.1")
-        server_port = self.config.get("server_port", 8000)
+        server_port = self.config.get("server_port", 6767)
         self.server_url = f"{server_ip}:{server_port}"
 
         right_layout.addWidget(make_label("Conexión", "loginLabel"))
         self.connection_combo = QComboBox()
         self.connection_combo.setObjectName("filterCombo")
-        self.connection_combo.addItems(["Local", f"Servidor ({self.server_url})"])
+        self.connection_combo.addItems(["Local", "Servidor"])
         self.connection_combo.setFixedHeight(40)
         right_layout.addWidget(self.connection_combo)
+
+        self.ip_label = make_label("URL Servidor", "loginLabel")
+        self.server_ip_input = QLineEdit()
+        self.server_ip_input.setObjectName("loginInput")
+        self.server_ip_input.setText(self.server_url)
+        self.server_ip_input.setFixedHeight(40)
+
+        right_layout.addWidget(self.ip_label)
+        right_layout.addWidget(self.server_ip_input)
+
+        self.ip_label.setVisible(False)
+        self.server_ip_input.setVisible(False)
+
+        def on_connection_changed(idx):
+            is_server = (self.connection_combo.currentText() == "Servidor")
+            self.ip_label.setVisible(is_server)
+            self.server_ip_input.setVisible(is_server)
+
+        self.connection_combo.currentIndexChanged.connect(on_connection_changed)
 
         # CU 56.1, 56.2
         self.pw_strength_label = make_label("", "loginHint")
@@ -2221,6 +2240,8 @@ class LoginWindow(QMainWindow):
             import urllib.request
             import urllib.error
             import json
+
+            self.server_url = self.server_ip_input.text().strip()
             req = urllib.request.Request(
                 f"http://{self.server_url}/login",
                 data=json.dumps({"username": username, "password": password}).encode("utf-8"),
@@ -2248,6 +2269,9 @@ class LoginWindow(QMainWindow):
                 return
 
         profile["connection_mode"] = mode
+        if mode != "Local":
+            profile["server_url"] = self.server_url
+
         self.error_label.setVisible(False)
         self.dashboard = DashboardWindow(profile)
         self.dashboard.show()
@@ -2385,11 +2409,7 @@ class HardwareCatalogView(QWidget):
             import urllib.error
             import json
 
-            # Extract server url from mode string (e.g. "Servidor (127.0.0.1:8000)")
-            import re
-            match = re.search(r'\((.*?)\)', mode)
-            server_url = match.group(1) if match else "127.0.0.1:8000"
-
+            server_url = self.profile.get("server_url", "127.0.0.1:6767")
             try:
                 with urllib.request.urlopen(f"http://{server_url}/hardware") as response:
                     info = json.loads(response.read().decode("utf-8"))
