@@ -1,10 +1,10 @@
-# 🚦Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
+# Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
 
 Este documento es la especificación técnica maestra (Technical Design Document) para el desarrollo del sistema Semáforo IA. Contiene el desglose a nivel de código, base de datos y algoritmos de los 70 Requerimientos Funcionales (RF) y 57 Casos de Uso estipulados en la documentación oficial.
 
 Si vas a desarrollar en Python, debes seguir esta estructura paso a paso.
 
-## 🗄️1. Estructura de la Base de Datos (Diccionario de Datos)
+## 1. Estructura de la Base de Datos (Diccionario de Datos)
 
 El sistema requiere una persistencia relacional local (SQLite es ideal) estricta. Estas son las tablas y campos obligatorios que debes programar:
 
@@ -51,7 +51,7 @@ Nota: Todas las fechas deben guardarse estrictamente en ISO 8601 `YYYY-MM-DD HH:
 * `kwh_total`, `co2_total`, `agua_total`, `costo_total`, `green_score`: Floats.
 * `estado_semaforo`: Enum ( `Verde`, `Amarillo`, `Rojo` ).
 
-## 🧮2. Algoritmos y Motor Matemático Detallado
+## 2. Algoritmos y Motor Matemático Detallado
 
 Debes programar estas funciones en tu backend Python exactamente con estas lógicas:
 
@@ -103,7 +103,7 @@ Debe ser un número del 1 al 100.
 3. `Green_Score`: `100 - Promedio(%, %)`
 4. Si `Score > 85 = "A+"`, `> 70 = "B"`, `< 50 = "C"` (RF46.2 Visual).
 
-## 🧠3. Algoritmos Heurísticos (Los "Consultores Inteligentes")
+## 3. Algoritmos Heurísticos (Los "Consultores Inteligentes")
 
 Estas son las funciones de Python más complejas que debes construir corriendo en segundo plano:
 
@@ -120,7 +120,7 @@ Estas son las funciones de Python más complejas que debes construir corriendo e
    * `Proyeccion_fin_de_mes = 33.3 * 30 = $1000`.
    * Si `1000 > 800`: Disparar alerta roja inmediata e inyectar log en el historial de eventos (RF62.2).
 
-## 🖥️4. Lógicas Estrictas de Interfaz de Usuario (UI/UX)
+## 4. Lógicas Estrictas de Interfaz de Usuario (UI/UX)
 
 Si usas Streamlit o React (o PySide6 en este caso), debes programar estos comportamientos exactos:
 
@@ -201,7 +201,7 @@ Aquí se enumeran las tareas pendientes (lo que falta hacer) en la base de códi
 
 ---
 
-## 🚀 Pipeline de Finalización del Código (Hoja de Ruta de Implementación)
+##  Pipeline de Finalización del Código (Hoja de Ruta de Implementación)
 
 Cómo se planea continuar haciendo el código y terminar el proyecto:
 
