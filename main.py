@@ -1146,7 +1146,7 @@ class EnvironmentalPerformanceView(QWidget):
             "chart_labels": [f"Entrenamiento: {entrenamiento_val} gCO2eq", f"Ejecución: {ejecucion_val} gCO2eq"],
             "kpis": [
                 [15, 60, "Consumo Energético", consumo_val, "kWh", "emerald_500"],
-                [75, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
+                [107.5, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
             ],
             "details": [
                 ["Hardware", "NVIDIA A100", "emerald_600"],
@@ -1546,8 +1546,8 @@ class FinOpsView(QWidget):
         data = {
             "kpis": [
                 [15, 60, "Costo actual", costo_actual.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "cyan_500"],
-                [75, 60, "Presupuesto mensual", presupuesto.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "gray_800"],
-                [135, 60, "Ahorro estimado", ahorro.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "emerald_500"]
+                [76.6, 60, "Presupuesto", presupuesto.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "gray_800"],
+                [138.3, 60, "Ahorro", ahorro.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "emerald_500"]
             ],
             "details": [
                 ["GPU compute", "48%", "cyan_600"],

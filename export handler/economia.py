@@ -145,10 +145,16 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_line_width(0.8)
     pdf.line(15, 30, 195, 30)
 
-    box_w = 87.5
+    kpis_raw = REPORT['kpis']
+    num_kpis = len(kpis_raw)
+
+    box_w = (180 - (num_kpis - 1) * 5) / num_kpis
     box_h = 25
-    kpis = [(x, y, title, value, unit, COLORS[color])
-            for x, y, title, value, unit, color in REPORT['kpis']]
+
+    kpis = []
+    for i, (old_x, y, title, value, unit, color) in enumerate(kpis_raw):
+        new_x = 15 + i * (box_w + 5)
+        kpis.append((new_x, y, title, value, unit, COLORS[color]))
 
     for x, y, title, value, unit, unit_color in kpis:
         pdf.draw_rounded_box(x, y, box_w, box_h)
@@ -168,20 +174,21 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_xy(x + 5 + value_width, y + 13)
         pdf.cell(25, 5, unit)
 
-    pdf.draw_rounded_box(15, 98, box_w, 65)
+    fixed_box_w = 87.5
+    pdf.draw_rounded_box(15, 98, fixed_box_w, 65)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(15, 102)
-    pdf.cell(box_w, 5, REPORT['chart_title'], align="C")
+    pdf.cell(fixed_box_w, 5, REPORT['chart_title'], align="C")
     chart_x, chart_y = SHARED['chart_image_position']
     pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y,
               w=SHARED['chart_image_width'])
 
-    pdf.draw_rounded_box(107.5, 98, box_w, 65)
+    pdf.draw_rounded_box(107.5, 98, fixed_box_w, 65)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(107.5, 102)
-    pdf.cell(box_w, 5, REPORT['progress_title'], align="C")
+    pdf.cell(fixed_box_w, 5, REPORT['progress_title'], align="C")
 
     bar_x = 115
     bar_y = 125
@@ -210,13 +217,13 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_xy(125, 143)
     pdf.cell(55, 5, REPORT['badge'], align="C")
 
-    pdf.draw_rounded_box(15, 168, box_w, 75)
+    pdf.draw_rounded_box(15, 168, fixed_box_w, 75)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(20, 172)
-    pdf.cell(box_w - 10, 5, REPORT['details_title'])
+    pdf.cell(fixed_box_w - 10, 5, REPORT['details_title'])
     pdf.set_draw_color(*COLORS['gray_200'])
-    pdf.line(20, 179, 15 + box_w - 5, 179)
+    pdf.line(20, 179, 15 + fixed_box_w - 5, 179)
 
     detalles = [(key, value, COLORS[color]) for key, value, color in REPORT['details']]
     y_offset = 182
@@ -230,16 +237,16 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_xy(60, y_offset)
         pdf.cell(37, 5, value, align="R")
         pdf.set_draw_color(*COLORS['gray_100'])
-        pdf.line(20, y_offset + 6, 15 + box_w - 5, y_offset + 6)
+        pdf.line(20, y_offset + 6, 15 + fixed_box_w - 5, y_offset + 6)
         y_offset += 9
 
-    pdf.draw_rounded_box(107.5, 168, box_w, 75)
+    pdf.draw_rounded_box(107.5, 168, fixed_box_w, 75)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(112.5, 172)
-    pdf.cell(box_w - 10, 5, "Registro de Actividad")
+    pdf.cell(fixed_box_w - 10, 5, "Registro de Actividad")
     pdf.set_draw_color(*COLORS['gray_200'])
-    pdf.line(112.5, 179, 107.5 + box_w - 5, 179)
+    pdf.line(112.5, 179, 107.5 + fixed_box_w - 5, 179)
 
     logs = [(text, COLORS[color]) for text, color in REPORT['logs']]
     y_offset = 183
@@ -249,7 +256,7 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_font("helvetica", "", 8)
         pdf.set_text_color(*COLORS['gray_700'])
         pdf.set_xy(117.5, y_offset)
-        pdf.multi_cell(box_w - 15, 4, text)
+        pdf.multi_cell(fixed_box_w - 15, 4, text)
         y_offset += 10
 
     pdf.set_font("helvetica", "I", 8)
