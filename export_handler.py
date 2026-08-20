@@ -1,53 +1,89 @@
 import os
-from PySide6.QtWidgets import QMessageBox
+import sys
+from PySide6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
 
-def generate_and_save_report(parent_widget, score, green_score, details):
-    hardware = details.get("hardware", "N/A")
-    provider = details.get("provider", "N/A")
-    region = details.get("region", "N/A")
-    energy = details.get("model_energy", "N/A")
+# Add export handler to path
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "export handler"))
 
-    html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<title>Reporte Semáforo IA</title>
-<style>
-body {{ font-family: sans-serif; background-color: #0b0b0b; color: white; margin: 20px; }}
-h1 {{ color: #4ade80; }}
-.details {{ margin-top: 20px; padding: 15px; border: 1px solid #333; border-radius: 8px; background-color: #141414; }}
-</style>
-</head>
-<body>
-<h1>Reporte de Impacto - Semáforo IA</h1>
-<p><strong>Score de Impacto de Carbono:</strong> {score}</p>
-<p><strong>Green Score (0-100):</strong> {green_score}</p>
+try:
+    import eco
+    import economia
+except Exception as e:
+    print(f"Error importing export scripts: {e}")
 
-<div class="details">
-    <h3>Detalles de la Simulación</h3>
-    <ul>
-        <li><strong>Hardware (TDP):</strong> {hardware}</li>
-        <li><strong>Proveedor Cloud:</strong> {provider}</li>
-        <li><strong>Región Eléctrica:</strong> {region}</li>
-        <li><strong>Energía del Modelo:</strong> {energy}</li>
-    </ul>
-</div>
-</body>
-</html>"""
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, "reporte_semaforo.html")
+def generate_and_save_report(parent_widget, report_type, data):
+    """
+    report_type: 'eco' or 'economia'
+    data: dictionary containing dynamic info to update the report.
+    """
+    # Ask for export format
+    items = ["Ambos (PDF y JSON)", "Solo PDF", "Solo JSON"]
+    format_choice, ok = QInputDialog.getItem(
+        parent_widget, "Formato de Exportación",
+        "Seleccione el formato a exportar:", items, 0, False
+    )
+    if not ok or not format_choice:
+        return
 
+    export_format = "both"
+    if format_choice == "Solo PDF":
+        export_format = "pdf"
+    elif format_choice == "Solo JSON":
+        export_format = "json"
+
+    # Ask for file path
+    default_name = f"informe_semaforo_ia.pdf" if report_type == 'eco' else f"informe_economia_semaforo_ia.pdf"
+    file_path, _ = QFileDialog.getSaveFileName(
+        parent_widget,
+        "Guardar Informe",
+        os.path.join(os.path.expanduser("~"), default_name),
+        "Archivos (*.pdf *.json);;Todos los archivos (*)"
+    )
+
+    if not file_path:
+        return
+
+    # Update data based on report type
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+        if report_type == 'eco':
+            # Update eco module data
+            if "kpis" in data:
+                eco.REPORT["kpis"] = data["kpis"]
+            if "details" in data:
+                eco.REPORT["details"] = data["details"]
+            if "logs" in data:
+                eco.REPORT["logs"] = data["logs"]
+            if "progress" in data:
+                eco.REPORT["progress"] = data["progress"]
+
+            if "chart_values" in data:
+                eco.REPORT["chart_values"] = data["chart_values"]
+            if "chart_labels" in data:
+                eco.REPORT["chart_labels"] = data["chart_labels"]
+            eco.create_pdf_report(filename=file_path, export_format=export_format)
+
+        elif report_type == 'economia':
+            if "kpis" in data:
+                economia.REPORT["kpis"] = data["kpis"]
+            if "details" in data:
+                economia.REPORT["details"] = data["details"]
+            if "logs" in data:
+                economia.REPORT["logs"] = data["logs"]
+            if "progress" in data:
+                economia.REPORT["progress"] = data["progress"]
+
+            economia.create_pdf_report(filename=file_path, export_format=export_format)
+
         QMessageBox.information(
             parent_widget,
             "Éxito",
-            f"El reporte HTML ha sido generado y guardado exitosamente en:\\n{file_path}"
+            f"El reporte ha sido generado y guardado exitosamente."
         )
+
     except Exception as e:
         QMessageBox.critical(
             parent_widget,
             "Error",
-            f"Ocurrió un error al guardar el archivo:\\n{e}"
+            f"Ocurrió un error al generar el archivo:\n{e}"
         )

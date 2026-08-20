@@ -1,0 +1,211 @@
+{
+  "colors": {
+    "cyan_100": "#cffafe",
+    "cyan_500": "#06b6d4",
+    "cyan_600": "#0891b2",
+    "emerald_100": "#d1fae5",
+    "emerald_500": "#10b981",
+    "emerald_600": "#059669",
+    "gray_100": "#f3f4f6",
+    "gray_200": "#e5e7eb",
+    "gray_500": "#6b7280",
+    "gray_700": "#374151",
+    "gray_800": "#1f2937",
+    "logo_black": "#171717",
+    "logo_cream": "#fef3c7",
+    "logo_orange": "#f97316",
+    "logo_orange_dark": "#c2410c",
+    "logo_pink": "#f472b6",
+    "white": "#ffffff"
+  },
+  "shared": {
+    "product_name": "Sem\u00e1foro IA",
+    "exported_by": "Usuario Activo",
+    "logo_position": [
+      15,
+      10
+    ],
+    "chart_figure_size": [
+      3.5,
+      3.5
+    ],
+    "chart_dpi": 300,
+    "chart_axes_position": [
+      0.1,
+      0.3,
+      0.8,
+      0.7
+    ],
+    "chart_legend_y": 0.2,
+    "chart_bottom_margin": 0.3,
+    "date_format": "%d/%m/%Y %H:%M",
+    "chart_image_position": [
+      15,
+      75
+    ],
+    "chart_image_width": 75,
+    "footer": "Generado autom\u00e1ticamente por Sem\u00e1foro IA."
+  },
+  "eco": {
+    "filename": "informe_semaforo_ia.pdf",
+    "subtitle": "Informe de Rendimiento Ambiental",
+    "chart_values": [
+      98,
+      44
+    ],
+    "chart_colors": [
+      "#10b981",
+      "#6ee7b7"
+    ],
+    "chart_labels": [
+      "Entrenamiento: 98 gCO2eq",
+      "Ejecuci\u00f3n: 44 gCO2eq"
+    ],
+    "progress": 45,
+    "kpis": [
+      [
+        15,
+        60,
+        "Consumo Energ\u00e9tico",
+        "3.8",
+        "kWh",
+        "emerald_500"
+      ],
+      [
+        75,
+        60,
+        "Tiempo Proceso",
+        "00:47:00",
+        "mins",
+        "cyan_500"
+      ]
+    ],
+    "details": [
+      [
+        "Hardware",
+        "NVIDIA A100",
+        "emerald_600"
+      ],
+      [
+        "Proveedor Nube",
+        "AWS US-East-1",
+        "gray_800"
+      ],
+      [
+        "Factor de Emisi\u00f3n",
+        "0.386 kg/kWh",
+        "gray_800"
+      ],
+      [
+        "Regi\u00f3n",
+        "Norteam\u00e9rica",
+        "gray_800"
+      ],
+      [
+        "\u00daltima ejecuci\u00f3n",
+        "Hace 2 minutos",
+        "gray_800"
+      ],
+      [
+        "Estado",
+        "Finalizado",
+        "emerald_600"
+      ]
+    ],
+    "logs": [
+      [
+        "C\u00e1lculo Ambiental finalizado correctamente.",
+        "emerald_500"
+      ],
+      [
+        "M\u00e9tricas gCO2eq y kWh actualizadas en interfaz.",
+        "cyan_500"
+      ],
+      [
+        "Variables a\u00fan no inicializadas.",
+        "logo_orange"
+      ],
+      [
+        "Sesi\u00f3n iniciada. Hardware detectado.",
+        "gray_500"
+      ]
+    ],
+    "badge": "A - Excelente",
+    "chart_file": "chart_eco.png",
+    "chart_title": "Distribuci\u00f3n",
+    "details_title": "Detalles",
+    "progress_title": "Progreso"
+  },
+  "economia": {
+    "filename": "informe_economia_semaforo_ia.pdf",
+    "subtitle": "Informe de Econom\u00eda Sem\u00e1foro IA",
+    "chart_values": [
+      50,
+      50
+    ],
+    "chart_colors": [
+      "#3b82f6",
+      "#93c5fd"
+    ],
+    "chart_labels": [
+      "Costo Fijo: $50",
+      "Costo Variable: $50"
+    ],
+    "progress": 50,
+    "kpis": [
+      [
+        15,
+        60,
+        "Costo Actual",
+        "$4.8M",
+        "CLP",
+        "cyan_500"
+      ],
+      [
+        75,
+        60,
+        "Presupuesto",
+        "$7.5M",
+        "CLP",
+        "gray_800"
+      ]
+    ],
+    "details": [
+      [
+        "GPU compute",
+        "48%",
+        "cyan_600"
+      ],
+      [
+        "Storage",
+        "22%",
+        "cyan_600"
+      ],
+      [
+        "Networking",
+        "14%",
+        "cyan_600"
+      ],
+      [
+        "Servicios",
+        "16%",
+        "cyan_600"
+      ]
+    ],
+    "logs": [
+      [
+        "Optimizaci\u00f3n detectada en Storage.",
+        "emerald_500"
+      ],
+      [
+        "Alerta: GPU compute cerca del l\u00edmite.",
+        "logo_orange"
+      ]
+    ],
+    "badge": "Buen Estado",
+    "chart_file": "chart_economia.png",
+    "chart_title": "Distribuci\u00f3n de Costos",
+    "details_title": "Desglose",
+    "progress_title": "Uso de Presupuesto"
+  }
+}
