@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from hardware_info import get_hardware_info
+import i18n
+from i18n import t
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -854,7 +856,7 @@ class ActivityPanel(QFrame):
     def __init__(
         self,
         items,
-        title="Registro de Actividad",
+        title=None,
         title_alignment=Qt.AlignLeft,
         object_name="activityPanel",
         parent=None,
@@ -862,6 +864,7 @@ class ActivityPanel(QFrame):
         super().__init__(parent)
         self.setObjectName(object_name)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        title = t("Registro de Actividad") if title is None else title
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -894,13 +897,13 @@ class HomeView(QWidget):
         header_icon.setPixmap(make_leaf_pixmap(22))
         header_icon.setFixedSize(QSize(22, 22))
 
-        header_title = make_label("SEMÁFORO IA", "pageTitle")
+        header_title = make_label(t("SEMÁFORO IA"), "pageTitle")
 
         header_layout.addWidget(header_icon)
         header_layout.addWidget(header_title, 1)
 
         # CU 57.2
-        self.export_home_btn = QPushButton("Exportar")
+        self.export_home_btn = QPushButton(t("Exportar"))
         self.export_home_btn.setObjectName("secondaryButton")
         self.export_home_btn.setCursor(Qt.PointingHandCursor)
         self.export_home_btn.clicked.connect(self.show_export_home_menu)
@@ -918,14 +921,14 @@ class HomeView(QWidget):
         alert_layout.setContentsMargins(14, 10, 14, 10)
         alert_layout.setSpacing(14)
 
-        alert_text = make_label("¡Alerta Crítica! Límite de emisiones proyectado al 95%.", "infoTitle")
+        alert_text = make_label(t("¡Alerta Crítica! Límite de emisiones proyectado al 95%."), "infoTitle")
         alert_layout.addWidget(alert_text, 1)
 
-        snooze_btn = QPushButton("Silenciar Advertencia por Tiempo Limitado")
+        snooze_btn = QPushButton(t("Silenciar Advertencia por Tiempo Limitado"))
         snooze_btn.setObjectName("secondaryButton")
         snooze_btn.setCursor(Qt.PointingHandCursor)
 
-        close_btn = QPushButton("Cerrar")
+        close_btn = QPushButton(t("Cerrar"))
         close_btn.setObjectName("secondaryButton")
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
@@ -936,10 +939,10 @@ class HomeView(QWidget):
             close_btn.setVisible(not is_visible)
 
             if is_visible:
-                snooze_btn.setText("Mostrar Advertencia")
+                snooze_btn.setText(t("Mostrar Advertencia"))
                 alert_layout.setContentsMargins(14, 4, 14, 4)
             else:
-                snooze_btn.setText("Silenciar Advertencia por Tiempo Limitado")
+                snooze_btn.setText(t("Silenciar Advertencia por Tiempo Limitado"))
                 alert_layout.setContentsMargins(14, 10, 14, 10)
 
         snooze_btn.clicked.connect(toggle_alert)
@@ -956,24 +959,24 @@ class HomeView(QWidget):
             "alto": StatusCard(
                 "#b60f0f",
                 make_warning_icon(22),
-                "Huella de Carbono Alta",
-                "Tu nivel de Huella de Carbono es alto. Se recomienda revisar el consumo energético y la configuración de hardware.",
+                t("Huella de Carbono Alta"),
+                t("Tu nivel de Huella de Carbono es alto. Se recomienda revisar el consumo energético y la configuración de hardware."),
                 level="alto",
                 large=True,
             ),
             "moderado": StatusCard(
                 "#c4a600",
                 make_exclamation_icon(22),
-                "Huella de Carbono Moderada",
-                "Tu nivel de Huella de Carbono es estándar. Se mantiene estable, pero existen oportunidades de mejora.",
+                t("Huella de Carbono Moderada"),
+                t("Tu nivel de Huella de Carbono es estándar. Se mantiene estable, pero existen oportunidades de mejora."),
                 level="moderado",
                 large=True,
             ),
             "bajo": StatusCard(
                 "#4eb541",
                 make_thumb_icon(22),
-                "Huella de Carbono Baja",
-                "Tu nivel de Huella de Carbono es bajo y se mantiene con muy poco uso adicional.",
+                t("Huella de Carbono Baja"),
+                t("Tu nivel de Huella de Carbono es bajo y se mantiene con muy poco uso adicional."),
                 level="bajo",
                 large=True,
             ),
@@ -983,8 +986,8 @@ class HomeView(QWidget):
             cards_layout.addWidget(self.status_cards[key], 1)
 
         info_bar = InfoBar(
-            "¿Cómo se calcula?",
-            "Se estima con energía, hardware, tiempo de proceso y región/proveedor.",
+            t("¿Cómo se calcula?"),
+            t("Se estima con energía, hardware, tiempo de proceso y región/proveedor."),
             compact=True,
         )
         info_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1000,31 +1003,26 @@ class HomeView(QWidget):
                 # Dynamic green score and tips
                 green_score = max(0.0, 100.0 - (score / 5.0))
 
-                # Check language dynamically
-                lang = getattr(self.window(), "current_lang", "es")
+                # El idioma se resuelve dinamicamente vía el motor i18n compartido
+                lang = getattr(self.window(), "current_lang", i18n.get_language())
 
-                if lang == "es":
-                    base_desc = "Tu nivel de Huella de Carbono es bajo."
-                    if level == "alto": base_desc = "Nivel ALTO."
-                    elif level == "moderado": base_desc = "Nivel MODERADO."
+                base_desc_key = "Tu nivel de Huella de Carbono es bajo."
+                if level == "alto":
+                    base_desc_key = "Nivel ALTO."
+                elif level == "moderado":
+                    base_desc_key = "Nivel MODERADO."
 
-                    tip = ""
-                    if green_score < 50: tip = "\n💡 Consejo para mejorar tu Green Score: Mueve tus cargas a una región con menor intensidad o usa hardware con menor TDP."
-                    elif green_score < 80: tip = "\n💡 Consejo: Optimiza la duración de tus procesos para acercarte a un Green Score de 100."
-                    else: tip = "\n✨ ¡Excelente Green Score! Tu configuración es altamente eficiente."
-
-                    full_text = f"Impacto de Carbono: {score:.1f} | Green Score: {green_score:.1f}/100.\n{base_desc}{tip}"
+                if green_score < 50:
+                    tip_key = "tip_mueve_cargas"
+                elif green_score < 80:
+                    tip_key = "tip_optimiza_duracion"
                 else:
-                    base_desc = "Your Carbon Footprint is low."
-                    if level == "alto": base_desc = "HIGH Level."
-                    elif level == "moderado": base_desc = "MODERATE Level."
+                    tip_key = "tip_excelente_green_score"
 
-                    tip = ""
-                    if green_score < 50: tip = "\n💡 Tip to improve Green Score: Move workloads to a lower-intensity region or use lower TDP hardware."
-                    elif green_score < 80: tip = "\n💡 Tip: Optimize process duration to get closer to a 100 Green Score."
-                    else: tip = "\n✨ Excellent Green Score! Highly efficient config."
-
-                    full_text = f"Carbon Impact: {score:.1f} | Green Score: {green_score:.1f}/100.\n{base_desc}{tip}"
+                base_desc = i18n.t(base_desc_key, lang)
+                tip = f"\n{i18n.t(tip_key, lang)}"
+                header = i18n.t("Impacto de Carbono: {score} | Green Score: {gs}/100.", lang).format(score=f"{score:.1f}", gs=f"{green_score:.1f}")
+                full_text = f"{header}\n{base_desc}{tip}"
 
                 card.update_description(full_text)
             else:
@@ -1081,15 +1079,15 @@ class HomeView(QWidget):
             state = "advertencia"
             score_text = "N/A"
             green_score_text = "N/A"
-            badge = "Advertencia: Selección Incompleta"
-            level = "Sin selección"
+            badge = t("Advertencia: Selección Incompleta")
+            level = t("Sin selección")
             chart_values = [100]
-            chart_labels = ["Sin datos suficientes para calcular"]
+            chart_labels = [t("Sin datos suficientes para calcular")]
             chart_colors = ["#d1d5db"]
             progress_value = 0
             logs_extra = [
-                ["Advertencia: faltan datos por seleccionar (proveedor, región, modelo u hardware).", "amber_500"],
-                ["Impacto de Carbono y Green Score no disponibles sin selección completa.", "gray_500"],
+                [t("Advertencia: faltan datos por seleccionar (proveedor, región, modelo u hardware)."), "amber_500"],
+                [t("Impacto de Carbono y Green Score no disponibles sin selección completa."), "gray_500"],
             ]
         else:
             green_score = max(0.0, 100.0 - (score / 5.0))
@@ -1099,39 +1097,39 @@ class HomeView(QWidget):
 
             if green_score <= 0:
                 state = "error"
-                badge = "Error: Green Score en 0"
-                level = "Error Crítico"
+                badge = t("Error: Green Score en 0")
+                level = t("Error Crítico")
                 logs_extra = [
-                    ["Error: el Green Score llegó a 0. Revisa la configuración de inmediato.", "red_500"],
+                    [t("Error: el Green Score llegó a 0. Revisa la configuración de inmediato."), "red_500"],
                 ]
             elif score >= 350:
                 state = "alto"
-                badge = "Nivel Alto"
-                level = "Alto"
+                badge = t("Nivel Alto")
+                level = t("Alto")
                 logs_extra = [
-                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
-                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                    [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
+                    [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
                 ]
             elif score >= 150:
                 state = "moderado"
-                badge = "Nivel Moderado"
-                level = "Moderado"
+                badge = t("Nivel Moderado")
+                level = t("Moderado")
                 logs_extra = [
-                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
-                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                    [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
+                    [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
                 ]
             else:
                 state = "bajo"
-                badge = "Nivel Bajo"
-                level = "Bajo"
+                badge = t("Nivel Bajo")
+                level = t("Bajo")
                 logs_extra = [
-                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
-                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                    [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
+                    [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
                 ]
 
             accent_name = ACCENT_COLORS[state][0]
             chart_values = [round(green_score, 1), round(margin, 1)]
-            chart_labels = [f"Green Score: {green_score_text}", f"Margen restante: {margin:.1f}"]
+            chart_labels = [f"{t('Green Score')}: {green_score_text}", f"{t('Margen restante')}: {margin:.1f}"]
             chart_colors = [ACCENT_HEX[accent_name], "#e5e7eb"]
             progress_value = round(green_score)
 
@@ -1143,7 +1141,7 @@ class HomeView(QWidget):
         else:
             user_profile = {}
 
-        display_name = user_profile.get("display_name", "Usuario Activo")
+        display_name = user_profile.get("display_name", t("Usuario Activo"))
         role = user_profile.get("role", "")
         exported_by_text = f"{display_name} ({role})" if role else display_name
 
@@ -1153,20 +1151,20 @@ class HomeView(QWidget):
             "chart_labels": chart_labels,
             "chart_colors": chart_colors,
             "kpis": [
-                [15, 60, "Impacto de Carbono", score_text, "pts", accent],
-                [75, 60, "Green Score", green_score_text, "/100", accent],
+                [15, 60, t("Impacto de Carbono"), score_text, "pts", accent],
+                [75, 60, t("Green Score"), green_score_text, "/100", accent],
             ],
             "details": [
-                ["Hardware", hardware, "emerald_600"],
-                ["Proveedor Nube", provider, "gray_800"],
-                ["Región Eléctrica", region, "gray_800"],
-                ["Energía del Modelo", model_energy_text, "gray_800"],
-                ["TDP Hardware", hardware_tdp_text, "gray_800"],
-                ["Nivel Actual", level, accent],
+                [t("Hardware"), hardware, "emerald_600"],
+                [t("Proveedor Nube"), provider, "gray_800"],
+                [t("Región Eléctrica"), region, "gray_800"],
+                [t("Energía del Modelo"), model_energy_text, "gray_800"],
+                [t("TDP Hardware"), hardware_tdp_text, "gray_800"],
+                [t("Nivel Actual"), level, accent],
             ],
             "logs": [
                 *logs_extra,
-                ["Sesión iniciada. Panel de Inicio actualizado.", "gray_500"],
+                [t("Sesión iniciada. Panel de Inicio actualizado."), "gray_500"],
             ],
             "progress": progress_value,
             "badge": badge,
@@ -1174,7 +1172,7 @@ class HomeView(QWidget):
             "accent_color_dark": accent_dark,
             "accent_color_light": accent_light,
         }
-        export_handler.generate_and_save_report(self, "inicio", data, export_format=export_format)
+        export_handler.generate_and_save_report(self, "inicio", data, export_format=export_format, lang=self.main_window.current_lang if self.main_window else i18n.get_language(), trigger_widget=self.export_home_btn)
 
 
 class EnvironmentalPerformanceView(QWidget):
@@ -1192,13 +1190,13 @@ class EnvironmentalPerformanceView(QWidget):
         header_icon.setPixmap(make_leaf_pixmap(20))
         header_icon.setFixedSize(QSize(20, 20))
 
-        header_title = make_label("Panel de Rendimiento Ambiental", "pageTitle")
+        header_title = make_label(t("Panel de Rendimiento Ambiental"), "pageTitle")
 
         header_layout.addWidget(header_icon)
         header_layout.addWidget(header_title, 1)
 
         # CU 57.2
-        self.export_eco_btn = QPushButton("Exportar")
+        self.export_eco_btn = QPushButton(t("Exportar"))
         self.export_eco_btn.setObjectName("secondaryButton")
         self.export_eco_btn.setCursor(Qt.PointingHandCursor)
         self.export_eco_btn.clicked.connect(self.show_export_eco_menu)
@@ -1206,34 +1204,34 @@ class EnvironmentalPerformanceView(QWidget):
 
         emissions_layout = QHBoxLayout()
         emissions_layout.setSpacing(18)
-        self.emisiones_entrenamiento_card = PerformanceCard("Emisiones entrenamiento", "98 gCO2eq")
-        self.emisiones_ejecucion_card = PerformanceCard("Emisiones ejecución", "44 gCO2eq")
+        self.emisiones_entrenamiento_card = PerformanceCard(t("Emisiones entrenamiento"), "98 gCO2eq")
+        self.emisiones_ejecucion_card = PerformanceCard(t("Emisiones ejecución"), "44 gCO2eq")
         emissions_layout.addWidget(self.emisiones_entrenamiento_card, 1)
         emissions_layout.addWidget(self.emisiones_ejecucion_card, 1)
 
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(18)
-        self.consumo_energetico_card = PerformanceCard("Consumo Energético", "3.8 kWh")
-        self.tiempo_proceso_card = PerformanceCard("Tiempo de Procesamiento", "00:47:00 mins")
+        self.consumo_energetico_card = PerformanceCard(t("Consumo Energético"), "3.8 kWh")
+        self.tiempo_proceso_card = PerformanceCard(t("Tiempo de Procesamiento"), "00:47:00 mins")
         metrics_layout.addWidget(self.consumo_energetico_card, 1)
         metrics_layout.addWidget(self.tiempo_proceso_card, 1)
 
         details_rows = [
-            ("Hardware", "NVIDIA A100"),
-            ("Proveedor Nube", "AWS US-East-1"),
-            ("Factor de Emisión", "0.386 kg/kWh"),
-            ("Región", "Norteamérica"),
-            ("Última ejecución", "Hace 2 minutos"),
-            ("Estado del cálculo", "Finalizado"),
+            (t("Hardware"), "NVIDIA A100"),
+            (t("Proveedor Nube"), "AWS US-East-1"),
+            (t("Factor de Emisión"), "0.386 kg/kWh"),
+            (t("Región"), "Norteamérica"),
+            (t("Última ejecución"), "Hace 2 minutos"),
+            (t("Estado del cálculo"), t("Finalizado")),
         ]
-        details_panel = DetailsPanel("Detalles del Cálculo", details_rows)
+        details_panel = DetailsPanel(t("Detalles del Cálculo"), details_rows)
 
         activity_items = [
-            "Cálculo Ambiental finalizado correctamente.",
-            "Métricas gCO2eq y kWh actualizadas en interfaz.",
-            "Variables aún no inicializadas -- mostrando aviso de cálculo en curso",
-            "Sesión iniciada. Hardware detectado.",
-            "Excepción 1: datos no disponibles al iniciar.",
+            t("Cálculo Ambiental finalizado correctamente."),
+            t("Métricas gCO2eq y kWh actualizadas en interfaz."),
+            t("Variables aún no inicializadas -- mostrando aviso de cálculo en curso"),
+            t("Sesión iniciada. Hardware detectado."),
+            t("Excepción 1: datos no disponibles al iniciar."),
         ]
         activity_panel = ActivityPanel(activity_items, title_alignment=Qt.AlignLeft)
 
@@ -1253,9 +1251,9 @@ class EnvironmentalPerformanceView(QWidget):
         eco_panel_layout.setContentsMargins(18, 14, 18, 14)
 
         eco_title_row = QHBoxLayout()
-        eco_title_row.addWidget(make_label("% Límite Ecológico Utilizado", "kpiTitle"))
+        eco_title_row.addWidget(make_label(t("% Límite Ecológico Utilizado"), "kpiTitle"))
 
-        insignia_label = make_label("⭐ Insignia eficiencia: Uso < 50%", "infoText")
+        insignia_label = make_label(t("⭐ Insignia eficiencia: Uso < 50%"), "infoText")
         insignia_label.setStyleSheet("color: #4eb541;")
         eco_title_row.addWidget(insignia_label, 0, Qt.AlignRight)
 
@@ -1334,38 +1332,38 @@ class EnvironmentalPerformanceView(QWidget):
         else:
             user_profile = {}
 
-        display_name = user_profile.get("display_name", "Usuario Activo")
+        display_name = user_profile.get("display_name", t("Usuario Activo"))
         role = user_profile.get("role", "")
         exported_by_text = f"{display_name} ({role})" if role else display_name
 
         data = {
             "exported_by": exported_by_text,
             "chart_values": [entrenamiento_val, ejecucion_val],
-            "chart_labels": [f"Entrenamiento: {entrenamiento_val} gCO2eq", f"Ejecución: {ejecucion_val} gCO2eq"],
+            "chart_labels": [f"{t('Emisiones entrenamiento')}: {entrenamiento_val} gCO2eq", f"{t('Emisiones ejecución')}: {ejecucion_val} gCO2eq"],
             "kpis": [
-                [15, 60, "Emisiones entrenamiento", str(entrenamiento_val), "gCO2eq", "emerald_500"],
-                [60, 60, "Emisiones ejecución", str(ejecucion_val), "gCO2eq", "cyan_500"],
-                [105, 60, "Consumo Energético", consumo_val, "kWh", "emerald_500"],
-                [150, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
+                [15, 60, t("Emisiones entrenamiento"), str(entrenamiento_val), "gCO2eq", "emerald_500"],
+                [60, 60, t("Emisiones ejecución"), str(ejecucion_val), "gCO2eq", "cyan_500"],
+                [105, 60, t("Consumo Energético"), consumo_val, "kWh", "emerald_500"],
+                [150, 60, t("Tiempo Proceso"), tiempo_val, "mins", "cyan_500"]
             ],
             "details": [
-                ["Hardware", "NVIDIA A100", "emerald_600"],
-                ["Proveedor Nube", "AWS US-East-1", "gray_800"],
-                ["Factor de Emisión", "0.386 kg/kWh", "gray_800"],
-                ["Región", "Norteamérica", "gray_800"],
-                ["Última ejecución", "Hace 2 minutos", "gray_800"],
-                ["Estado del cálculo", "Finalizado", "emerald_600"]
+                [t("Hardware"), "NVIDIA A100", "emerald_600"],
+                [t("Proveedor Nube"), "AWS US-East-1", "gray_800"],
+                [t("Factor de Emisión"), "0.386 kg/kWh", "gray_800"],
+                [t("Región"), "Norteamérica", "gray_800"],
+                [t("Última ejecución"), "Hace 2 minutos", "gray_800"],
+                [t("Estado del cálculo"), t("Finalizado"), "emerald_600"]
             ],
             "logs": [
-                ["Cálculo Ambiental finalizado correctamente.", "emerald_500"],
-                ["Métricas gCO2eq y kWh actualizadas en interfaz.", "cyan_500"],
-                ["Variables aún no inicializadas -- mostrando aviso de cálculo en curso", "logo_orange"],
-                ["Sesión iniciada. Hardware detectado.", "gray_500"],
-                ["Excepción 1: datos no disponibles al iniciar.", "logo_pink"]
+                [t("Cálculo Ambiental finalizado correctamente."), "emerald_500"],
+                [t("Métricas gCO2eq y kWh actualizadas en interfaz."), "cyan_500"],
+                [t("Variables aún no inicializadas -- mostrando aviso de cálculo en curso"), "logo_orange"],
+                [t("Sesión iniciada. Hardware detectado."), "gray_500"],
+                [t("Excepción 1: datos no disponibles al iniciar."), "logo_pink"]
             ],
             "progress": progress_val
         }
-        export_handler.generate_and_save_report(self, "eco", data, export_format=export_format)
+        export_handler.generate_and_save_report(self, "eco", data, export_format=export_format, lang=i18n.get_language(), trigger_widget=self.export_eco_btn)
 
 
 class CarbonDetailView(QWidget):
@@ -1376,7 +1374,7 @@ class CarbonDetailView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Comparativas", "pageTitle"))
+        layout.addWidget(make_label(t("Comparativas"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         panel = QFrame()
@@ -1389,28 +1387,28 @@ class CarbonDetailView(QWidget):
         icon.setPixmap(make_warning_icon(36))
         icon.setFixedSize(36, 36)
 
-        title = make_label("Huella de Carbono Moderada", "modalTitle", alignment=Qt.AlignCenter)
+        title = make_label(t("Huella de Carbono Moderada"), "modalTitle", alignment=Qt.AlignCenter)
         body = make_label(
-            "Tu nivel de huella de carbono se encuentra en un rango de advertencia. "
+            t("Tu nivel de huella de carbono se encuentra en un rango de advertencia. "
             "Si bien el sistema opera dentro de márgenes aceptables, se han detectado "
             "parámetros que incrementan innecesariamente las emisiones de CO2 y el consumo energético. "
-            "Es recomendable tomar acción antes de que el nivel escale a rango crítico.",
+            "Es recomendable tomar acción antes de que el nivel escale a rango crítico."),
             "modalBody",
         )
         body.setWordWrap(True)
 
         bullet_1 = QLabel(
-            "• <b>Región de ejecución:</b> Migrar las cargas de trabajo a regiones con menor factor de emisión, "
+            t("• <b>Región de ejecución:</b> Migrar las cargas de trabajo a regiones con menor factor de emisión, "
             "como Europa del Norte o Canada Central, puede reducir significativamente las emisiones sin afectar "
-            "el rendimiento."
+            "el rendimiento.")
         )
         bullet_2 = QLabel(
-            "• <b>Tiempo de procesamiento:</b> Optimizar los hiperparámetros del modelo o aplicar técnicas de early "
-            "stopping puede disminuir el tiempo de cómputo y, con ello, el consumo energético asociado."
+            t("• <b>Tiempo de procesamiento:</b> Optimizar los hiperparámetros del modelo o aplicar técnicas de early "
+            "stopping puede disminuir el tiempo de cómputo y, con ello, el consumo energético asociado.")
         )
         bullet_3 = QLabel(
-            "• <b>Hardware:</b> Considerar el uso de aceleradores más eficientes energéticamente o ajustar la asignación "
-            "de recursos para evitar capacidad ociosa durante la ejecución."
+            t("• <b>Hardware:</b> Considerar el uso de aceleradores más eficientes energéticamente o ajustar la asignación "
+            "de recursos para evitar capacidad ociosa durante la ejecución.")
         )
         for bullet in (bullet_1, bullet_2, bullet_3):
             bullet.setObjectName("modalBullet")
@@ -1418,12 +1416,12 @@ class CarbonDetailView(QWidget):
             bullet.setTextFormat(Qt.RichText)
 
         footer = make_label(
-            "Implementar al menos una de estas medidas debería ser suficiente para retornar al rango verde en la próxima evaluación.",
+            t("Implementar al menos una de estas medidas debería ser suficiente para retornar al rango verde en la próxima evaluación."),
             "modalBody",
         )
         footer.setWordWrap(True)
 
-        button = QPushButton("Continuar")
+        button = QPushButton(t("Continuar"))
         button.setObjectName("primaryButton")
         button.setCursor(Qt.PointingHandCursor)
         button.setFixedWidth(160)
@@ -1431,17 +1429,17 @@ class CarbonDetailView(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        abort_btn = QPushButton("Abortar simulación")
+        abort_btn = QPushButton(t("Abortar simulación"))
         abort_btn.setObjectName("secondaryButton")
         abort_btn.setCursor(Qt.PointingHandCursor)
-        abort_btn.clicked.connect(lambda: QMessageBox.information(self, "Simulación Abortada", "Proceso local detenido y variables reiniciadas."))
+        abort_btn.clicked.connect(lambda: QMessageBox.information(self, t("Simulación Abortada"), t("Proceso local detenido y variables reiniciadas.")))
 
-        apply_btn = QPushButton("Aplicar recomendación")
+        apply_btn = QPushButton(t("Aplicar recomendación"))
         apply_btn.setObjectName("primaryButton")
         apply_btn.setCursor(Qt.PointingHandCursor)
-        apply_btn.clicked.connect(lambda: QMessageBox.information(self, "Recomendación Aplicada", "Variables del modelo reconfiguradas en memoria."))
+        apply_btn.clicked.connect(lambda: QMessageBox.information(self, t("Recomendación Aplicada"), t("Variables del modelo reconfiguradas en memoria.")))
 
-        minimize_btn = QPushButton("Minimizar consejo")
+        minimize_btn = QPushButton(t("Minimizar consejo"))
         minimize_btn.setObjectName("secondaryButton")
         minimize_btn.setCursor(Qt.PointingHandCursor)
 
@@ -1457,10 +1455,10 @@ class CarbonDetailView(QWidget):
             abort_btn.setVisible(not is_visible)
 
             if is_visible:
-                minimize_btn.setText("Maximizar consejo")
+                minimize_btn.setText(t("Maximizar consejo"))
                 panel_layout.setContentsMargins(32, 14, 32, 14)
             else:
-                minimize_btn.setText("Minimizar consejo")
+                minimize_btn.setText(t("Minimizar consejo"))
                 panel_layout.setContentsMargins(32, 28, 32, 28)
 
         minimize_btn.clicked.connect(toggle_minimize)
@@ -1499,13 +1497,13 @@ class ModelsView(QWidget):
         layout.setSpacing(18)
 
         header_row = QHBoxLayout()
-        header_row.addWidget(make_label("Modelos", "pageTitle"), 1)
+        header_row.addWidget(make_label(t("Modelos"), "pageTitle"), 1)
 
         # CU 13.1, 13.2
-        import_btn = QPushButton("Importar JSON/CSV")
+        import_btn = QPushButton(t("Importar JSON/CSV"))
         import_btn.setObjectName("secondaryButton")
         import_btn.setCursor(Qt.PointingHandCursor)
-        import_btn.clicked.connect(lambda: QMessageBox.information(self, "Importar", "Validando esquema... Nuevos modelos añadidos a la lista local."))
+        import_btn.clicked.connect(lambda: QMessageBox.information(self, t("Importar"), t("Validando esquema... Nuevos modelos añadidos a la lista local.")))
         header_row.addWidget(import_btn)
 
         layout.addLayout(header_row)
@@ -1531,13 +1529,13 @@ class ModelsView(QWidget):
                     if row.get("Empresa_Creador")
                 }
             )
-            cards.addWidget(InfoCard("Modelos disponibles", str(model_total)), 1)
-            cards.addWidget(InfoCard("Dominios", str(domain_total)), 1)
-            cards.addWidget(InfoCard("Empresas", str(maker_total)), 1)
+            cards.addWidget(InfoCard(t("Modelos disponibles"), str(model_total)), 1)
+            cards.addWidget(InfoCard(t("Dominios"), str(domain_total)), 1)
+            cards.addWidget(InfoCard(t("Empresas"), str(maker_total)), 1)
         else:
-            cards.addWidget(InfoCard("Modelos activos", "14"), 1)
-            cards.addWidget(InfoCard("Latencia media", "128 ms"), 1)
-            cards.addWidget(InfoCard("Precisión promedio", "92%"), 1)
+            cards.addWidget(InfoCard(t("Modelos activos"), "14"), 1)
+            cards.addWidget(InfoCard(t("Latencia media"), "128 ms"), 1)
+            cards.addWidget(InfoCard(t("Precisión promedio"), "92%"), 1)
 
         if self.models_data:
             items = []
@@ -1558,7 +1556,7 @@ class ModelsView(QWidget):
                 "Gemma 27B — Sandbox (GPU)",
                 "Phi-4 Mini — Batch (CPU)",
             ]
-        list_panel = ListPanel("Modelos recientes", items)
+        list_panel = ListPanel(t("Modelos recientes"), items)
 
         selector_panel = QFrame()
         selector_panel.setObjectName("cloudPanel")
@@ -1582,7 +1580,7 @@ class ModelsView(QWidget):
         else:
             self.model_combo.addItems(["Llama 3 70B", "Mistral Large", "Gemma 27B", "Phi-4 Mini"])
 
-        selector_layout.addWidget(self._build_selector("Modelo", self.model_combo), 1)
+        selector_layout.addWidget(self._build_selector(t("Modelo"), self.model_combo), 1)
 
         self.model_combo.currentTextChanged.connect(self._handle_model_change)
         if self.model_combo.count():
@@ -1592,12 +1590,12 @@ class ModelsView(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        soft_del_btn = QPushButton("Eliminar (Soft)")
+        soft_del_btn = QPushButton(t("Eliminar (Soft)"))
         soft_del_btn.setObjectName("secondaryButton")
         soft_del_btn.setCursor(Qt.PointingHandCursor)
         soft_del_btn.clicked.connect(self._handle_soft_delete)
 
-        hard_del_btn = QPushButton("Destruir (Hard)")
+        hard_del_btn = QPushButton(t("Destruir (Hard)"))
         hard_del_btn.setObjectName("dangerButton")
         hard_del_btn.setCursor(Qt.PointingHandCursor)
         hard_del_btn.clicked.connect(self._handle_hard_delete)
@@ -1615,15 +1613,15 @@ class ModelsView(QWidget):
     def _handle_soft_delete(self):
         curr_idx = self.model_combo.currentIndex()
         if curr_idx >= 0:
-            QMessageBox.information(self, "Baja Lógica", "El modelo se ha marcado como 'Inactivo/Oculto' en los cálculos históricos.")
+            QMessageBox.information(self, t("Baja Lógica"), t("El modelo se ha marcado como 'Inactivo/Oculto' en los cálculos históricos."))
             self.model_combo.removeItem(curr_idx)
 
     def _handle_hard_delete(self):
         curr_idx = self.model_combo.currentIndex()
         if curr_idx >= 0:
-            reply = QMessageBox.question(self, "Advertencia", "Se destruirá irremediablemente la información del modelo local. ¿Continuar?", QMessageBox.Yes | QMessageBox.No)
+            reply = QMessageBox.question(self, t("Advertencia"), t("Se destruirá irremediablemente la información del modelo local. ¿Continuar?"), QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
-                QMessageBox.information(self, "Borrado Físico", "Registro purgado totalmente del disco.")
+                QMessageBox.information(self, t("Borrado Físico"), t("Registro purgado totalmente del disco."))
                 self.model_combo.removeItem(curr_idx)
 
     def _build_selector(self, label_text, combo):
@@ -1653,11 +1651,11 @@ class FinOpsView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Costos FinOps", "pageTitle"))
+        layout.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         header_row = QHBoxLayout()
-        header_row.addWidget(make_label("Costos FinOps", "pageTitle"), 1)
+        header_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"), 1)
 
         self.currency_combo = ChevronComboBox()
         self.currency_combo.addItems(["CLP ($)", "USD (U$D)", "EUR (€)"])
@@ -1665,7 +1663,7 @@ class FinOpsView(QWidget):
         self.currency_combo.currentTextChanged.connect(self._update_currency)
         header_row.addWidget(self.currency_combo)
 
-        self.export_finops_btn = QPushButton("Exportar")
+        self.export_finops_btn = QPushButton(t("Exportar"))
         self.export_finops_btn.setObjectName("secondaryButton")
         self.export_finops_btn.setCursor(Qt.PointingHandCursor)
         self.export_finops_btn.clicked.connect(self.show_export_finops_menu)
@@ -1676,9 +1674,9 @@ class FinOpsView(QWidget):
 
         cards = QHBoxLayout()
         cards.setSpacing(18)
-        self.card_actual = InfoCard("Costo actual", "$4.820.000")
-        self.card_presupuesto = InfoCard("Presupuesto mensual", "$7.500.000")
-        self.card_ahorro = InfoCard("Ahorro estimado", "$1.120.000")
+        self.card_actual = InfoCard(t("Costo actual"), "$4.820.000")
+        self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$7.500.000")
+        self.card_ahorro = InfoCard(t("Ahorro estimado"), "$1.120.000")
 
         # Referencia fija temporal de conversión (20-08-2026).
         # TODO: reemplazar por consulta en tiempo real cuando se integre el endpoint.
@@ -1696,12 +1694,12 @@ class FinOpsView(QWidget):
         cards.addWidget(self.card_ahorro, 1)
 
         items = [
-            "GPU compute — 48% del gasto",
-            "Storage + snapshots — 22% del gasto",
-            "Networking — 14% del gasto",
-            "Servicios administrados — 16% del gasto",
+            t("GPU compute — 48% del gasto"),
+            t("Storage + snapshots — 22% del gasto"),
+            t("Networking — 14% del gasto"),
+            t("Servicios administrados — 16% del gasto"),
         ]
-        list_panel = ListPanel("Desglose por servicio", items)
+        list_panel = ListPanel(t("Desglose por servicio"), items)
 
         # Budget bar CU 62.1, 62.2
         from PySide6.QtWidgets import QProgressBar
@@ -1709,7 +1707,7 @@ class FinOpsView(QWidget):
         budget_panel.setObjectName("detailsPanel")
         budget_layout = QVBoxLayout(budget_panel)
         budget_layout.setContentsMargins(18, 14, 18, 14)
-        budget_layout.addWidget(make_label("% Presupuesto Límite Utilizado", "kpiTitle"))
+        budget_layout.addWidget(make_label(t("% Presupuesto Límite Utilizado"), "kpiTitle"))
         self.budget_bar = QProgressBar()
         self.budget_bar.setRange(0, 100)
         # 4.82M / 7.5M is roughly 64%
@@ -1794,37 +1792,37 @@ class FinOpsView(QWidget):
         else:
             user_profile = {}
 
-        display_name = user_profile.get("display_name", "Usuario Activo")
+        display_name = user_profile.get("display_name", t("Usuario Activo"))
         role = user_profile.get("role", "")
         exported_by_text = f"{display_name} ({role})" if role else display_name
 
         data = {
             "exported_by": exported_by_text,
             "kpis": [
-                [15, 60, "Costo actual", self._sanitize_money_value(costo_actual, currency_code), currency_code, "cyan_500"],
-                [76.6, 60, "Presupuesto", self._sanitize_money_value(presupuesto, currency_code), currency_code, "gray_800"],
-                [138.3, 60, "Ahorro", self._sanitize_money_value(ahorro, currency_code), currency_code, "emerald_500"]
+                [15, 60, t("Costo actual"), self._sanitize_money_value(costo_actual, currency_code), currency_code, "cyan_500"],
+                [76.6, 60, t("Presupuesto"), self._sanitize_money_value(presupuesto, currency_code), currency_code, "gray_800"],
+                [138.3, 60, t("Ahorro"), self._sanitize_money_value(ahorro, currency_code), currency_code, "emerald_500"]
             ],
             "chart_values": [48, 22, 14, 16],
             "chart_labels": [
                 "GPU compute: 48%",
                 "Storage + snapshots: 22%",
                 "Networking: 14%",
-                "Servicios administrados: 16%"
+                f"{t('Servicios administrados')}: 16%"
             ],
             "details": [
-                ["GPU compute", "48%", "cyan_600"],
-                ["Storage + snapshots", "22%", "cyan_600"],
-                ["Networking", "14%", "cyan_600"],
-                ["Servicios administrados", "16%", "cyan_600"]
+                [t("GPU compute"), "48%", "cyan_600"],
+                [t("Storage + snapshots"), "22%", "cyan_600"],
+                [t("Networking"), "14%", "cyan_600"],
+                [t("Servicios administrados"), "16%", "cyan_600"]
             ],
             "logs": [
-                ["Costos FinOps calculados exitosamente.", "emerald_500"],
-                ["GPU compute representa la mayor parte del gasto.", "logo_orange"]
+                [t("Costos FinOps calculados exitosamente."), "emerald_500"],
+                [t("GPU compute representa la mayor parte del gasto."), "logo_orange"]
             ],
             "progress": progress_val
         }
-        export_handler.generate_and_save_report(self, "economia", data, export_format=export_format)
+        export_handler.generate_and_save_report(self, "economia", data, export_format=export_format, lang=i18n.get_language(), trigger_widget=self.export_finops_btn)
 
 
 class CloudView(QWidget):
@@ -1836,12 +1834,12 @@ class CloudView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Cloud", "pageTitle"))
+        layout.addWidget(make_label(t("Cloud"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
-        self.provider_card = InfoCard("Proveedor", "AWS")
-        self.region_card = InfoCard("Región activa", "US-East-1")
-        self.status_card = InfoCard("Estado", "Operativo")
+        self.provider_card = InfoCard(t("Proveedor"), "AWS")
+        self.region_card = InfoCard(t("Región activa"), "US-East-1")
+        self.status_card = InfoCard(t("Estado"), t("Operativo"))
 
         cards = QHBoxLayout()
         cards.setSpacing(18)
@@ -1861,7 +1859,7 @@ class CloudView(QWidget):
 
         self.tier_combo = ChevronComboBox()
         self.tier_combo.setObjectName("cloudSelect")
-        self.tier_combo.addItems(["Básico", "Profesional", "Enterprise"])
+        self.tier_combo.addItems([t("Básico"), t("Profesional"), t("Enterprise")])
         self.tier_combo.setFixedHeight(40)
 
         self.region_combo = ChevronComboBox()
@@ -1893,21 +1891,21 @@ class CloudView(QWidget):
                 "GCP": ["us-central1", "europe-west1", "southamerica-east1"],
             }
 
-        selector_layout.addWidget(self._build_selector("Proveedor", self.provider_combo), 1)
-        selector_layout.addWidget(self._build_selector("Tier", self.tier_combo), 1)
-        selector_layout.addWidget(self._build_selector("Región", self.region_combo), 1)
+        selector_layout.addWidget(self._build_selector(t("Proveedor"), self.provider_combo), 1)
+        selector_layout.addWidget(self._build_selector(t("Tier"), self.tier_combo), 1)
+        selector_layout.addWidget(self._build_selector(t("Región"), self.region_combo), 1)
 
         self.provider_combo.currentTextChanged.connect(self._update_regions)
         self.region_combo.currentTextChanged.connect(self._sync_cards)
         self._update_regions(self.provider_combo.currentText())
 
         items = [
-            "GPU Instances: 6 activas",
-            "Storage: 82 TB en uso",
-            "Networking: 1.2 TB transferidos",
-            "Backups: Última copia hace 3 horas",
+            t("GPU Instances: 6 activas"),
+            t("Storage: 82 TB en uso"),
+            t("Networking: 1.2 TB transferidos"),
+            t("Backups: Última copia hace 3 horas"),
         ]
-        list_panel = ListPanel("Servicios activos", items)
+        list_panel = ListPanel(t("Servicios activos"), items)
 
         layout.addLayout(cards)
         layout.addWidget(selector_panel)
@@ -1951,16 +1949,16 @@ class HistoryView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Historial", "pageTitle"))
+        layout.addWidget(make_label(t("Historial"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         items = [
-            "Hace 3 min — Evaluación ambiental completada (GPU A100)",
-            "Hace 1 h — Reporte de costos generado (FinOps)",
-            "Hace 4 h — Validación de modelo Llama 3 70B",
-            "Ayer — Rebalanceo de cargas a Europa del Norte",
+            t("Hace 3 min — Evaluación ambiental completada (GPU A100)"),
+            t("Hace 1 h — Reporte de costos generado (FinOps)"),
+            t("Hace 4 h — Validación de modelo Llama 3 70B"),
+            t("Ayer — Rebalanceo de cargas a Europa del Norte"),
         ]
-        list_panel = ListPanel("Últimas ejecuciones", items)
+        list_panel = ListPanel(t("Últimas ejecuciones"), items)
 
         layout.addWidget(list_panel)
 
@@ -1973,16 +1971,16 @@ class SettingsView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Ajustes", "pageTitle"))
+        layout.addWidget(make_label(t("Ajustes"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         items = [
-            "Notificaciones: activas",
-            "Modo de reporte: semanal",
-            "Unidad de energía: kWh",
-            "Idioma: Español",
+            t("Notificaciones: activas"),
+            t("Modo de reporte: semanal"),
+            t("Unidad de energía: kWh"),
+            t("Idioma: Español"),
         ]
-        list_panel = ListPanel("Preferencias generales", items)
+        list_panel = ListPanel(t("Preferencias generales"), items)
 
         layout.addWidget(list_panel)
 
@@ -1990,22 +1988,22 @@ class SettingsView(QWidget):
         system_layout = QVBoxLayout()
         system_layout.setSpacing(10)
 
-        sys_title = make_label("Sistema y Notificaciones", "kpiTitle")
+        sys_title = make_label(t("Sistema y Notificaciones"), "kpiTitle")
         system_layout.addWidget(sys_title)
 
         sys_row = QHBoxLayout()
         sys_row.setSpacing(15)
 
-        backup_btn = QPushButton("Crear Respaldo")
+        backup_btn = QPushButton(t("Crear Respaldo"))
         backup_btn.setObjectName("secondaryButton")
         backup_btn.setCursor(Qt.PointingHandCursor)
-        backup_btn.clicked.connect(lambda: QMessageBox.information(self, "Respaldo", "Archivo de backup único generado en directorio externo."))
+        backup_btn.clicked.connect(lambda: QMessageBox.information(self, t("Respaldo"), t("Archivo de backup único generado en directorio externo.")))
 
         from PySide6.QtWidgets import QCheckBox
-        notif_cb = QCheckBox("Generar Avisos al OS")
+        notif_cb = QCheckBox(t("Generar Avisos al OS"))
         notif_cb.setChecked(True)
         notif_cb.setStyleSheet("color: white;")
-        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, "Notificaciones", f"Avisos al OS {'activados' if state else 'desactivados'} permanentemente."))
+        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, t("Notificaciones"), t("Avisos al OS activados permanentemente.") if state else t("Avisos al OS desactivados permanentemente.")))
 
         sys_row.addWidget(backup_btn)
         sys_row.addWidget(notif_cb)
@@ -2018,22 +2016,22 @@ class SettingsView(QWidget):
         env_hw_layout = QVBoxLayout()
         env_hw_layout.setSpacing(10)
 
-        env_title = make_label("Entorno y Hardware On-Premise", "kpiTitle")
+        env_title = make_label(t("Entorno y Hardware On-Premise"), "kpiTitle")
         env_hw_layout.addWidget(env_title)
 
         env_btn_row = QHBoxLayout()
         env_btn_row.setSpacing(10)
-        sync_env_btn = QPushButton("Sincronizar Factores Oficiales")
+        sync_env_btn = QPushButton(t("Sincronizar Factores Oficiales"))
         sync_env_btn.setObjectName("secondaryButton")
-        sync_env_btn.clicked.connect(lambda: QMessageBox.information(self, "Sincronización", "Factores de emisión actualizados desde fuente meteorológica oficial."))
+        sync_env_btn.clicked.connect(lambda: QMessageBox.information(self, t("Sincronización"), t("Factores de emisión actualizados desde fuente meteorológica oficial.")))
 
-        revert_env_btn = QPushButton("Restablecer a fecha pasada")
+        revert_env_btn = QPushButton(t("Restablecer a fecha pasada"))
         revert_env_btn.setObjectName("secondaryButton")
-        revert_env_btn.clicked.connect(lambda: QMessageBox.information(self, "Reversión", "Diccionario ambiental restablecido a datos del año pasado."))
+        revert_env_btn.clicked.connect(lambda: QMessageBox.information(self, t("Reversión"), t("Diccionario ambiental restablecido a datos del año pasado.")))
 
-        ping_hw_btn = QPushButton("Probar Enlace Sensor On-Premise")
+        ping_hw_btn = QPushButton(t("Probar Enlace Sensor On-Premise"))
         ping_hw_btn.setObjectName("secondaryButton")
-        ping_hw_btn.clicked.connect(lambda: QMessageBox.information(self, "Sondeo Activo", "Conexión activa con hardware de corriente On-Premise exitosa."))
+        ping_hw_btn.clicked.connect(lambda: QMessageBox.information(self, t("Sondeo Activo"), t("Conexión activa con hardware de corriente On-Premise exitosa.")))
 
         env_btn_row.addWidget(sync_env_btn)
         env_btn_row.addWidget(revert_env_btn)
@@ -2044,20 +2042,20 @@ class SettingsView(QWidget):
         local_metrics_row = QHBoxLayout()
         local_metrics_row.setSpacing(10)
         pue_input = QLineEdit()
-        pue_input.setPlaceholderText("PUE Local (Ej. 1.2)")
+        pue_input.setPlaceholderText(t("PUE Local (Ej. 1.2)"))
         pue_input.setFixedWidth(120)
 
         green_energy_input = QLineEdit()
-        green_energy_input.setPlaceholderText("% Energía Verde Privada")
+        green_energy_input.setPlaceholderText(t("% Energía Verde Privada"))
         green_energy_input.setFixedWidth(160)
 
-        save_metrics_btn = QPushButton("Guardar Métricas")
+        save_metrics_btn = QPushButton(t("Guardar Métricas"))
         save_metrics_btn.setObjectName("primaryButton")
-        save_metrics_btn.clicked.connect(lambda: QMessageBox.information(self, "Métricas Locales", "Métricas PUE y Energía Verde sobrescritas localmente."))
+        save_metrics_btn.clicked.connect(lambda: QMessageBox.information(self, t("Métricas Locales"), t("Métricas PUE y Energía Verde sobrescritas localmente.")))
 
-        local_metrics_row.addWidget(make_label("PUE Local:", "infoText"))
+        local_metrics_row.addWidget(make_label(t("PUE Local:"), "infoText"))
         local_metrics_row.addWidget(pue_input)
-        local_metrics_row.addWidget(make_label("% Verde:", "infoText"))
+        local_metrics_row.addWidget(make_label(t("% Verde:"), "infoText"))
         local_metrics_row.addWidget(green_energy_input)
         local_metrics_row.addWidget(save_metrics_btn)
         local_metrics_row.addStretch()
@@ -2069,31 +2067,31 @@ class SettingsView(QWidget):
         thresh_fin_layout = QVBoxLayout()
         thresh_fin_layout.setSpacing(10)
 
-        thresh_title = make_label("Umbrales y Financiero", "kpiTitle")
+        thresh_title = make_label(t("Umbrales y Financiero"), "kpiTitle")
         thresh_fin_layout.addWidget(thresh_title)
 
         thresh_row = QHBoxLayout()
         thresh_row.setSpacing(10)
 
         green_input = QLineEdit()
-        green_input.setPlaceholderText("Verde Max (%)")
+        green_input.setPlaceholderText(t("Verde Max (%)"))
         green_input.setFixedWidth(100)
 
         yellow_input = QLineEdit()
-        yellow_input.setPlaceholderText("Amarillo Max (%)")
+        yellow_input.setPlaceholderText(t("Amarillo Max (%)"))
         yellow_input.setFixedWidth(100)
 
         red_input = QLineEdit()
-        red_input.setPlaceholderText("Rojo Min (%)")
+        red_input.setPlaceholderText(t("Rojo Min (%)"))
         red_input.setFixedWidth(100)
 
-        save_thresh_btn = QPushButton("Guardar Umbrales")
+        save_thresh_btn = QPushButton(t("Guardar Umbrales"))
         save_thresh_btn.setObjectName("primaryButton")
-        save_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, "Umbrales", "Nuevos rangos guardados y aplicados."))
+        save_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, t("Umbrales"), t("Nuevos rangos guardados y aplicados.")))
 
-        reset_thresh_btn = QPushButton("Restablecer a fábrica")
+        reset_thresh_btn = QPushButton(t("Restablecer a fábrica"))
         reset_thresh_btn.setObjectName("secondaryButton")
-        reset_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, "Umbrales", "Variables devueltas a predeterminadas de origen."))
+        reset_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, t("Umbrales"), t("Variables devueltas a predeterminadas de origen.")))
 
         thresh_row.addWidget(green_input)
         thresh_row.addWidget(yellow_input)
@@ -2106,15 +2104,15 @@ class SettingsView(QWidget):
         fin_row.setSpacing(10)
 
         api_key_input = QLineEdit()
-        api_key_input.setPlaceholderText("API Key Financiera (ej. AWS/Azure)")
+        api_key_input.setPlaceholderText(t("API Key Financiera (ej. AWS/Azure)"))
         api_key_input.setEchoMode(QLineEdit.Password)
         api_key_input.setFixedWidth(250)
 
-        sync_tarifas_btn = QPushButton("Sincronizar Tarifas")
+        sync_tarifas_btn = QPushButton(t("Sincronizar Tarifas"))
         sync_tarifas_btn.setObjectName("secondaryButton")
-        sync_tarifas_btn.clicked.connect(lambda: QMessageBox.information(self, "Tarifas", "Registros tarifarios locales sobrescritos con precios vigentes de mercado."))
+        sync_tarifas_btn.clicked.connect(lambda: QMessageBox.information(self, t("Tarifas"), t("Registros tarifarios locales sobrescritos con precios vigentes de mercado.")))
 
-        fin_row.addWidget(make_label("API Key:", "infoText"))
+        fin_row.addWidget(make_label(t("API Key:"), "infoText"))
         fin_row.addWidget(api_key_input)
         fin_row.addWidget(sync_tarifas_btn)
         fin_row.addStretch()
@@ -2159,7 +2157,7 @@ class AccountHeaderCard(QFrame):
         info_layout.addWidget(make_label(user_role, "accountRole"))
 
         if username:
-            info_layout.addWidget(make_label(f"Usuario: {username}", "accountMeta"))
+            info_layout.addWidget(make_label(f"{t('Usuario')}: {username}", "accountMeta"))
 
         layout.addWidget(avatar)
         layout.addLayout(info_layout, 1)
@@ -2197,7 +2195,7 @@ class UserMenuView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Cuenta", "pageTitle"))
+        layout.addWidget(make_label(t("Cuenta"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
         layout.addWidget(AccountHeaderCard(user_profile))
 
@@ -2206,22 +2204,22 @@ class UserMenuView(QWidget):
 
         top_row.addWidget(
             MenuSection(
-                "Perfil",
+                t("Perfil"),
                 [
-                    ("Editar perfil", "menuButton", None),
-                    ("Actualizar foto", "menuButton", None),
-                    ("Datos personales", "menuButton", None),
+                    (t("Editar perfil"), "menuButton", None),
+                    (t("Actualizar foto"), "menuButton", None),
+                    (t("Datos personales"), "menuButton", None),
                 ],
             ),
             1,
         )
         top_row.addWidget(
             MenuSection(
-                "Preferencias",
+                t("Preferencias"),
                 [
-                    ("Notificaciones", "menuButton", None),
-                    ("Idioma y zona horaria", "menuButton", None),
-                    ("Accesibilidad", "menuButton", None),
+                    (t("Notificaciones"), "menuButton", None),
+                    (t("Idioma y zona horaria"), "menuButton", None),
+                    (t("Accesibilidad"), "menuButton", None),
                 ],
             ),
             1,
@@ -2231,21 +2229,21 @@ class UserMenuView(QWidget):
         bottom_row.setSpacing(18)
         bottom_row.addWidget(
             MenuSection(
-                "Seguridad",
+                t("Seguridad"),
                 [
-                    ("Cambiar contrasena", "menuButton", None),
-                    ("Dispositivos vinculados", "menuButton", None),
-                    ("Verificacion en dos pasos", "menuButton", None),
+                    (t("Cambiar contrasena"), "menuButton", None),
+                    (t("Dispositivos vinculados"), "menuButton", None),
+                    (t("Verificacion en dos pasos"), "menuButton", None),
                 ],
             ),
             1,
         )
         bottom_row.addWidget(
             MenuSection(
-                "Sesion",
+                t("Sesion"),
                 [
-                    ("Cerrar sesion en otros equipos", "menuButton", None),
-                    ("Salir de la cuenta", "logoutButton", on_logout),
+                    (t("Cerrar sesion en otros equipos"), "menuButton", None),
+                    (t("Salir de la cuenta"), "logoutButton", on_logout),
                 ],
             ),
             1,
@@ -2264,7 +2262,7 @@ class AdminMenuView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label("Administracion", "pageTitle"))
+        layout.addWidget(make_label(t("Administracion"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
         layout.addWidget(AccountHeaderCard(user_profile))
 
@@ -2272,23 +2270,23 @@ class AdminMenuView(QWidget):
         top_row.setSpacing(18)
         top_row.addWidget(
             MenuSection(
-                "Usuarios",
+                t("Usuarios"),
                 [
-                    ("Crear usuario", "menuButton", None),
-                    ("Resetear contrasena", "menuButton", None),
-                    ("Desactivar usuario", "menuButton", None),
-                    ("Editar roles", "menuButton", None),
+                    (t("Crear usuario"), "menuButton", None),
+                    (t("Resetear contrasena"), "menuButton", None),
+                    (t("Desactivar usuario"), "menuButton", None),
+                    (t("Editar roles"), "menuButton", None),
                 ],
             ),
             1,
         )
         top_row.addWidget(
             MenuSection(
-                "Permisos",
+                t("Permisos"),
                 [
-                    ("Roles y permisos", "menuButton", None),
-                    ("Grupos", "menuButton", None),
-                    ("Accesos temporales", "menuButton", None),
+                    (t("Roles y permisos"), "menuButton", None),
+                    (t("Grupos"), "menuButton", None),
+                    (t("Accesos temporales"), "menuButton", None),
                 ],
             ),
             1,
@@ -2298,23 +2296,23 @@ class AdminMenuView(QWidget):
         bottom_row.setSpacing(18)
         bottom_row.addWidget(
             MenuSection(
-                "Auditoria",
+                t("Auditoria"),
                 [
-                    ("Registro de actividad", "menuButton", None),
-                    ("Alertas", "menuButton", None),
-                    ("Exportar reporte", "menuButton", self.export_html_report),
+                    (t("Registro de actividad"), "menuButton", None),
+                    (t("Alertas"), "menuButton", None),
+                    (t("Exportar reporte"), "menuButton", self.export_html_report),
                 ],
             ),
             1,
         )
         bottom_row.addWidget(
             MenuSection(
-                "Sistema",
+                t("Sistema"),
                 [
-                    ("Backup y restauracion", "menuButton", None),
-                    ("Integraciones", "menuButton", None),
-                    ("Parametros globales", "menuButton", None),
-                    ("Salir de la cuenta", "logoutButton", on_logout),
+                    (t("Backup y restauracion"), "menuButton", None),
+                    (t("Integraciones"), "menuButton", None),
+                    (t("Parametros globales"), "menuButton", None),
+                    (t("Salir de la cuenta"), "logoutButton", on_logout),
                 ],
             ),
             1,
@@ -2338,17 +2336,17 @@ class AdminMenuView(QWidget):
         import export_handler
         data = {
             "kpis": [
-                [15, 60, "Impact Score", score, "", "cyan_500"],
-                [75, 60, "Green Score", gs, "/100", "emerald_500"]
+                [15, 60, t("Impact Score"), score, "", "cyan_500"],
+                [75, 60, t("Green Score"), gs, "/100", "emerald_500"]
             ],
             "details": [
-                ["Hardware (TDP)", details_dict.get("hardware", "N/A"), "emerald_600"],
-                ["Proveedor Cloud", details_dict.get("provider", "N/A"), "gray_800"],
-                ["Región Eléctrica", details_dict.get("region", "N/A"), "gray_800"],
-                ["Energía del Modelo", details_dict.get("model_energy", "N/A"), "cyan_600"]
+                [t("Hardware (TDP)"), details_dict.get("hardware", "N/A"), "emerald_600"],
+                [t("Proveedor Cloud"), details_dict.get("provider", "N/A"), "gray_800"],
+                [t("Región Eléctrica"), details_dict.get("region", "N/A"), "gray_800"],
+                [t("Energía del Modelo"), details_dict.get("model_energy", "N/A"), "cyan_600"]
             ]
         }
-        export_handler.generate_and_save_report(self, "eco", data)
+        export_handler.generate_and_save_report(self, "eco", data, lang=i18n.get_language())
 
 
 class PatternPanel(QWidget):
@@ -2424,7 +2422,7 @@ class LoginWindow(QMainWindow):
         self.failed_attempts = 0 # CU 55.2
 
         self.config = load_config()
-        self.setWindowTitle("Semáforo IA - Login")
+        self.setWindowTitle(t("Semáforo IA - Login"))
         self.resize(1100, 640)
 
         central = QWidget()
@@ -2443,7 +2441,7 @@ class LoginWindow(QMainWindow):
         brand_icon.setPixmap(make_leaf_pixmap(64))
         brand_icon.setFixedSize(64, 64)
 
-        brand_title = make_label("SEMÁFORO\nIA", "loginBrand", alignment=Qt.AlignCenter)
+        brand_title = make_label(t("SEMÁFORO\nIA"), "loginBrand", alignment=Qt.AlignCenter)
 
         left_layout.addStretch()
         left_layout.addWidget(brand_icon, 0, Qt.AlignHCenter)
@@ -2456,19 +2454,19 @@ class LoginWindow(QMainWindow):
         right_layout.setContentsMargins(48, 48, 48, 48)
         right_layout.setSpacing(16)
 
-        right_layout.addWidget(make_label("Login", "loginCaption"))
-        right_layout.addWidget(make_label("Bienvenido de Vuelta", "loginTitle"))
+        right_layout.addWidget(make_label(t("Login"), "loginCaption"))
+        right_layout.addWidget(make_label(t("Bienvenido de Vuelta"), "loginTitle"))
         right_layout.addSpacing(8)
 
-        right_layout.addWidget(make_label("Usuario", "loginLabel"))
+        right_layout.addWidget(make_label(t("Usuario"), "loginLabel"))
         self.username_input = QLineEdit()
         self.username_input.setObjectName("loginInput")
-        self.username_input.setPlaceholderText("Ingrese un usuario")
+        self.username_input.setPlaceholderText(t("Ingrese un usuario"))
         self.username_input.setFixedHeight(40)
 
         right_layout.addWidget(self.username_input)
 
-        right_layout.addWidget(make_label("Contraseña", "loginLabel"))
+        right_layout.addWidget(make_label(t("Contraseña"), "loginLabel"))
         self.password_input = QLineEdit()
         self.password_input.setObjectName("loginInput")
         self.password_input.setEchoMode(QLineEdit.Password)
@@ -2481,14 +2479,14 @@ class LoginWindow(QMainWindow):
         server_port = self.config.get("server_port", 6767)
         self.server_url = f"{server_ip}:{server_port}"
 
-        right_layout.addWidget(make_label("Conexión", "loginLabel"))
+        right_layout.addWidget(make_label(t("Conexión"), "loginLabel"))
         self.connection_combo = QComboBox()
         self.connection_combo.setObjectName("filterCombo")
-        self.connection_combo.addItems(["Local", "Servidor"])
+        self.connection_combo.addItems([t("Local"), t("Servidor")])
         self.connection_combo.setFixedHeight(40)
         right_layout.addWidget(self.connection_combo)
 
-        self.ip_label = make_label("URL Servidor", "loginLabel")
+        self.ip_label = make_label(t("URL Servidor"), "loginLabel")
         self.server_ip_input = QLineEdit()
         self.server_ip_input.setObjectName("loginInput")
         self.server_ip_input.setText(self.server_url)
@@ -2501,7 +2499,7 @@ class LoginWindow(QMainWindow):
         self.server_ip_input.setVisible(False)
 
         def on_connection_changed(idx):
-            is_server = (self.connection_combo.currentText() == "Servidor")
+            is_server = (self.connection_combo.currentText() == t("Servidor"))
             self.ip_label.setVisible(is_server)
             self.server_ip_input.setVisible(is_server)
 
@@ -2511,7 +2509,7 @@ class LoginWindow(QMainWindow):
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
 
-        self.login_button = QPushButton("Continuar")
+        self.login_button = QPushButton(t("Continuar"))
         self.login_button.setObjectName("loginButton")
         self.login_button.setCursor(Qt.PointingHandCursor)
         self.login_button.setFixedWidth(140)
@@ -2520,7 +2518,7 @@ class LoginWindow(QMainWindow):
         right_layout.addWidget(self.login_button, 0, Qt.AlignLeft)
         right_layout.addSpacing(10)
 
-        users_label = make_label("Usuarios disponibles", "loginHint")
+        users_label = make_label(t("Usuarios disponibles"), "loginHint")
         right_layout.addWidget(users_label)
 
         user_cards = QVBoxLayout()
@@ -2539,26 +2537,26 @@ class LoginWindow(QMainWindow):
 
     def handle_login(self):
         if self.failed_attempts >= 3:
-            self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+            self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
             return
 
         username = self.username_input.text().strip()
         if not username:
-            self._set_error("Ingresa un usuario válido.")
+            self._set_error(t("Ingresa un usuario válido."))
             return
 
         password = self.password_input.text()
 
         mode = self.connection_combo.currentText()
-        if mode == "Local":
+        if mode == t("Local"):
             profile = find_user_profile(self.config, username)
             if not profile:
                 self.failed_attempts += 1
                 if self.failed_attempts >= 3:
                     self.login_button.setEnabled(False)
-                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                    self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
-                    self._set_error("Usuario no encontrado.")
+                    self._set_error(t("Usuario no encontrado."))
                 return
 
             expected = str(profile.get("password", ""))
@@ -2566,9 +2564,9 @@ class LoginWindow(QMainWindow):
                 self.failed_attempts += 1
                 if self.failed_attempts >= 3:
                     self.login_button.setEnabled(False)
-                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                    self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
-                    self._set_error("Contraseña incorrecta.")
+                    self._set_error(t("Contraseña incorrecta."))
                 return
         else:
             # Server Mode
@@ -2589,18 +2587,18 @@ class LoginWindow(QMainWindow):
             except urllib.error.HTTPError as e:
                 self.failed_attempts += 1
                 try:
-                    error_msg = json.loads(e.read().decode("utf-8")).get("error", "Error de autenticación.")
+                    error_msg = json.loads(e.read().decode("utf-8")).get("error", t("Error de autenticación."))
                 except Exception:
-                    error_msg = "Error de autenticación."
+                    error_msg = t("Error de autenticación.")
 
                 if self.failed_attempts >= 3:
                     self.login_button.setEnabled(False)
-                    self._set_error("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador.")
+                    self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
                     self._set_error(error_msg)
                 return
             except urllib.error.URLError:
-                self._set_error("No se pudo conectar al servidor.")
+                self._set_error(t("No se pudo conectar al servidor."))
                 return
 
         profile["connection_mode"] = mode
@@ -2633,7 +2631,7 @@ class CatalogRow(QFrame):
         layout.addWidget(make_label(ram, "catalogCell", alignment=Qt.AlignCenter), 1)
         layout.addWidget(make_label(tdp, "catalogCell", alignment=Qt.AlignCenter), 1)
 
-        assign_button = QPushButton("Asignar")
+        assign_button = QPushButton(t("Asignar"))
         assign_button.setObjectName("assignButton")
         assign_button.setFixedHeight(32)
         assign_button.setCursor(Qt.PointingHandCursor)
@@ -2683,16 +2681,16 @@ class HardwareCatalogView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        title = make_label("Catálogo de Hardware", "pageTitle")
+        title = make_label(t("Catálogo de Hardware"), "pageTitle")
 
-        placeholder = "Detectando..."
+        placeholder = t("Detectando...")
         hardware_rows = [
-            ("CPU", placeholder),
-            ("GPU", placeholder),
-            ("RAM", placeholder),
-            ("Sistema", placeholder),
+            (t("CPU"), placeholder),
+            (t("GPU"), placeholder),
+            (t("RAM"), placeholder),
+            (t("Sistema"), placeholder),
         ]
-        self.hardware_panel = DetailsPanel("Hardware detectado", hardware_rows)
+        self.hardware_panel = DetailsPanel(t("Hardware detectado"), hardware_rows)
         self.hardware_panel.setObjectName("hardwarePanel")
 
         catalog_panel = QFrame()
@@ -2706,12 +2704,12 @@ class HardwareCatalogView(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setObjectName("searchInput")
-        self.search_input.setPlaceholderText("Buscar componente...")
+        self.search_input.setPlaceholderText(t("Buscar componente..."))
         self.search_input.setFixedHeight(42)
 
         self.filter_combo = ChevronComboBox()
         self.filter_combo.setObjectName("filterCombo")
-        self.filter_combo.addItems(["TDP máx: todos", "TDP máx: 125W", "TDP máx: 225W", "TDP máx: 400W"])
+        self.filter_combo.addItems([t("TDP máx: todos"), t("TDP máx: 125W"), t("TDP máx: 225W"), t("TDP máx: 400W")])
         self.filter_combo.setFixedHeight(42)
         self.filter_combo.setMinimumWidth(220)
 
@@ -2724,8 +2722,8 @@ class HardwareCatalogView(QWidget):
         header_layout.setContentsMargins(18, 10, 18, 10)
         header_layout.setSpacing(10)
 
-        header_layout.addWidget(make_label("Componente", "catalogHeaderLabel"), 3)
-        header_layout.addWidget(make_label("Tipo", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
+        header_layout.addWidget(make_label(t("Componente"), "catalogHeaderLabel"), 3)
+        header_layout.addWidget(make_label(t("Tipo"), "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
         header_layout.addWidget(make_label("TFLOPS", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
         header_layout.addWidget(make_label("VRAM", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
         header_layout.addWidget(make_label("TDP", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
@@ -2769,10 +2767,10 @@ class HardwareCatalogView(QWidget):
 
     def _on_hardware_loaded(self, info):
         values = [
-            info.get("cpu", "No detectado"),
-            info.get("gpu", "No detectado"),
-            info.get("ram", "No detectado"),
-            info.get("os", "No detectado"),
+            info.get("cpu", t("No detectado")),
+            info.get("gpu", t("No detectado")),
+            info.get("ram", t("No detectado")),
+            info.get("os", t("No detectado")),
         ]
         self.hardware_panel.set_values(values)
 
@@ -2799,7 +2797,7 @@ class HardwareCatalogView(QWidget):
     def _render_hardware_rows(self, rows):
         self._clear_layout(self.rows_layout)
         if not rows:
-            self.rows_layout.addWidget(CatalogRow("Sin resultados", "--", "--", "--", "--"))
+            self.rows_layout.addWidget(CatalogRow(t("Sin resultados"), "--", "--", "--", "--"))
             return
 
         for row in rows:
@@ -2811,7 +2809,7 @@ class HardwareCatalogView(QWidget):
             if tdp != "--" and not str(tdp).strip().lower().endswith("w"):
                 tdp = f"{tdp}W"
             if not component:
-                component = "Hardware"
+                component = t("Hardware")
             self.rows_layout.addWidget(
                 CatalogRow(
                     component,
@@ -2857,7 +2855,7 @@ class PlaceholderView(QWidget):
 
         layout.addWidget(make_label(title, "pageTitle"))
         layout.addWidget(make_separator("separator"))
-        layout.addWidget(make_label("Vista en construcción", "placeholderText"))
+        layout.addWidget(make_label(t("Vista en construcción"), "placeholderText"))
 
 
 class MenuTriggerWidget(QWidget):
@@ -2917,7 +2915,7 @@ class Sidebar(QFrame):
         self.brand_icon.setPixmap(make_leaf_pixmap(26))
         self.brand_icon.setFixedSize(QSize(26, 26))
 
-        self.brand_title = make_label("SEMÁFORO IA", "brandTitle")
+        self.brand_title = make_label(t("SEMÁFORO IA"), "brandTitle")
 
         brand_row.addWidget(self.toggle_button)
         brand_row.addWidget(self.brand_icon)
@@ -3042,16 +3040,16 @@ class Sidebar(QFrame):
         return card
 
     def _build_account_menu(self):
-        menu = QMenu()
+        menu = QMenu(self)
         menu.setObjectName("accountMenu")
 
         def add_header(text):
-            action = menu.addAction(text)
+            action = menu.addAction(t(text))
             action.setEnabled(False)
             return action
 
         def add_action(text, handler=None):
-            action = menu.addAction(text)
+            action = menu.addAction(t(text))
             if handler:
                 action.triggered.connect(handler)
             return action
@@ -3065,7 +3063,7 @@ class Sidebar(QFrame):
         add_header("Preferencias")
         add_action("Notificaciones")
 
-        self.lang_action = menu.addAction("Idioma y zona horaria")
+        self.lang_action = menu.addAction(t("Idioma y zona horaria"))
 
         add_action("Accesibilidad")
         menu.addSeparator()
@@ -3126,11 +3124,11 @@ class Sidebar(QFrame):
         self.user_card_compact.setVisible(self.is_collapsed)
 
         if self.is_collapsed:
-            self.user_compact_trigger.setToolTip("Cuenta")
+            self.user_compact_trigger.setToolTip(t("Cuenta"))
             self.user_info.setToolTip("")
         else:
             self.user_compact_trigger.setToolTip("")
-            self.user_info.setToolTip("Cuenta")
+            self.user_info.setToolTip(t("Cuenta"))
 
         for button, label in self.nav_buttons:
             self._apply_nav_button_state(button, label)
@@ -3152,7 +3150,7 @@ class DashboardWindow(QMainWindow):
     def __init__(self, user_profile=None):
         super().__init__()
 
-        self.setWindowTitle("Semáforo IA")
+        self.setWindowTitle(t("Semáforo IA"))
         self.setWindowIcon(QIcon(make_leaf_pixmap(64)))
         self.resize(1200, 720)
 
@@ -3201,116 +3199,7 @@ class DashboardWindow(QMainWindow):
             "hardware_tdp": None,
         }
         self.current_score = None
-        self.current_lang = "es"
-
-        self.translations = {
-            "Inicio": "Home",
-            "Modelos": "Models",
-            "Impacto Ambiental": "Environmental Impact",
-            "Costos FinOps": "FinOps Costs",
-            "Comparativas": "Comparisons",
-            "Hardware": "Hardware",
-            "Cloud": "Cloud",
-            "Historial": "History",
-            "Ajustes": "Settings",
-            "Administracion": "Administration",
-            "SEMÁFORO IA": "AI TRAFFIC",
-            "Huella de Carbono Alta": "High Carbon Footprint",
-            "Huella de Carbono Moderada": "Moderate Carbon Footprint",
-            "Huella de Carbono Baja": "Low Carbon Footprint",
-            "Panel de Rendimiento Ambiental": "Environmental Performance Panel",
-            "Emisiones (gCO2eq)": "Emissions (gCO2eq)",
-            "Consumo (kWh)": "Consumption (kWh)",
-            "Detalle de Componentes": "Component Details",
-            "Presupuesto": "Budget",
-            "Costo Actual": "Current Cost",
-            "Ahorro": "Savings",
-            "Catálogo de Hardware": "Hardware Catalog",
-            "Asignar Componente": "Assign Component",
-            "Configuración de Región Cloud": "Cloud Region Configuration",
-            "Proveedor": "Provider",
-            "Región": "Region",
-            "TDP / Eficiencia": "TDP / Efficiency",
-            "Exportar reporte": "Export Report",
-            "Usuarios": "Users",
-            "Sistema": "System",
-            "Soporte y documentación": "Support & Docs",
-            "Sesion": "Session",
-            "Alertas": "Alerts",
-            "Auditoria": "Audit",
-            "Idioma y zona horaria": "Language & Timezone",
-            "Tu nivel de Huella de Carbono es alto. Se recomienda revisar el consumo energético y la configuración de hardware.": "Your Carbon Footprint level is high. It is recommended to review energy consumption and hardware configuration.",
-            "Tu nivel de Huella de Carbono es estándar. Se mantiene estable, pero existen oportunidades de mejora.": "Your Carbon Footprint level is standard. It remains stable, but there are opportunities for improvement.",
-            "Tu nivel de Huella de Carbono es bajo y se mantiene con muy poco uso adicional.": "Your Carbon Footprint level is low and is maintained with very little additional use.",
-            "¿Cómo se calcula?": "How is it calculated?",
-            "Se estima con energía, hardware, tiempo de proceso y región/proveedor.": "It is estimated with energy, hardware, processing time, and region/provider.",
-            "Cerrar sesion en otros equipos": "Sign out from other devices",
-            "Salir de la cuenta": "Sign out",
-            "Editar perfil": "Edit profile",
-            "Actualizar foto": "Update photo",
-            "Datos personales": "Personal data",
-            "Notificaciones": "Notifications",
-            "Accesibilidad": "Accessibility",
-            "Cambiar contrasena": "Change password",
-            "Verificacion de 2 pasos": "2-step verification",
-            "Crear usuario": "Create user",
-            "Resetear contrasena": "Reset password",
-            "Desactivar usuario": "Deactivate user",
-            "Backup y restauracion": "Backup & restore",
-            "Integraciones": "Integrations",
-            "Registro de actividad": "Activity log",
-            "Centro de ayuda": "Help center",
-            "Documentación API": "API Documentation"
-        ,
-            "Ahorro estimado": "Estimated Savings",
-            "Asignar": "Assign",
-            "Bienvenido de Vuelta": "Welcome Back",
-            "Buscar componente...": "Search component...",
-            "Básico": "Basic",
-            "Componente": "Component",
-            "Consumo Energético": "Energy Consumption",
-            "Continuar": "Continue",
-            "Contraseña": "Password",
-            "Costo actual": "Current Cost",
-            "Cuenta": "Account",
-            "Desglose por servicio": "Service Breakdown",
-            "Detalles del Cálculo": "Calculation Details",
-            "Dominios": "Domains",
-            "Emisiones ejecución": "Execution Emissions",
-            "Emisiones entrenamiento": "Training Emissions",
-            "Empresas": "Companies",
-            "Estado": "Status",
-            "Hardware detectado": "Detected Hardware",
-            "Implementar al menos una de estas medidas debería ser suficiente para retornar al rango verde en la próxima evaluación.": "Implementing at least one of these measures should be enough to return to the green range in the next evaluation.",
-            "Ingrese un usuario": "Enter a username",
-            "Latencia media": "Average Latency",
-            "Login": "Login",
-            "Modelos activos": "Active Models",
-            "Modelos disponibles": "Available Models",
-            "Modelos recientes": "Recent Models",
-            "Precisión promedio": "Average Precision",
-            "Preferencias generales": "General Preferences",
-            "Presupuesto mensual": "Monthly Budget",
-            "Profesional": "Professional",
-            "Región activa": "Active Region",
-
-            "Servicios activos": "Active Services",
-            "TDP máx: 125W": "Max TDP: 125W",
-            "TDP máx: 225W": "Max TDP: 225W",
-            "TDP máx: 400W": "Max TDP: 400W",
-            "TDP máx: todos": "Max TDP: all",
-            "Tiempo de Procesamiento": "Processing Time",
-            "Tipo": "Type",
-            "Tu nivel de huella de carbono se encuentra en un rango de advertencia. Si bien el sistema opera dentro de márgenes aceptables, se han detectado parámetros que incrementan innecesariamente las emisiones de CO2 y el consumo energético. Es recomendable tomar acción antes de que el nivel escale a rango crítico.": "Your carbon footprint level is in a warning range. Although the system operates within acceptable margins, parameters have been detected that unnecessarily increase CO2 emissions and energy consumption. It is recommended to take action before the level escalates to a critical range.",
-            "Usuario": "User",
-            "Usuarios disponibles": "Available Users",
-            "Vista en construcción": "View under construction",
-            "Últimas ejecuciones": "Latest Executions",
-            "• <b>Región de ejecución:</b> Migrar las cargas de trabajo a regiones con menor factor de emisión, como Europa del Norte o Canada Central, puede reducir significativamente las emisiones sin afectar el rendimiento.": "• <b>Execution Region:</b> Migrating workloads to regions with a lower emission factor, such as Northern Europe or Central Canada, can significantly reduce emissions without affecting performance.",
-            "• <b>Tiempo de procesamiento:</b> Optimizar los hiperparámetros del modelo o aplicar técnicas de early stopping puede disminuir el tiempo de cómputo y, con ello, el consumo energético asociado.": "• <b>Processing Time:</b> Optimizing model hyperparameters or applying early stopping techniques can decrease computation time and, consequently, associated energy consumption.",
-            "• <b>Hardware:</b> Considerar el uso de aceleradores más eficientes energéticamente o ajustar la asignación de recursos para evitar capacidad ociosa durante la ejecución.": "• <b>Hardware:</b> Consider using more energy-efficient accelerators or adjusting resource allocation to avoid idle capacity during execution."
-        }
-        self.reverse_translations = {v: k for k, v in self.translations.items()}
+        self.current_lang = i18n.load_saved_language()
 
         self.home_view = HomeView(main_window=self)
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
@@ -3320,29 +3209,29 @@ class DashboardWindow(QMainWindow):
         sidebar.lang_action.triggered.connect(self._toggle_language)
         self.header_title = self.home_view.findChild(QLabel, "pageTitle")
 
-        self._add_nav_item(sidebar, "Inicio", make_home_icon(), self.home_view)
-        self._add_nav_item(sidebar, "Modelos", make_grid_icon(), self.models_view)
+        self._add_nav_item(sidebar, t("Inicio"), make_home_icon(), self.home_view)
+        self._add_nav_item(sidebar, t("Modelos"), make_grid_icon(), self.models_view)
         self._add_nav_item(
             sidebar,
-            "Impacto Ambiental",
+            t("Impacto Ambiental"),
             make_leaf_pixmap(18, "#66bb22"),
             EnvironmentalPerformanceView(),
         )
         self._add_nav_item(
             sidebar,
-            "Costos FinOps",
+            t("Costos FinOps"),
             make_text_icon("$", 18, "#66bb22"),
             FinOpsView(),
         )
-        self._add_nav_item(sidebar, "Comparativas", make_bars_icon(), CarbonDetailView())
-        self._add_nav_item(sidebar, "Hardware", make_chip_icon(), self.hardware_view)
-        self._add_nav_item(sidebar, "Cloud", make_cloud_icon(), self.cloud_view)
-        self._add_nav_item(sidebar, "Historial", make_clock_icon(), HistoryView())
-        self._add_nav_item(sidebar, "Ajustes", make_gear_icon(), SettingsView())
+        self._add_nav_item(sidebar, t("Comparativas"), make_bars_icon(), CarbonDetailView())
+        self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), self.hardware_view)
+        self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), self.cloud_view)
+        self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), HistoryView())
+        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), SettingsView())
 
         self._add_nav_item(
             sidebar,
-            "Administracion",
+            t("Administracion"),
             make_gear_icon(),
             AdminMenuView(user_profile, on_logout=self._handle_logout, main_window=self),
         )
@@ -3387,59 +3276,77 @@ class DashboardWindow(QMainWindow):
         self._update_semaforo()
 
     def _toggle_language(self):
-        self.current_lang = "en" if self.current_lang == "es" else "es"
+        """Cicla entre todos los idiomas definidos en locales/translations.json."""
+        self.set_language(i18n.next_language(self.current_lang))
 
-        from PySide6.QtWidgets import QLabel, QPushButton
+    def set_language(self, lang_code):
+        """Aplica `lang_code` a toda la aplicacion (ventanas, dialogos y reportes)."""
+        if lang_code not in i18n.available_languages():
+            return
+        i18n.set_language(lang_code)
+        i18n.save_language(lang_code)
+        self.current_lang = lang_code
+
+        from PySide6.QtWidgets import (
+            QLabel, QPushButton, QLineEdit, QComboBox, QCheckBox,
+            QRadioButton, QGroupBox, QToolButton,
+        )
         from PySide6.QtGui import QAction
 
-
-        # Translate QLabels and QPushButtons
-        for widget in self.findChildren(QLabel) + self.findChildren(QPushButton):
-            if hasattr(widget, "text"):
+        text_widget_classes = (
+            QLabel, QPushButton, QCheckBox, QRadioButton, QToolButton,
+        )
+        for widget_cls in text_widget_classes:
+            for widget in self.findChildren(widget_cls):
                 current_text = widget.text()
-                if self.current_lang == "en" and current_text in self.translations:
-                    widget.setText(self.translations[current_text])
-                elif self.current_lang == "es" and current_text in self.reverse_translations:
-                    widget.setText(self.reverse_translations[current_text])
+                translated = i18n.t(current_text, lang_code)
+                if translated != current_text:
+                    widget.setText(translated)
+                tooltip = widget.toolTip()
+                if tooltip:
+                    translated_tip = i18n.t(tooltip, lang_code)
+                    if translated_tip != tooltip:
+                        widget.setToolTip(translated_tip)
+
+        for widget in self.findChildren(QGroupBox):
+            current_title = widget.title()
+            translated = i18n.t(current_title, lang_code)
+            if translated != current_title:
+                widget.setTitle(translated)
 
         # Also translate default descriptions in StatusCards
         if hasattr(self, 'home_view'):
             for card in self.home_view.status_cards.values():
-                if self.current_lang == "en" and card.default_description in self.translations:
-                    card.default_description = self.translations[card.default_description]
-                elif self.current_lang == "es" and card.default_description in self.reverse_translations:
-                    card.default_description = self.reverse_translations[card.default_description]
-
+                card.default_description = i18n.t(card.default_description, lang_code)
                 # If not currently selected (i.e. showing default description), update it visually
                 if not card.property("selected"):
                     card.update_description(card.default_description)
 
-
-
-        from PySide6.QtWidgets import QLineEdit, QComboBox
         for widget in self.findChildren(QLineEdit):
-            if hasattr(widget, "placeholderText"):
-                current_text = widget.placeholderText()
-                if self.current_lang == "en" and current_text in self.translations:
-                    widget.setPlaceholderText(self.translations[current_text])
-                elif self.current_lang == "es" and current_text in self.reverse_translations:
-                    widget.setPlaceholderText(self.reverse_translations[current_text])
+            current_text = widget.placeholderText()
+            if current_text:
+                translated = i18n.t(current_text, lang_code)
+                if translated != current_text:
+                    widget.setPlaceholderText(translated)
+            tooltip = widget.toolTip()
+            if tooltip:
+                translated_tip = i18n.t(tooltip, lang_code)
+                if translated_tip != tooltip:
+                    widget.setToolTip(translated_tip)
 
         for widget in self.findChildren(QComboBox):
             for i in range(widget.count()):
                 current_text = widget.itemText(i)
-                if self.current_lang == "en" and current_text in self.translations:
-                    widget.setItemText(i, self.translations[current_text])
-                elif self.current_lang == "es" and current_text in self.reverse_translations:
-                    widget.setItemText(i, self.reverse_translations[current_text])
-        # Translate Menu Actions
+                translated = i18n.t(current_text, lang_code)
+                if translated != current_text:
+                    widget.setItemText(i, translated)
+
+        # Translate Menu Actions (incluye menus de cuenta y export)
         for action in self.findChildren(QAction):
-            if hasattr(action, "text"):
-                current_text = action.text()
-                if self.current_lang == "en" and current_text in self.translations:
-                    action.setText(self.translations[current_text])
-                elif self.current_lang == "es" and current_text in self.reverse_translations:
-                    action.setText(self.reverse_translations[current_text])
+            current_text = action.text()
+            translated = i18n.t(current_text, lang_code)
+            if translated != current_text:
+                action.setText(translated)
 
         # Force re-render of active card with correct language
         if hasattr(self, 'home_view') and hasattr(self, 'current_score'):
@@ -4034,6 +3941,8 @@ def main():
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
     apply_stylesheet(app)
+
+    i18n.load_saved_language()
 
     window = LoginWindow()
     window.show()

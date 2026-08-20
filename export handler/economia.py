@@ -2,8 +2,14 @@ import os
 import sys
 import argparse
 from datetime import datetime
+import matplotlib
+matplotlib.use("Agg")  # backend sin GUI: seguro para generar el grafico desde un hilo aparte
 import matplotlib.pyplot as plt
 from config_loader import export_json_report, load_config
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import i18n
+from i18n import t
 
 try:
     from fpdf import FPDF
@@ -102,10 +108,11 @@ def generate_charts():
     plt.close(fig)
 
 
-def create_pdf_report(filename=None, export_format="both"):
+def create_pdf_report(filename=None, export_format="both", lang=None):
     if export_format not in {"pdf", "json", "both"}:
         raise ValueError("export_format debe ser 'pdf', 'json' o 'both'")
 
+    lang = lang or i18n.get_language()
     filename = filename or REPORT['filename']
     if export_format == "json":
         json_filename = export_json_report(filename, "economia", SHARED, REPORT)
@@ -128,18 +135,18 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "", 10)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(32, 21)
-    pdf.cell(100, 5, REPORT['subtitle'])
+    pdf.cell(100, 5, t(REPORT['subtitle'], lang))
 
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_800'])
     pdf.set_xy(110, 15)
-    pdf.cell(85, 5, f"Exportado por: {SHARED['exported_by']}", align="R")
+    pdf.cell(85, 5, f"{t('Exportado por:', lang)} {SHARED['exported_by']}", align="R")
 
     pdf.set_font("helvetica", "", 8)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(110, 20)
     current_date = datetime.now().strftime(SHARED['date_format'])
-    pdf.cell(85, 5, f"Fecha de exportación: {current_date}", align="R")
+    pdf.cell(85, 5, f"{t('Fecha de exportación:', lang)} {current_date}", align="R")
 
     pdf.set_draw_color(*COLORS['cyan_500'])
     pdf.set_line_width(0.8)
@@ -155,7 +162,7 @@ def create_pdf_report(filename=None, export_format="both"):
     kpis = []
     for i, (old_x, old_y, title, value, unit, color) in enumerate(kpis_raw):
         new_x = 15 + i * (box_w + 5)
-        kpis.append((new_x, kpi_top_y, title, value, unit, COLORS[color]))
+        kpis.append((new_x, kpi_top_y, t(title, lang), value, unit, COLORS[color]))
 
     for x, y, title, value, unit, unit_color in kpis:
         value = str(value)
@@ -182,7 +189,7 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(15, 82)
-    pdf.cell(fixed_box_w, 5, REPORT['chart_title'], align="C")
+    pdf.cell(fixed_box_w, 5, t(REPORT['chart_title'], lang), align="C")
     _, configured_chart_y = SHARED.get('chart_image_position', [15, 75])
     chart_w = min(SHARED.get('chart_image_width', 75), fixed_box_w - 16)
     chart_x = 15 + (fixed_box_w - chart_w) / 2
@@ -193,7 +200,7 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(107.5, 82)
-    pdf.cell(fixed_box_w, 5, REPORT['progress_title'], align="C")
+    pdf.cell(fixed_box_w, 5, t(REPORT['progress_title'], lang), align="C")
 
     bar_x = 115
     bar_y = 105
@@ -224,17 +231,17 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "B", 8)
     pdf.set_text_color(*COLORS['cyan_600'])
     pdf.set_xy(125, 123)
-    pdf.cell(55, 5, REPORT['badge'], align="C")
+    pdf.cell(55, 5, t(REPORT['badge'], lang), align="C")
 
     pdf.draw_rounded_box(15, 148, fixed_box_w, 75)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(20, 152)
-    pdf.cell(fixed_box_w - 10, 5, REPORT['details_title'])
+    pdf.cell(fixed_box_w - 10, 5, t(REPORT['details_title'], lang))
     pdf.set_draw_color(*COLORS['gray_200'])
     pdf.line(20, 159, 15 + fixed_box_w - 5, 159)
 
-    detalles = [(key, value, COLORS[color]) for key, value, color in REPORT['details']]
+    detalles = [(t(key, lang), value, COLORS[color]) for key, value, color in REPORT['details']]
     y_offset = 162
     for key, value, value_color in detalles:
         pdf.set_font("helvetica", "", 9)
@@ -253,11 +260,11 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(112.5, 152)
-    pdf.cell(fixed_box_w - 10, 5, "Registro de Actividad")
+    pdf.cell(fixed_box_w - 10, 5, t("Registro de Actividad", lang))
     pdf.set_draw_color(*COLORS['gray_200'])
     pdf.line(112.5, 159, 107.5 + fixed_box_w - 5, 159)
 
-    logs = [(text, COLORS[color]) for text, color in REPORT['logs']]
+    logs = [(t(text, lang), COLORS[color]) for text, color in REPORT['logs']]
     y_offset = 163
     logs_bottom = 148 + 75 - 4
     for text, dot_color in logs:
@@ -276,7 +283,7 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_font("helvetica", "I", 8)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(15, 280)
-    pdf.cell(180, 5, SHARED['footer'], align="C")
+    pdf.cell(180, 5, t(SHARED['footer'], lang), align="C")
 
     pdf.output(filename)
     json_filename = None
