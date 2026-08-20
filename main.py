@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
@@ -809,6 +810,9 @@ class InfoCard(QFrame):
     def set_value(self, value):
         self.value_label.setText(value)
 
+    def get_value(self):
+        return self.value_label.text()
+
 
 class ListPanel(QFrame):
     def __init__(self, title, items, parent=None):
@@ -1154,8 +1158,20 @@ class EnvironmentalPerformanceView(QWidget):
 
         entrenamiento_text = self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text() if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else "98"
         ejecucion_text = self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text() if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else "44"
-        entrenamiento_val = int(round(parse_number(entrenamiento_text) or 98))
-        ejecucion_val = int(round(parse_number(ejecucion_text) or 44))
+
+        def extract_emission_value(raw_text, default_value):
+            cleaned = (raw_text or "").replace("gCO2eq", "").replace("gCO₂eq", "").strip()
+            cleaned = cleaned.replace(",", ".")
+            try:
+                return int(round(float(cleaned)))
+            except ValueError:
+                match = re.search(r"\d+(?:[\.,]\d+)?", raw_text or "")
+                if not match:
+                    return default_value
+                return int(round(float(match.group(0).replace(",", "."))))
+
+        entrenamiento_val = extract_emission_value(entrenamiento_text, 98)
+        ejecucion_val = extract_emission_value(ejecucion_text, 44)
         progress_val = self.eco_bar.value() if hasattr(self, "eco_bar") else 45
 
         user_profile = getattr(self.window(), 'sidebar', None)
@@ -1173,8 +1189,10 @@ class EnvironmentalPerformanceView(QWidget):
             "chart_values": [entrenamiento_val, ejecucion_val],
             "chart_labels": [f"Entrenamiento: {entrenamiento_val} gCO2eq", f"Ejecución: {ejecucion_val} gCO2eq"],
             "kpis": [
-                [15, 60, "Consumo Energético", consumo_val, "kWh", "emerald_500"],
-                [107.5, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
+                [15, 60, "Emisiones entrenamiento", str(entrenamiento_val), "gCO2eq", "emerald_500"],
+                [60, 60, "Emisiones ejecución", str(ejecucion_val), "gCO2eq", "cyan_500"],
+                [105, 60, "Consumo Energético", consumo_val, "kWh", "emerald_500"],
+                [150, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
             ],
             "details": [
                 ["Hardware", "NVIDIA A100", "emerald_600"],
@@ -1507,6 +1525,18 @@ class FinOpsView(QWidget):
         self.card_actual = InfoCard("Costo actual", "$4.820.000")
         self.card_presupuesto = InfoCard("Presupuesto mensual", "$7.500.000")
         self.card_ahorro = InfoCard("Ahorro estimado", "$1.120.000")
+
+        # Referencia fija temporal de conversión (20-08-2026).
+        # TODO: reemplazar por consulta en tiempo real cuando se integre el endpoint.
+        self.conversion_reference_date = "2026-08-20"
+        self.usd_to_clp_rate = 922
+        self.eur_to_clp_rate = 1077
+
+        # Valores base en CLP para conversión consistente entre UI y exportación.
+        self.base_cost_actual_clp = 4_820_000
+        self.base_presupuesto_clp = 7_500_000
+        self.base_ahorro_clp = 1_120_000
+
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
         cards.addWidget(self.card_ahorro, 1)
@@ -1538,19 +1568,29 @@ class FinOpsView(QWidget):
         layout.addWidget(list_panel)
 
     def _update_currency(self, currency_str):
-        # Conversión visual para mantener consistencia entre lo mostrado y lo exportado.
+        # Conversión visual con tasa de referencia fija al 2026-08-20.
+        # 1 USD ~= 922 CLP | 1 EUR ~= 1.077 CLP | 1 EUR ~= 1,16 USD.
+        def to_clp_text(value):
+            return f"${int(round(value)):,}".replace(",", ".")
+
+        def to_usd_text(value_clp):
+            return f"U$D {value_clp / self.usd_to_clp_rate:,.2f}"
+
+        def to_eur_text(value_clp):
+            return f"€ {value_clp / self.eur_to_clp_rate:,.2f}"
+
         if "USD" in currency_str:
-            self.card_actual.findChild(QLabel, "infoValue").setText("U$D 5,100.00")
-            self.card_presupuesto.findChild(QLabel, "infoValue").setText("U$D 7,950.00")
-            self.card_ahorro.findChild(QLabel, "infoValue").setText("U$D 1,185.00")
+            self.card_actual.set_value(to_usd_text(self.base_cost_actual_clp))
+            self.card_presupuesto.set_value(to_usd_text(self.base_presupuesto_clp))
+            self.card_ahorro.set_value(to_usd_text(self.base_ahorro_clp))
         elif "EUR" in currency_str:
-            self.card_actual.findChild(QLabel, "infoValue").setText("€ 4,700.00")
-            self.card_presupuesto.findChild(QLabel, "infoValue").setText("€ 7,300.00")
-            self.card_ahorro.findChild(QLabel, "infoValue").setText("€ 1,090.00")
+            self.card_actual.set_value(to_eur_text(self.base_cost_actual_clp))
+            self.card_presupuesto.set_value(to_eur_text(self.base_presupuesto_clp))
+            self.card_ahorro.set_value(to_eur_text(self.base_ahorro_clp))
         else:
-            self.card_actual.findChild(QLabel, "infoValue").setText("$4.820.000")
-            self.card_presupuesto.findChild(QLabel, "infoValue").setText("$7.500.000")
-            self.card_ahorro.findChild(QLabel, "infoValue").setText("$1.120.000")
+            self.card_actual.set_value(to_clp_text(self.base_cost_actual_clp))
+            self.card_presupuesto.set_value(to_clp_text(self.base_presupuesto_clp))
+            self.card_ahorro.set_value(to_clp_text(self.base_ahorro_clp))
 
 
     def _sanitize_money_value(self, value, currency_code):
@@ -1580,9 +1620,9 @@ class FinOpsView(QWidget):
     def export_finops_report(self, export_format="pdf"):
         import export_handler
 
-        costo_actual = self.card_actual.findChild(QLabel, "infoValue").text() if self.card_actual.findChild(QLabel, "infoValue") else "$4.820.000"
-        presupuesto = self.card_presupuesto.findChild(QLabel, "infoValue").text() if self.card_presupuesto.findChild(QLabel, "infoValue") else "$7.500.000"
-        ahorro = self.card_ahorro.findChild(QLabel, "infoValue").text() if self.card_ahorro.findChild(QLabel, "infoValue") else "$1.120.000"
+        costo_actual = self.card_actual.get_value() if hasattr(self, "card_actual") else "$4.820.000"
+        presupuesto = self.card_presupuesto.get_value() if hasattr(self, "card_presupuesto") else "$7.500.000"
+        ahorro = self.card_ahorro.get_value() if hasattr(self, "card_ahorro") else "$1.120.000"
 
         currency = self.currency_combo.currentText()
         if "USD" in currency:

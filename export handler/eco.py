@@ -179,27 +179,34 @@ def create_pdf_report(filename=None, export_format="both"):
         val = str(val)
         unit = str(unit)
         pdf.draw_rounded_box(x, y, box_w, box_h)
+
+        compact_mode = num_kpis >= 4
+        title_font_size = 7 if compact_mode else 8
+        value_font_size = 14 if compact_mode else 24
+        unit_font_size = 8 if compact_mode else 12
+        value_y = y + (12 if compact_mode else 10)
+        unit_y = y + (16 if compact_mode else 13)
         
         # Título KPI
-        pdf.set_font("helvetica", "B", 8)
+        pdf.set_font("helvetica", "B", title_font_size)
         pdf.set_text_color(*COLORS['gray_500'])
         pdf.set_xy(x + 5, y + 4)
         pdf.cell(box_w - 10, 5, title)
         
         # Valor KPI
-        pdf.set_font("helvetica", "B", 24)
+        pdf.set_font("helvetica", "B", value_font_size)
         pdf.set_text_color(*COLORS['gray_800'])
-        pdf.set_xy(x + 5, y + 10)
+        pdf.set_xy(x + 5, value_y)
         
         # Ajuste dinámico de ancho para poner la unidad pegada
         val_width = pdf.get_string_width(val) + 2
         pdf.cell(val_width, 10, val)
         
         # Unidad KPI
-        pdf.set_font("helvetica", "B", 12)
+        pdf.set_font("helvetica", "B", unit_font_size)
         pdf.set_text_color(*unit_color)
-        pdf.set_xy(x + 5 + val_width, y + 13)
-        pdf.cell(max(20, box_w * 0.35), 5, unit)
+        pdf.set_xy(x + 5 + val_width, unit_y)
+        pdf.cell(max(12, box_w * 0.3), 5, unit)
 
     # --- SECCIÓN GRÁFICOS ---
 
