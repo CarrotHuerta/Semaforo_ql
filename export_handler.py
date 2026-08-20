@@ -5,12 +5,6 @@ from PySide6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
 # Add export handler to path
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "export handler"))
 
-try:
-    import eco
-    import economia
-except Exception as e:
-    print(f"Error importing export scripts: {e}")
-
 
 def generate_and_save_report(parent_widget, report_type, data):
     """
@@ -46,6 +40,9 @@ def generate_and_save_report(parent_widget, report_type, data):
 
     # Update data based on report type
     try:
+        import eco
+        import economia
+
         if report_type == 'eco':
             # Update eco module data
             if "kpis" in data:
