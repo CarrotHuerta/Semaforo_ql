@@ -157,6 +157,8 @@ def create_pdf_report(filename=None, export_format="both"):
         kpis.append((new_x, y, title, value, unit, COLORS[color]))
 
     for x, y, title, value, unit, unit_color in kpis:
+        value = str(value)
+        unit = str(unit)
         pdf.draw_rounded_box(x, y, box_w, box_h)
         pdf.set_font("helvetica", "B", 8)
         pdf.set_text_color(*COLORS['gray_500'])
@@ -172,7 +174,7 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_font("helvetica", "B", 9)
         pdf.set_text_color(*unit_color)
         pdf.set_xy(x + 5 + value_width, y + 13)
-        pdf.cell(25, 5, unit)
+        pdf.cell(max(18, box_w * 0.3), 5, unit)
 
     fixed_box_w = 87.5
     pdf.draw_rounded_box(15, 98, fixed_box_w, 65)
@@ -180,9 +182,11 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(15, 102)
     pdf.cell(fixed_box_w, 5, REPORT['chart_title'], align="C")
-    chart_x, chart_y = SHARED['chart_image_position']
-    pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y,
-              w=SHARED['chart_image_width'])
+    _, configured_chart_y = SHARED.get('chart_image_position', [15, 75])
+    chart_w = min(SHARED.get('chart_image_width', 75), fixed_box_w - 16)
+    chart_x = 15 + (fixed_box_w - chart_w) / 2
+    chart_y = max(108, configured_chart_y)
+    pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y, w=chart_w)
 
     pdf.draw_rounded_box(107.5, 98, fixed_box_w, 65)
     pdf.set_font("helvetica", "B", 10)
@@ -250,14 +254,19 @@ def create_pdf_report(filename=None, export_format="both"):
 
     logs = [(text, COLORS[color]) for text, color in REPORT['logs']]
     y_offset = 183
+    logs_bottom = 168 + 75 - 4
     for text, dot_color in logs:
+        if y_offset >= logs_bottom:
+            break
         pdf.set_fill_color(*dot_color)
         pdf.ellipse(112.5, y_offset + 1.5, 2.5, 2.5, style='F')
         pdf.set_font("helvetica", "", 8)
         pdf.set_text_color(*COLORS['gray_700'])
         pdf.set_xy(117.5, y_offset)
-        pdf.multi_cell(fixed_box_w - 15, 4, text)
-        y_offset += 10
+        start_y = y_offset
+        pdf.multi_cell(fixed_box_w - 15, 3.8, text)
+        consumed_h = pdf.get_y() - start_y
+        y_offset += max(7, consumed_h + 1.5)
 
     pdf.set_font("helvetica", "I", 8)
     pdf.set_text_color(*COLORS['gray_500'])

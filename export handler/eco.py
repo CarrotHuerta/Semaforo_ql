@@ -110,11 +110,9 @@ def create_pdf_report(filename=None, export_format="both"):
 
     filename = filename or REPORT['filename']
 
-    if export_format in ("json", "both"):
+    if export_format == "json":
         json_filename = export_json_report(filename, "eco", SHARED, REPORT)
         print(f"¡Los datos se exportaron como: {json_filename}!")
-
-    if export_format == "json":
         return
 
     # 1. Generar gráficos
@@ -178,6 +176,8 @@ def create_pdf_report(filename=None, export_format="both"):
 
     for kpi in kpis:
         x, y, title, val, unit, unit_color = kpi
+        val = str(val)
+        unit = str(unit)
         pdf.draw_rounded_box(x, y, box_w, box_h)
         
         # Título KPI
@@ -199,7 +199,7 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_font("helvetica", "B", 12)
         pdf.set_text_color(*unit_color)
         pdf.set_xy(x + 5 + val_width, y + 13)
-        pdf.cell(30, 5, unit)
+        pdf.cell(max(20, box_w * 0.35), 5, unit)
 
     # --- SECCIÓN GRÁFICOS ---
 
@@ -211,10 +211,12 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(15, 102)
     pdf.cell(fixed_box_w, 5, REPORT['chart_title'], align="C")
-    # Insertar Imagen PNG
-    chart_x, chart_y = SHARED['chart_image_position']
-    pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y,
-              w=SHARED['chart_image_width'])
+    # Insertar imagen centrada y con margen para evitar superposición con el título.
+    _, configured_chart_y = SHARED.get('chart_image_position', [15, 75])
+    chart_w = min(SHARED.get('chart_image_width', 75), fixed_box_w - 16)
+    chart_x = 15 + (fixed_box_w - chart_w) / 2
+    chart_y = max(108, configured_chart_y)
+    pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y, w=chart_w)
 
     # Caja Barra Límite
     pdf.draw_rounded_box(107.5, 98, fixed_box_w, 65)
@@ -301,7 +303,11 @@ def create_pdf_report(filename=None, export_format="both"):
     logs = [(text, COLORS[color]) for text, color in REPORT['logs']]
 
     y_offset = 183
+    logs_bottom = 168 + 75 - 4
     for text, dot_color in logs:
+        if y_offset >= logs_bottom:
+            break
+
         # Punto de viñeta
         pdf.set_fill_color(*dot_color)
         pdf.ellipse(112.5, y_offset + 1.5, 2.5, 2.5, style='F')
@@ -310,8 +316,10 @@ def create_pdf_report(filename=None, export_format="both"):
         pdf.set_font("helvetica", "", 8)
         pdf.set_text_color(*COLORS['gray_700'])
         pdf.set_xy(117.5, y_offset)
-        pdf.multi_cell(fixed_box_w - 15, 4, text)
-        y_offset += 10
+        start_y = y_offset
+        pdf.multi_cell(fixed_box_w - 15, 3.8, text)
+        consumed_h = pdf.get_y() - start_y
+        y_offset += max(7, consumed_h + 1.5)
 
     # --- PIE DE PÁGINA ---
     pdf.set_font("helvetica", "I", 8)

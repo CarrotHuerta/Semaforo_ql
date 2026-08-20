@@ -1040,11 +1040,11 @@ class EnvironmentalPerformanceView(QWidget):
         header_layout.addWidget(header_title, 1)
 
         # CU 57.2
-        export_pdf_btn = QPushButton("Exportar PDF")
-        export_pdf_btn.setObjectName("secondaryButton")
-        export_pdf_btn.setCursor(Qt.PointingHandCursor)
-        export_pdf_btn.clicked.connect(self.export_eco_report)
-        header_layout.addWidget(export_pdf_btn)
+        self.export_eco_btn = QPushButton("Exportar")
+        self.export_eco_btn.setObjectName("secondaryButton")
+        self.export_eco_btn.setCursor(Qt.PointingHandCursor)
+        self.export_eco_btn.clicked.connect(self.show_export_eco_menu)
+        header_layout.addWidget(self.export_eco_btn)
 
         emissions_layout = QHBoxLayout()
         emissions_layout.setSpacing(18)
@@ -1132,14 +1132,31 @@ class EnvironmentalPerformanceView(QWidget):
 
 
 
-    def export_eco_report(self):
+    def show_export_eco_menu(self):
+        menu = QMenu(self)
+        export_pdf_action = menu.addAction("PDF")
+        export_json_action = menu.addAction("JSON")
+        export_both_action = menu.addAction("PDF + JSON")
+
+        chosen_action = menu.exec(self.export_eco_btn.mapToGlobal(self.export_eco_btn.rect().bottomLeft()))
+        if chosen_action == export_pdf_action:
+            self.export_eco_report("pdf")
+        elif chosen_action == export_json_action:
+            self.export_eco_report("json")
+        elif chosen_action == export_both_action:
+            self.export_eco_report("both")
+
+    def export_eco_report(self, export_format="pdf"):
         import export_handler
 
         consumo_val = self.consumo_energetico_card.findChild(QLabel, "performanceValue").text().replace(" kWh", "") if self.consumo_energetico_card.findChild(QLabel, "performanceValue") else "3.8"
         tiempo_val = self.tiempo_proceso_card.findChild(QLabel, "performanceValue").text().replace(" mins", "") if self.tiempo_proceso_card.findChild(QLabel, "performanceValue") else "00:47:00"
 
-        entrenamiento_val = int(self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else 98
-        ejecucion_val = int(self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else 44
+        entrenamiento_text = self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text() if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else "98"
+        ejecucion_text = self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text() if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else "44"
+        entrenamiento_val = int(round(parse_number(entrenamiento_text) or 98))
+        ejecucion_val = int(round(parse_number(ejecucion_text) or 44))
+        progress_val = self.eco_bar.value() if hasattr(self, "eco_bar") else 45
 
         user_profile = getattr(self.window(), 'sidebar', None)
         if user_profile:
@@ -1174,9 +1191,9 @@ class EnvironmentalPerformanceView(QWidget):
                 ["Sesión iniciada. Hardware detectado.", "gray_500"],
                 ["Excepción 1: datos no disponibles al iniciar.", "logo_pink"]
             ],
-            "progress": 45
+            "progress": progress_val
         }
-        export_handler.generate_and_save_report(self, "eco", data)
+        export_handler.generate_and_save_report(self, "eco", data, export_format=export_format)
 
 
 class CarbonDetailView(QWidget):
@@ -1476,11 +1493,11 @@ class FinOpsView(QWidget):
         self.currency_combo.currentTextChanged.connect(self._update_currency)
         header_row.addWidget(self.currency_combo)
 
-        export_finops_btn = QPushButton("Exportar PDF")
-        export_finops_btn.setObjectName("secondaryButton")
-        export_finops_btn.setCursor(Qt.PointingHandCursor)
-        export_finops_btn.clicked.connect(self.export_finops_report)
-        header_row.addWidget(export_finops_btn)
+        self.export_finops_btn = QPushButton("Exportar")
+        self.export_finops_btn.setObjectName("secondaryButton")
+        self.export_finops_btn.setCursor(Qt.PointingHandCursor)
+        self.export_finops_btn.clicked.connect(self.show_export_finops_menu)
+        header_row.addWidget(self.export_finops_btn)
 
         layout.addLayout(header_row)
         layout.addWidget(make_separator("separator"))
@@ -1521,23 +1538,46 @@ class FinOpsView(QWidget):
         layout.addWidget(list_panel)
 
     def _update_currency(self, currency_str):
-        # Dummy conversion for UI demonstration
+        # Conversión visual para mantener consistencia entre lo mostrado y lo exportado.
         if "USD" in currency_str:
-            self.card_actual.findChild(QLabel, "infoValue").setText("U$D 5.100.00")
-            self.card_presupuesto.findChild(QLabel, "infoValue").setText("U$D 7.950.00")
-            self.card_ahorro.findChild(QLabel, "infoValue").setText("U$D 1.185.00")
+            self.card_actual.findChild(QLabel, "infoValue").setText("U$D 5,100.00")
+            self.card_presupuesto.findChild(QLabel, "infoValue").setText("U$D 7,950.00")
+            self.card_ahorro.findChild(QLabel, "infoValue").setText("U$D 1,185.00")
         elif "EUR" in currency_str:
-            self.card_actual.findChild(QLabel, "infoValue").setText("€ 4.700.00")
-            self.card_presupuesto.findChild(QLabel, "infoValue").setText("€ 7.300.00")
-            self.card_ahorro.findChild(QLabel, "infoValue").setText("€ 1.090.00")
+            self.card_actual.findChild(QLabel, "infoValue").setText("€ 4,700.00")
+            self.card_presupuesto.findChild(QLabel, "infoValue").setText("€ 7,300.00")
+            self.card_ahorro.findChild(QLabel, "infoValue").setText("€ 1,090.00")
         else:
             self.card_actual.findChild(QLabel, "infoValue").setText("$4.820.000")
             self.card_presupuesto.findChild(QLabel, "infoValue").setText("$7.500.000")
             self.card_ahorro.findChild(QLabel, "infoValue").setText("$1.120.000")
 
 
+    def _sanitize_money_value(self, value, currency_code):
+        text = (value or "").strip()
+        if currency_code == "USD":
+            return text.replace("U$D", "").replace("$", "").strip()
+        if currency_code == "EUR":
+            return text.replace("€", "").strip()
+        return text.replace("$", "").strip()
 
-    def export_finops_report(self):
+
+    def show_export_finops_menu(self):
+        menu = QMenu(self)
+        export_pdf_action = menu.addAction("PDF")
+        export_json_action = menu.addAction("JSON")
+        export_both_action = menu.addAction("PDF + JSON")
+
+        chosen_action = menu.exec(self.export_finops_btn.mapToGlobal(self.export_finops_btn.rect().bottomLeft()))
+        if chosen_action == export_pdf_action:
+            self.export_finops_report("pdf")
+        elif chosen_action == export_json_action:
+            self.export_finops_report("json")
+        elif chosen_action == export_both_action:
+            self.export_finops_report("both")
+
+
+    def export_finops_report(self, export_format="pdf"):
         import export_handler
 
         costo_actual = self.card_actual.findChild(QLabel, "infoValue").text() if self.card_actual.findChild(QLabel, "infoValue") else "$4.820.000"
@@ -1567,9 +1607,16 @@ class FinOpsView(QWidget):
         data = {
             "exported_by": exported_by_text,
             "kpis": [
-                [15, 60, "Costo actual", costo_actual.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "cyan_500"],
-                [76.6, 60, "Presupuesto", presupuesto.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "gray_800"],
-                [138.3, 60, "Ahorro", ahorro.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "emerald_500"]
+                [15, 60, "Costo actual", self._sanitize_money_value(costo_actual, currency_code), currency_code, "cyan_500"],
+                [76.6, 60, "Presupuesto", self._sanitize_money_value(presupuesto, currency_code), currency_code, "gray_800"],
+                [138.3, 60, "Ahorro", self._sanitize_money_value(ahorro, currency_code), currency_code, "emerald_500"]
+            ],
+            "chart_values": [48, 22, 14, 16],
+            "chart_labels": [
+                "GPU compute: 48%",
+                "Storage + snapshots: 22%",
+                "Networking: 14%",
+                "Servicios administrados: 16%"
             ],
             "details": [
                 ["GPU compute", "48%", "cyan_600"],
@@ -1583,7 +1630,7 @@ class FinOpsView(QWidget):
             ],
             "progress": progress_val
         }
-        export_handler.generate_and_save_report(self, "economia", data)
+        export_handler.generate_and_save_report(self, "economia", data, export_format=export_format)
 
 
 class CloudView(QWidget):
