@@ -13,10 +13,10 @@ try:
         print("Por favor, ejecuta estos comandos en tu terminal de VS Code para solucionarlo:\n")
         print("    pip uninstall fpdf -y")
         print("    pip install fpdf2\n")
-        sys.exit(1)
+        raise ImportError("Falta instalar fpdf2 o está instalada la versión antigua")
 except ImportError:
     print("Falta instalar fpdf2. Ejecuta: pip install fpdf2")
-    sys.exit(1)
+    raise ImportError("Falta instalar fpdf2 o está instalada la versión antigua")
 
 SHARED, REPORT, COLORS = load_config("economia")
 
