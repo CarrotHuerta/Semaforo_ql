@@ -597,6 +597,7 @@ class PerformanceCard(QFrame):
         layout.addStretch()
 
         value_label = make_label(value, "performanceValue")
+        value_label.setObjectName("performanceValue")
         value_label.setWordWrap(True)
         layout.addWidget(value_label)
 
@@ -1042,18 +1043,22 @@ class EnvironmentalPerformanceView(QWidget):
         export_pdf_btn = QPushButton("Exportar PDF")
         export_pdf_btn.setObjectName("secondaryButton")
         export_pdf_btn.setCursor(Qt.PointingHandCursor)
-        export_pdf_btn.clicked.connect(lambda: QMessageBox.information(self, "Exportar", "Certificado descargado físicamente (Resumen Consolidado ESG)."))
+        export_pdf_btn.clicked.connect(self.export_eco_report)
         header_layout.addWidget(export_pdf_btn)
 
         emissions_layout = QHBoxLayout()
         emissions_layout.setSpacing(18)
-        emissions_layout.addWidget(PerformanceCard("Emisiones entrenamiento", "98 gCO2eq"), 1)
-        emissions_layout.addWidget(PerformanceCard("Emisiones ejecución", "44 gCO2eq"), 1)
+        self.emisiones_entrenamiento_card = PerformanceCard("Emisiones entrenamiento", "98 gCO2eq")
+        self.emisiones_ejecucion_card = PerformanceCard("Emisiones ejecución", "44 gCO2eq")
+        emissions_layout.addWidget(self.emisiones_entrenamiento_card, 1)
+        emissions_layout.addWidget(self.emisiones_ejecucion_card, 1)
 
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(18)
-        metrics_layout.addWidget(PerformanceCard("Consumo Energético", "3.8 kWh"), 1)
-        metrics_layout.addWidget(PerformanceCard("Tiempo de Procesamiento", "00:47:00 mins"), 1)
+        self.consumo_energetico_card = PerformanceCard("Consumo Energético", "3.8 kWh")
+        self.tiempo_proceso_card = PerformanceCard("Tiempo de Procesamiento", "00:47:00 mins")
+        metrics_layout.addWidget(self.consumo_energetico_card, 1)
+        metrics_layout.addWidget(self.tiempo_proceso_card, 1)
 
         details_rows = [
             ("Hardware", "NVIDIA A100"),
@@ -1124,6 +1129,43 @@ class EnvironmentalPerformanceView(QWidget):
         main_layout.addLayout(metrics_layout)
         main_layout.addLayout(bottom_row)
         main_layout.addLayout(eco_limit_layout)
+
+
+
+    def export_eco_report(self):
+        import export_handler
+
+        consumo_val = self.consumo_energetico_card.findChild(QLabel, "performanceValue").text().replace(" kWh", "") if self.consumo_energetico_card.findChild(QLabel, "performanceValue") else "3.8"
+        tiempo_val = self.tiempo_proceso_card.findChild(QLabel, "performanceValue").text().replace(" mins", "") if self.tiempo_proceso_card.findChild(QLabel, "performanceValue") else "00:47:00"
+
+        entrenamiento_val = int(self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else 98
+        ejecucion_val = int(self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else 44
+
+        data = {
+            "chart_values": [entrenamiento_val, ejecucion_val],
+            "chart_labels": [f"Entrenamiento: {entrenamiento_val} gCO2eq", f"Ejecución: {ejecucion_val} gCO2eq"],
+            "kpis": [
+                [15, 60, "Consumo Energético", consumo_val, "kWh", "emerald_500"],
+                [75, 60, "Tiempo Proceso", tiempo_val, "mins", "cyan_500"]
+            ],
+            "details": [
+                ["Hardware", "NVIDIA A100", "emerald_600"],
+                ["Proveedor Nube", "AWS US-East-1", "gray_800"],
+                ["Factor de Emisión", "0.386 kg/kWh", "gray_800"],
+                ["Región", "Norteamérica", "gray_800"],
+                ["Última ejecución", "Hace 2 minutos", "gray_800"],
+                ["Estado del cálculo", "Finalizado", "emerald_600"]
+            ],
+            "logs": [
+                ["Cálculo Ambiental finalizado correctamente.", "emerald_500"],
+                ["Métricas gCO2eq y kWh actualizadas en interfaz.", "cyan_500"],
+                ["Variables aún no inicializadas -- mostrando aviso de cálculo en curso", "logo_orange"],
+                ["Sesión iniciada. Hardware detectado.", "gray_500"],
+                ["Excepción 1: datos no disponibles al iniciar.", "logo_pink"]
+            ],
+            "progress": 45
+        }
+        export_handler.generate_and_save_report(self, "eco", data)
 
 
 class CarbonDetailView(QWidget):
@@ -1423,6 +1465,12 @@ class FinOpsView(QWidget):
         self.currency_combo.currentTextChanged.connect(self._update_currency)
         header_row.addWidget(self.currency_combo)
 
+        export_finops_btn = QPushButton("Exportar PDF")
+        export_finops_btn.setObjectName("secondaryButton")
+        export_finops_btn.setCursor(Qt.PointingHandCursor)
+        export_finops_btn.clicked.connect(self.export_finops_report)
+        header_row.addWidget(export_finops_btn)
+
         layout.addLayout(header_row)
         layout.addWidget(make_separator("separator"))
 
@@ -1475,6 +1523,45 @@ class FinOpsView(QWidget):
             self.card_actual.findChild(QLabel, "infoValue").setText("$4.820.000")
             self.card_presupuesto.findChild(QLabel, "infoValue").setText("$7.500.000")
             self.card_ahorro.findChild(QLabel, "infoValue").setText("$1.120.000")
+
+
+
+    def export_finops_report(self):
+        import export_handler
+
+        costo_actual = self.card_actual.findChild(QLabel, "infoValue").text() if self.card_actual.findChild(QLabel, "infoValue") else "$4.820.000"
+        presupuesto = self.card_presupuesto.findChild(QLabel, "infoValue").text() if self.card_presupuesto.findChild(QLabel, "infoValue") else "$7.500.000"
+        ahorro = self.card_ahorro.findChild(QLabel, "infoValue").text() if self.card_ahorro.findChild(QLabel, "infoValue") else "$1.120.000"
+
+        currency = self.currency_combo.currentText()
+        if "USD" in currency:
+            currency_code = "USD"
+        elif "EUR" in currency:
+            currency_code = "EUR"
+        else:
+            currency_code = "CLP"
+
+        progress_val = self.budget_bar.value()
+
+        data = {
+            "kpis": [
+                [15, 60, "Costo actual", costo_actual.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "cyan_500"],
+                [75, 60, "Presupuesto mensual", presupuesto.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "gray_800"],
+                [135, 60, "Ahorro estimado", ahorro.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "emerald_500"]
+            ],
+            "details": [
+                ["GPU compute", "48%", "cyan_600"],
+                ["Storage + snapshots", "22%", "cyan_600"],
+                ["Networking", "14%", "cyan_600"],
+                ["Servicios administrados", "16%", "cyan_600"]
+            ],
+            "logs": [
+                ["Costos FinOps calculados exitosamente.", "emerald_500"],
+                ["GPU compute representa la mayor parte del gasto.", "logo_orange"]
+            ],
+            "progress": progress_val
+        }
+        export_handler.generate_and_save_report(self, "economia", data)
 
 
 class CloudView(QWidget):
@@ -1986,7 +2073,19 @@ class AdminMenuView(QWidget):
                 details_dict = self.main_window.selection_state.copy()
 
         import export_handler
-        export_handler.generate_and_save_report(self, score, gs, details_dict)
+        data = {
+            "kpis": [
+                [15, 60, "Impact Score", score, "", "cyan_500"],
+                [75, 60, "Green Score", gs, "/100", "emerald_500"]
+            ],
+            "details": [
+                ["Hardware (TDP)", details_dict.get("hardware", "N/A"), "emerald_600"],
+                ["Proveedor Cloud", details_dict.get("provider", "N/A"), "gray_800"],
+                ["Región Eléctrica", details_dict.get("region", "N/A"), "gray_800"],
+                ["Energía del Modelo", details_dict.get("model_energy", "N/A"), "cyan_600"]
+            ]
+        }
+        export_handler.generate_and_save_report(self, "eco", data)
 
 
 class PatternPanel(QWidget):
