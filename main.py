@@ -1141,7 +1141,18 @@ class EnvironmentalPerformanceView(QWidget):
         entrenamiento_val = int(self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else 98
         ejecucion_val = int(self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text().replace(" gCO2eq", "")) if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else 44
 
+        user_profile = getattr(self.window(), 'sidebar', None)
+        if user_profile:
+            user_profile = user_profile.user_profile
+        else:
+            user_profile = {}
+
+        display_name = user_profile.get("display_name", "Usuario Activo")
+        role = user_profile.get("role", "")
+        exported_by_text = f"{display_name} ({role})" if role else display_name
+
         data = {
+            "exported_by": exported_by_text,
             "chart_values": [entrenamiento_val, ejecucion_val],
             "chart_labels": [f"Entrenamiento: {entrenamiento_val} gCO2eq", f"Ejecución: {ejecucion_val} gCO2eq"],
             "kpis": [
@@ -1543,7 +1554,18 @@ class FinOpsView(QWidget):
 
         progress_val = self.budget_bar.value()
 
+        user_profile = getattr(self.window(), 'sidebar', None)
+        if user_profile:
+            user_profile = user_profile.user_profile
+        else:
+            user_profile = {}
+
+        display_name = user_profile.get("display_name", "Usuario Activo")
+        role = user_profile.get("role", "")
+        exported_by_text = f"{display_name} ({role})" if role else display_name
+
         data = {
+            "exported_by": exported_by_text,
             "kpis": [
                 [15, 60, "Costo actual", costo_actual.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "cyan_500"],
                 [76.6, 60, "Presupuesto", presupuesto.replace("$", "").replace("U", "").replace("D", "").replace("€", "").strip(), currency_code, "gray_800"],
