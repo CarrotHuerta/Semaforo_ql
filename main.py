@@ -1053,36 +1053,89 @@ class HomeView(QWidget):
             score = getattr(self.main_window, "current_score", None)
             selection = getattr(self.main_window, "selection_state", {}) or {}
 
-        if score is not None:
-            green_score = max(0.0, 100.0 - (score / 5.0))
-            score_text = f"{score:.1f}"
-        else:
-            green_score = 0.0
-            score_text = "N/A"
-
-        if score is None:
-            level = "Sin datos"
-            level_color = "gray_800"
-        elif score >= 350:
-            level = "Alto"
-            level_color = "logo_pink"
-        elif score >= 150:
-            level = "Moderado"
-            level_color = "logo_orange"
-        else:
-            level = "Bajo"
-            level_color = "emerald_600"
-
         hardware = selection.get("hardware") or "N/A"
         provider = selection.get("provider") or "N/A"
         region = selection.get("region") or "N/A"
+        model = selection.get("model") or "N/A"
         model_energy = selection.get("model_energy")
         model_energy_text = f"{model_energy} kWh" if model_energy is not None else "N/A"
         hardware_tdp = selection.get("hardware_tdp")
         hardware_tdp_text = f"{hardware_tdp} W" if hardware_tdp is not None else "N/A"
 
-        margin = max(0.0, 100.0 - green_score)
-        config_complete = all(value != "N/A" for value in (hardware, provider, region))
+        has_selection = all(value != "N/A" for value in (hardware, provider, region, model))
+
+        # ACCENT_COLORS: (main, dark, light) por nivel -- rojo/amarillo/verde
+        ACCENT_COLORS = {
+            "alto": ("red_500", "red_600", "red_100"),
+            "error": ("red_500", "red_600", "red_100"),
+            "advertencia": ("amber_500", "amber_600", "amber_100"),
+            "moderado": ("amber_500", "amber_600", "amber_100"),
+            "bajo": ("emerald_500", "emerald_600", "emerald_100"),
+        }
+        ACCENT_HEX = {
+            "red_500": "#ef4444", "amber_500": "#f59e0b", "emerald_500": "#10b981",
+        }
+
+        if not has_selection:
+            # Nada seleccionado: se advierte en vez de mostrar un Green Score engañoso de 0
+            state = "advertencia"
+            score_text = "N/A"
+            green_score_text = "N/A"
+            badge = "Advertencia: Selección Incompleta"
+            level = "Sin selección"
+            chart_values = [100]
+            chart_labels = ["Sin datos suficientes para calcular"]
+            chart_colors = ["#d1d5db"]
+            progress_value = 0
+            logs_extra = [
+                ["Advertencia: faltan datos por seleccionar (proveedor, región, modelo u hardware).", "amber_500"],
+                ["Impacto de Carbono y Green Score no disponibles sin selección completa.", "gray_500"],
+            ]
+        else:
+            green_score = max(0.0, 100.0 - (score / 5.0))
+            score_text = f"{score:.1f}"
+            green_score_text = f"{green_score:.1f}"
+            margin = max(0.0, 100.0 - green_score)
+
+            if green_score <= 0:
+                state = "error"
+                badge = "Error: Green Score en 0"
+                level = "Error Crítico"
+                logs_extra = [
+                    ["Error: el Green Score llegó a 0. Revisa la configuración de inmediato.", "red_500"],
+                ]
+            elif score >= 350:
+                state = "alto"
+                badge = "Nivel Alto"
+                level = "Alto"
+                logs_extra = [
+                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
+                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                ]
+            elif score >= 150:
+                state = "moderado"
+                badge = "Nivel Moderado"
+                level = "Moderado"
+                logs_extra = [
+                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
+                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                ]
+            else:
+                state = "bajo"
+                badge = "Nivel Bajo"
+                level = "Bajo"
+                logs_extra = [
+                    ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
+                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"],
+                ]
+
+            accent_name = ACCENT_COLORS[state][0]
+            chart_values = [round(green_score, 1), round(margin, 1)]
+            chart_labels = [f"Green Score: {green_score_text}", f"Margen restante: {margin:.1f}"]
+            chart_colors = [ACCENT_HEX[accent_name], "#e5e7eb"]
+            progress_value = round(green_score)
+
+        accent, accent_dark, accent_light = ACCENT_COLORS[state]
 
         user_profile = getattr(self.window(), 'sidebar', None)
         if user_profile:
@@ -1096,11 +1149,12 @@ class HomeView(QWidget):
 
         data = {
             "exported_by": exported_by_text,
-            "chart_values": [round(green_score, 1), round(margin, 1)],
-            "chart_labels": [f"Green Score: {green_score:.1f}", f"Margen restante: {margin:.1f}"],
+            "chart_values": chart_values,
+            "chart_labels": chart_labels,
+            "chart_colors": chart_colors,
             "kpis": [
-                [15, 60, "Impacto de Carbono", score_text, "pts", "cyan_500"],
-                [75, 60, "Green Score", f"{green_score:.1f}", "/100", "emerald_500"],
+                [15, 60, "Impacto de Carbono", score_text, "pts", accent],
+                [75, 60, "Green Score", green_score_text, "/100", accent],
             ],
             "details": [
                 ["Hardware", hardware, "emerald_600"],
@@ -1108,19 +1162,17 @@ class HomeView(QWidget):
                 ["Región Eléctrica", region, "gray_800"],
                 ["Energía del Modelo", model_energy_text, "gray_800"],
                 ["TDP Hardware", hardware_tdp_text, "gray_800"],
-                ["Nivel Actual", level, level_color],
+                ["Nivel Actual", level, accent],
             ],
             "logs": [
-                ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
-                (
-                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"]
-                    if config_complete
-                    else ["Configuración incompleta: faltan datos por seleccionar.", "logo_orange"]
-                ),
+                *logs_extra,
                 ["Sesión iniciada. Panel de Inicio actualizado.", "gray_500"],
             ],
-            "progress": round(green_score),
-            "badge": f"Nivel {level}",
+            "progress": progress_value,
+            "badge": badge,
+            "accent_color": accent,
+            "accent_color_dark": accent_dark,
+            "accent_color_light": accent_light,
         }
         export_handler.generate_and_save_report(self, "inicio", data, export_format=export_format)
 

@@ -1,5 +1,8 @@
 {
   "colors": {
+    "amber_100": "#fef3c7",
+    "amber_500": "#f59e0b",
+    "amber_600": "#d97706",
     "cyan_100": "#cffafe",
     "cyan_500": "#06b6d4",
     "cyan_600": "#0891b2",
@@ -8,6 +11,7 @@
     "emerald_600": "#059669",
     "gray_100": "#f3f4f6",
     "gray_200": "#e5e7eb",
+    "gray_300": "#d1d5db",
     "gray_500": "#6b7280",
     "gray_700": "#374151",
     "gray_800": "#1f2937",
@@ -16,6 +20,9 @@
     "logo_orange": "#f97316",
     "logo_orange_dark": "#c2410c",
     "logo_pink": "#f472b6",
+    "red_100": "#fee2e2",
+    "red_500": "#ef4444",
+    "red_600": "#dc2626",
     "white": "#ffffff"
   },
   "shared": {
@@ -289,6 +296,9 @@
       ]
     ],
     "badge": "Nivel Moderado",
+    "accent_color": "amber_500",
+    "accent_color_dark": "amber_600",
+    "accent_color_light": "amber_100",
     "chart_file": "chart_inicio.png",
     "chart_title": "Green Score",
     "details_title": "Detalles de Configuraci\u00f3n",

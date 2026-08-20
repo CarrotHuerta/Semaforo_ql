@@ -108,12 +108,20 @@ def generate_and_save_report(parent_widget, report_type, data, export_format="pd
                 inicio.REPORT["progress"] = data["progress"]
             if "badge" in data:
                 inicio.REPORT["badge"] = data["badge"]
+            if "accent_color" in data:
+                inicio.REPORT["accent_color"] = data["accent_color"]
+            if "accent_color_dark" in data:
+                inicio.REPORT["accent_color_dark"] = data["accent_color_dark"]
+            if "accent_color_light" in data:
+                inicio.REPORT["accent_color_light"] = data["accent_color_light"]
             if "exported_by" in data:
                 inicio.SHARED["exported_by"] = data["exported_by"]
             if "chart_values" in data:
                 inicio.REPORT["chart_values"] = data["chart_values"]
             if "chart_labels" in data:
                 inicio.REPORT["chart_labels"] = data["chart_labels"]
+            if "chart_colors" in data:
+                inicio.REPORT["chart_colors"] = data["chart_colors"]
 
             inicio.create_pdf_report(filename=file_path, export_format=export_format)
 

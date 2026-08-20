@@ -167,12 +167,13 @@ def create_pdf_report(filename=None, export_format="both"):
     # width = (180 - (num_kpis - 1) * 5) / num_kpis
     box_w = (180 - (num_kpis - 1) * 5) / num_kpis
     box_h = 25
-    
+    kpi_top_y = 40  # pegado a la línea de encabezado (30) en vez del hueco original de 30mm
+
     # Recalculate X positions based on index instead of using the hardcoded ones
     kpis = []
-    for i, (old_x, y, title, value, unit, color) in enumerate(kpis_raw):
+    for i, (old_x, old_y, title, value, unit, color) in enumerate(kpis_raw):
         new_x = 15 + i * (box_w + 5)
-        kpis.append((new_x, y, title, value, unit, COLORS[color]))
+        kpis.append((new_x, kpi_top_y, title, value, unit, COLORS[color]))
 
     for kpi in kpis:
         x, y, title, val, unit, unit_color = kpi
@@ -213,28 +214,28 @@ def create_pdf_report(filename=None, export_format="both"):
 
     fixed_box_w = 87.5
     # Caja Dona
-    pdf.draw_rounded_box(15, 98, fixed_box_w, 65)
+    pdf.draw_rounded_box(15, 78, fixed_box_w, 65)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
-    pdf.set_xy(15, 102)
+    pdf.set_xy(15, 82)
     pdf.cell(fixed_box_w, 5, REPORT['chart_title'], align="C")
     # Insertar imagen centrada y con margen para evitar superposición con el título.
     _, configured_chart_y = SHARED.get('chart_image_position', [15, 75])
     chart_w = min(SHARED.get('chart_image_width', 75), fixed_box_w - 16)
     chart_x = 15 + (fixed_box_w - chart_w) / 2
-    chart_y = max(108, configured_chart_y)
+    chart_y = max(88, configured_chart_y)
     pdf.image(REPORT['chart_file'], x=chart_x, y=chart_y, w=chart_w)
 
     # Caja Barra Límite
-    pdf.draw_rounded_box(107.5, 98, fixed_box_w, 65)
+    pdf.draw_rounded_box(107.5, 78, fixed_box_w, 65)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
-    pdf.set_xy(107.5, 102)
+    pdf.set_xy(107.5, 82)
     pdf.cell(fixed_box_w, 5, REPORT['progress_title'], align="C")
     
     # Barra de progreso nativa (FPDF)
     bar_x = 115
-    bar_y = 125
+    bar_y = 105
     bar_w = 72.5
     bar_h = 8
     
@@ -256,32 +257,36 @@ def create_pdf_report(filename=None, export_format="both"):
     pdf.rect(bar_x, bar_y, bar_w, bar_h, style='F', round_corners=True, corner_radius=4)
     
     # Relleno verde de la barra (45%)
-    pdf.set_fill_color(*COLORS['emerald_500'])
-    pdf.rect(bar_x, bar_y, bar_w * REPORT['progress'] / 100, bar_h, style='F', round_corners=True, corner_radius=4)
+    # fpdf2 divide por min(w, h) al redondear esquinas: con ancho 0 (progreso 0) eso revienta con ZeroDivisionError.
+    fill_w = bar_w * REPORT['progress'] / 100
+    if fill_w > 0:
+        pdf.set_fill_color(*COLORS['emerald_500'])
+        fill_radius = min(4, fill_w / 2, bar_h / 2)
+        pdf.rect(bar_x, bar_y, fill_w, bar_h, style='F', round_corners=True, corner_radius=fill_radius)
 
     # Insignia (Badge) debajo
     pdf.set_fill_color(*COLORS['emerald_100'])
-    pdf.rect(125, 142, 55, 7, style='F', round_corners=True, corner_radius=3.5)
+    pdf.rect(125, 122, 55, 7, style='F', round_corners=True, corner_radius=3.5)
     pdf.set_font("helvetica", "B", 8)
     pdf.set_text_color(5, 150, 105) # emerald-600
-    pdf.set_xy(125, 143)
+    pdf.set_xy(125, 123)
     pdf.cell(55, 5, REPORT['badge'], align="C")
 
     # --- SECCIÓN DETALLES Y LOGS ---
     # Detalles
-    pdf.draw_rounded_box(15, 168, fixed_box_w, 75)
+    pdf.draw_rounded_box(15, 148, fixed_box_w, 75)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
-    pdf.set_xy(20, 172)
+    pdf.set_xy(20, 152)
     pdf.cell(fixed_box_w - 10, 5, REPORT['details_title'])
     
     # Linea separadora
     pdf.set_draw_color(*COLORS['gray_200'])
-    pdf.line(20, 179, 15 + fixed_box_w - 5, 179)
+    pdf.line(20, 159, 15 + fixed_box_w - 5, 159)
 
     detalles = [(key, value, COLORS[color]) for key, value, color in REPORT['details']]
 
-    y_offset = 182
+    y_offset = 162
     for key, val, val_color in detalles:
         pdf.set_font("helvetica", "", 9)
         pdf.set_text_color(*COLORS['gray_500'])
@@ -298,19 +303,19 @@ def create_pdf_report(filename=None, export_format="both"):
         y_offset += 9
 
     # Log de Actividad
-    pdf.draw_rounded_box(107.5, 168, fixed_box_w, 75)
+    pdf.draw_rounded_box(107.5, 148, fixed_box_w, 75)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
-    pdf.set_xy(112.5, 172)
+    pdf.set_xy(112.5, 152)
     pdf.cell(fixed_box_w - 10, 5, "Registro de Actividad")
     
     pdf.set_draw_color(*COLORS['gray_200'])
-    pdf.line(112.5, 179, 107.5 + fixed_box_w - 5, 179)
+    pdf.line(112.5, 159, 107.5 + fixed_box_w - 5, 159)
 
     logs = [(text, COLORS[color]) for text, color in REPORT['logs']]
 
-    y_offset = 183
-    logs_bottom = 168 + 75 - 4
+    y_offset = 163
+    logs_bottom = 148 + 75 - 4
     for text, dot_color in logs:
         if y_offset >= logs_bottom:
             break
