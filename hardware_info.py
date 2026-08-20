@@ -1,8 +1,24 @@
+import json
 import os
 import platform
 import subprocess
 import sys
 from functools import lru_cache
+
+# One combined PowerShell query instead of 3 separate processes: each
+# powershell.exe spawn has a fixed startup cost, so batching cuts detection
+# time roughly to a third and avoids blocking the UI for as long.
+_PS_COMMAND = (
+    "$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name; "
+    "$gpu = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; "
+    "$ram = Get-CimInstance Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory; "
+    "@{cpu=$cpu; gpu=@($gpu); ram=$ram} | ConvertTo-Json -Compress"
+)
+
+_STARTUPINFO = None
+if sys.platform.startswith("win"):
+    _STARTUPINFO = subprocess.STARTUPINFO()
+    _STARTUPINFO.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
 
 def _format_bytes(value):
@@ -18,15 +34,17 @@ def _format_bytes(value):
     return f"{size:.1f} PB"
 
 
-def _run_powershell(command):
+def _run_powershell(command, timeout=8):
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
+            startupinfo=_STARTUPINFO,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stdout.strip()
 
@@ -42,23 +60,25 @@ def _detect_hardware():
     info["os"] = platform.platform() or f"{platform.system()} {platform.release()}"
 
     if sys.platform.startswith("win"):
-        cpu_name = _run_powershell(
-            "(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)"
-        )
+        raw = _run_powershell(_PS_COMMAND)
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+
+        cpu_name = data.get("cpu")
         if cpu_name:
             info["cpu"] = cpu_name
 
-        gpu_names = _run_powershell(
-            "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"
-        )
+        gpu_names = data.get("gpu")
+        if isinstance(gpu_names, str):
+            gpu_names = [gpu_names]
         if gpu_names:
             info["gpu"] = " / ".join(
-                [line.strip() for line in gpu_names.splitlines() if line.strip()]
+                [str(name).strip() for name in gpu_names if str(name).strip()]
             )
 
-        ram_bytes = _run_powershell(
-            "(Get-CimInstance Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory)"
-        )
+        ram_bytes = data.get("ram")
         if ram_bytes:
             info["ram"] = _format_bytes(ram_bytes)
     else:

@@ -4,7 +4,7 @@ import math
 import os
 import re
 import sys
-from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -879,8 +879,9 @@ class ActivityPanel(QFrame):
 
 
 class HomeView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, main_window=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -897,6 +898,13 @@ class HomeView(QWidget):
 
         header_layout.addWidget(header_icon)
         header_layout.addWidget(header_title, 1)
+
+        # CU 57.2
+        self.export_home_btn = QPushButton("Exportar")
+        self.export_home_btn.setObjectName("secondaryButton")
+        self.export_home_btn.setCursor(Qt.PointingHandCursor)
+        self.export_home_btn.clicked.connect(self.show_export_home_menu)
+        header_layout.addWidget(self.export_home_btn)
 
         layout.addLayout(header_layout)
         layout.addWidget(make_separator("separator"))
@@ -1021,6 +1029,100 @@ class HomeView(QWidget):
                 card.update_description(full_text)
             else:
                 card.update_description(card.default_description)
+
+    def show_export_home_menu(self):
+        menu = QMenu(self)
+        export_pdf_action = menu.addAction("PDF")
+        export_json_action = menu.addAction("JSON")
+        export_both_action = menu.addAction("PDF + JSON")
+
+        chosen_action = menu.exec(self.export_home_btn.mapToGlobal(self.export_home_btn.rect().bottomLeft()))
+        if chosen_action == export_pdf_action:
+            self.export_home_report("pdf")
+        elif chosen_action == export_json_action:
+            self.export_home_report("json")
+        elif chosen_action == export_both_action:
+            self.export_home_report("both")
+
+    def export_home_report(self, export_format="pdf"):
+        import export_handler
+
+        score = None
+        selection = {}
+        if self.main_window is not None:
+            score = getattr(self.main_window, "current_score", None)
+            selection = getattr(self.main_window, "selection_state", {}) or {}
+
+        if score is not None:
+            green_score = max(0.0, 100.0 - (score / 5.0))
+            score_text = f"{score:.1f}"
+        else:
+            green_score = 0.0
+            score_text = "N/A"
+
+        if score is None:
+            level = "Sin datos"
+            level_color = "gray_800"
+        elif score >= 350:
+            level = "Alto"
+            level_color = "logo_pink"
+        elif score >= 150:
+            level = "Moderado"
+            level_color = "logo_orange"
+        else:
+            level = "Bajo"
+            level_color = "emerald_600"
+
+        hardware = selection.get("hardware") or "N/A"
+        provider = selection.get("provider") or "N/A"
+        region = selection.get("region") or "N/A"
+        model_energy = selection.get("model_energy")
+        model_energy_text = f"{model_energy} kWh" if model_energy is not None else "N/A"
+        hardware_tdp = selection.get("hardware_tdp")
+        hardware_tdp_text = f"{hardware_tdp} W" if hardware_tdp is not None else "N/A"
+
+        margin = max(0.0, 100.0 - green_score)
+        config_complete = all(value != "N/A" for value in (hardware, provider, region))
+
+        user_profile = getattr(self.window(), 'sidebar', None)
+        if user_profile:
+            user_profile = user_profile.user_profile
+        else:
+            user_profile = {}
+
+        display_name = user_profile.get("display_name", "Usuario Activo")
+        role = user_profile.get("role", "")
+        exported_by_text = f"{display_name} ({role})" if role else display_name
+
+        data = {
+            "exported_by": exported_by_text,
+            "chart_values": [round(green_score, 1), round(margin, 1)],
+            "chart_labels": [f"Green Score: {green_score:.1f}", f"Margen restante: {margin:.1f}"],
+            "kpis": [
+                [15, 60, "Impacto de Carbono", score_text, "pts", "cyan_500"],
+                [75, 60, "Green Score", f"{green_score:.1f}", "/100", "emerald_500"],
+            ],
+            "details": [
+                ["Hardware", hardware, "emerald_600"],
+                ["Proveedor Nube", provider, "gray_800"],
+                ["Región Eléctrica", region, "gray_800"],
+                ["Energía del Modelo", model_energy_text, "gray_800"],
+                ["TDP Hardware", hardware_tdp_text, "gray_800"],
+                ["Nivel Actual", level, level_color],
+            ],
+            "logs": [
+                ["Impacto de Carbono y Green Score calculados correctamente.", "emerald_500"],
+                (
+                    ["Configuración completa: proveedor, región, modelo y hardware detectados.", "cyan_500"]
+                    if config_complete
+                    else ["Configuración incompleta: faltan datos por seleccionar.", "logo_orange"]
+                ),
+                ["Sesión iniciada. Panel de Inicio actualizado.", "gray_500"],
+            ],
+            "progress": round(green_score),
+            "badge": f"Nivel {level}",
+        }
+        export_handler.generate_and_save_report(self, "inicio", data, export_format=export_format)
 
 
 class EnvironmentalPerformanceView(QWidget):
@@ -2353,14 +2455,6 @@ class LoginWindow(QMainWindow):
 
         self.connection_combo.currentIndexChanged.connect(on_connection_changed)
 
-        # CU 56.1, 56.2
-        self.pw_strength_label = make_label("", "loginHint")
-        self.pw_strength_label.setStyleSheet("color: #cfcfcf;")
-        self.pw_strength_label.setVisible(False)
-        right_layout.addWidget(self.pw_strength_label)
-
-        self.password_input.textChanged.connect(self._evaluate_password_strength)
-
         self.error_label = make_label("", "loginError")
         self.error_label.setVisible(False)
         right_layout.addWidget(self.error_label)
@@ -2390,25 +2484,6 @@ class LoginWindow(QMainWindow):
 
         self.username_input.returnPressed.connect(self.handle_login)
         self.password_input.returnPressed.connect(self.handle_login)
-
-    def _evaluate_password_strength(self, text):
-        if not text:
-            self.pw_strength_label.setVisible(False)
-            return
-
-        missing = []
-        if len(text) < 8: missing.append("longitud (min 8)")
-        if not any(c.isupper() for c in text): missing.append("mayúscula")
-        if not any(c.isdigit() for c in text): missing.append("número")
-        if not any(c in "@-_¿¡?!#$*°" for c in text): missing.append("carácter especial (@-_¿¡?!#$*°)")
-
-        self.pw_strength_label.setVisible(True)
-        if missing:
-            self.pw_strength_label.setText("Falta: " + ", ".join(missing))
-            self.pw_strength_label.setStyleSheet("color: #c4a600;")
-        else:
-            self.pw_strength_label.setText("✓ Contraseña estructuralmente válida.")
-            self.pw_strength_label.setStyleSheet("color: #4eb541;")
 
     def handle_login(self):
         if self.failed_attempts >= 3:
@@ -2515,6 +2590,34 @@ class CatalogRow(QFrame):
         layout.addWidget(assign_button, 1, alignment=Qt.AlignRight)
 
 
+class HardwareLookupThread(QThread):
+    """Runs hardware detection off the UI thread so switching tabs stays responsive."""
+
+    finished_with_info = Signal(dict)
+
+    def __init__(self, profile, parent=None):
+        super().__init__(parent)
+        self.profile = profile or {}
+
+    def run(self):
+        mode = self.profile.get("connection_mode", "Local")
+        info = {}
+        if mode == "Local":
+            info = get_hardware_info()
+        else:
+            import urllib.request
+            import urllib.error
+            import json
+
+            server_url = self.profile.get("server_url", "127.0.0.1:6767")
+            try:
+                with urllib.request.urlopen(f"http://{server_url}/hardware", timeout=5) as response:
+                    info = json.loads(response.read().decode("utf-8"))
+            except Exception:
+                info = {}
+        self.finished_with_info.emit(info)
+
+
 class HardwareCatalogView(QWidget):
     def __init__(self, on_assign=None, parent=None, profile=None):
         super().__init__(parent)
@@ -2608,22 +2711,11 @@ class HardwareCatalogView(QWidget):
             QTimer.singleShot(50, self._load_hardware)
 
     def _load_hardware(self):
-        mode = self.profile.get("connection_mode", "Local")
-        info = {}
-        if mode == "Local":
-            info = get_hardware_info()
-        else:
-            import urllib.request
-            import urllib.error
-            import json
+        self._hw_thread = HardwareLookupThread(self.profile, self)
+        self._hw_thread.finished_with_info.connect(self._on_hardware_loaded)
+        self._hw_thread.start()
 
-            server_url = self.profile.get("server_url", "127.0.0.1:6767")
-            try:
-                with urllib.request.urlopen(f"http://{server_url}/hardware") as response:
-                    info = json.loads(response.read().decode("utf-8"))
-            except Exception:
-                info = {}
-
+    def _on_hardware_loaded(self, info):
         values = [
             info.get("cpu", "No detectado"),
             info.get("gpu", "No detectado"),
@@ -3168,7 +3260,7 @@ class DashboardWindow(QMainWindow):
         }
         self.reverse_translations = {v: k for k, v in self.translations.items()}
 
-        self.home_view = HomeView()
+        self.home_view = HomeView(main_window=self)
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
         self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)

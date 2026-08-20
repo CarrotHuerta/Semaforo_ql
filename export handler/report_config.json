@@ -207,5 +207,91 @@
     "chart_title": "Distribuci\u00f3n de Costos",
     "details_title": "Desglose",
     "progress_title": "Uso de Presupuesto"
+  },
+  "inicio": {
+    "filename": "informe_inicio_semaforo_ia.pdf",
+    "subtitle": "Resumen General - Impacto de Carbono y Green Score",
+    "chart_values": [
+      72,
+      28
+    ],
+    "chart_colors": [
+      "#10b981",
+      "#e5e7eb"
+    ],
+    "chart_labels": [
+      "Green Score: 72.0",
+      "Margen restante: 28.0"
+    ],
+    "progress": 72,
+    "kpis": [
+      [
+        15,
+        60,
+        "Impacto de Carbono",
+        "182.4",
+        "pts",
+        "cyan_500"
+      ],
+      [
+        75,
+        60,
+        "Green Score",
+        "72.0",
+        "/100",
+        "emerald_500"
+      ]
+    ],
+    "details": [
+      [
+        "Hardware",
+        "NVIDIA A100",
+        "emerald_600"
+      ],
+      [
+        "Proveedor Nube",
+        "AWS US-East-1",
+        "gray_800"
+      ],
+      [
+        "Regi\u00f3n El\u00e9ctrica",
+        "Norteam\u00e9rica",
+        "gray_800"
+      ],
+      [
+        "Energ\u00eda del Modelo",
+        "N/A",
+        "gray_800"
+      ],
+      [
+        "TDP Hardware",
+        "N/A",
+        "gray_800"
+      ],
+      [
+        "Nivel Actual",
+        "Moderado",
+        "logo_orange"
+      ]
+    ],
+    "logs": [
+      [
+        "Impacto de Carbono y Green Score calculados correctamente.",
+        "emerald_500"
+      ],
+      [
+        "Configuraci\u00f3n completa: proveedor, regi\u00f3n, modelo y hardware detectados.",
+        "cyan_500"
+      ],
+      [
+        "Sesi\u00f3n iniciada. Panel de Inicio actualizado.",
+        "gray_500"
+      ]
+    ],
+    "badge": "Nivel Moderado",
+    "chart_file": "chart_inicio.png",
+    "chart_title": "Green Score",
+    "details_title": "Detalles de Configuraci\u00f3n",
+    "progress_title": "Green Score"
   }
 }
