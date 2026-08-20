@@ -14,10 +14,10 @@ try:
         print("Por favor, ejecuta estos comandos en tu terminal de VS Code para solucionarlo:\n")
         print("    pip uninstall fpdf -y")
         print("    pip install fpdf2\n")
-        sys.exit(1)
+        raise ImportError("Falta instalar fpdf2 o está instalada la versión antigua")
 except ImportError:
     print("Falta instalar fpdf2. Ejecuta: pip install fpdf2")
-    sys.exit(1)
+    raise ImportError("Falta instalar fpdf2 o está instalada la versión antigua")
 
 SHARED, REPORT, COLORS = load_config("eco")
 
@@ -109,9 +109,12 @@ def create_pdf_report(filename=None, export_format="both"):
         raise ValueError("export_format debe ser 'pdf', 'json' o 'both'")
 
     filename = filename or REPORT['filename']
-    if export_format == "json":
+
+    if export_format in ("json", "both"):
         json_filename = export_json_report(filename, "eco", SHARED, REPORT)
         print(f"¡Los datos se exportaron como: {json_filename}!")
+
+    if export_format == "json":
         return
 
     # 1. Generar gráficos
