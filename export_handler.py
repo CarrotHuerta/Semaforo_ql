@@ -57,6 +57,8 @@ def generate_and_save_report(parent_widget, report_type, data):
                 eco.REPORT["logs"] = data["logs"]
             if "progress" in data:
                 eco.REPORT["progress"] = data["progress"]
+            if "exported_by" in data:
+                eco.SHARED["exported_by"] = data["exported_by"]
 
             if "chart_values" in data:
                 eco.REPORT["chart_values"] = data["chart_values"]
@@ -73,6 +75,8 @@ def generate_and_save_report(parent_widget, report_type, data):
                 economia.REPORT["logs"] = data["logs"]
             if "progress" in data:
                 economia.REPORT["progress"] = data["progress"]
+            if "exported_by" in data:
+                economia.SHARED["exported_by"] = data["exported_by"]
 
             economia.create_pdf_report(filename=file_path, export_format=export_format)
 
