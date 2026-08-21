@@ -203,6 +203,26 @@ Aquí se enumeran las tareas pendientes (lo que falta hacer) en la base de códi
 
 ##  Pipeline de Finalización del Código (Hoja de Ruta de Implementación)
 
+## Crear ejecutable para Windows
+
+Para crear una versión que pueda ejecutarse en un PC sin Python instalado, abre
+`build_exe.bat` desde este directorio. El script crea o reutiliza `.venv`, instala
+las dependencias y PyInstaller, y genera una distribución en:
+
+`dist\SemaforoIA\SemaforoIA.exe`
+
+El script verifica que cree la subcarpeta `_internal` y que incluya la DLL de
+Python antes de terminar. Hay que copiar la carpeta completa `dist\SemaforoIA`, no solamente el `.exe`,
+porque contiene las librerías y recursos de la aplicación. `config.json` queda
+junto al ejecutable para que la configuración pueda modificarse en el PC destino.
+
+Si aparece `Failed to load Python DLL`, elimina la copia anterior y vuelve a
+copiar la carpeta completa manteniendo la subcarpeta `_internal`. El ejecutable
+debe iniciarse desde `dist\SemaforoIA\SemaforoIA.exe`; no debe separarse de esa
+carpeta. Si el error continúa, instala en el PC destino el paquete oficial
+`Microsoft Visual C++ Redistributable 2015-2022` de 64 bits y verifica que el
+antivirus no haya puesto archivos de `_internal` en cuarentena.
+
 Cómo se planea continuar haciendo el código y terminar el proyecto:
 
 ### Fase 1: Arquitectura y Base de Datos (Persistencia Fuerte)

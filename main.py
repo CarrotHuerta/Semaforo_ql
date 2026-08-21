@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from hardware_info import get_hardware_info
 import i18n
 from i18n import t
+from app_paths import resource_path, writable_path
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -52,8 +53,7 @@ def make_label(text, object_name=None, alignment=Qt.AlignLeft):
 
 
 def load_config():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_dir, "config.json")
+    config_path = writable_path("config.json")
     data = {
         "default_user": "nacha",
         "users": [
@@ -127,8 +127,7 @@ def load_config():
 
 
 def load_csv_rows(filename):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(base_dir, "data", filename)
+    data_path = resource_path("data", filename)
     if not os.path.isfile(data_path):
         return []
     try:
@@ -221,8 +220,7 @@ def get_default_user(config):
 
 
 def resolve_path(relative_path):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.normpath(os.path.join(base_dir, relative_path))
+    return os.path.normpath(resource_path(relative_path))
 
 
 

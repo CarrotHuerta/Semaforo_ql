@@ -5,16 +5,21 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
 
 import i18n
 from i18n import t
+from app_paths import resource_path
 
 # Add export handler to path
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "export handler"))
+sys.path.append(resource_path("export handler"))
 
 try:
     import eco
     import economia
     import inicio
-except Exception as e:
-    print(f"Error importing export scripts: {e}")
+    _EXPORT_IMPORT_ERROR = None
+except Exception as exc:
+    eco = None
+    economia = None
+    inicio = None
+    _EXPORT_IMPORT_ERROR = exc
 
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
 _active_exports = []
@@ -56,6 +61,9 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 
 def _apply_report_data(report_type, data, file_path, export_format, lang):
     """Actualiza el modulo de reporte y genera el PDF/JSON. Pensada para correr en un hilo aparte."""
+    if _EXPORT_IMPORT_ERROR is not None:
+        raise RuntimeError(f"No se pudieron cargar los módulos de exportación: {_EXPORT_IMPORT_ERROR}") from _EXPORT_IMPORT_ERROR
+
     if report_type == 'eco':
         # Update eco module data
         if "kpis" in data:

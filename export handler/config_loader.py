@@ -2,8 +2,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from app_paths import resource_path
 
-CONFIG_PATH = Path(__file__).with_name("report_config.json")
+CONFIG_PATH = Path(resource_path("export handler", "report_config.json"))
 
 
 def load_config(report_name):

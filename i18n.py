@@ -9,10 +9,11 @@ de ese archivo, sin tocar ningun .py.
 import json
 import os
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_LOCALES_DIR = os.path.join(_BASE_DIR, "locales")
+from app_paths import resource_path, writable_path
+
+_LOCALES_DIR = resource_path("locales")
 _TRANSLATIONS_PATH = os.path.join(_LOCALES_DIR, "translations.json")
-_CONFIG_PATH = os.path.join(_BASE_DIR, "config.json")
+_CONFIG_PATH = writable_path("config.json")
 
 DEFAULT_LANGUAGE = "es"
 
