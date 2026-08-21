@@ -1,6 +1,6 @@
 import os
 import sys
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QStandardPaths, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
 
 import i18n
@@ -34,10 +34,12 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
     }
     default_name = default_names.get(report_type, f"informe_semaforo_ia{ext}")
 
+    documents_dir = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or os.path.expanduser("~")
+
     selected_path, _ = QFileDialog.getSaveFileName(
         parent_widget,
         t("Guardar Informe", lang),
-        os.path.join(os.path.expanduser("~"), default_name),
+        os.path.join(documents_dir, default_name),
         file_filter,
     )
 
