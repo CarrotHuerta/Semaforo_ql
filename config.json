@@ -2,6 +2,7 @@
   "default_user": "nacha",
   "server_ip": "127.0.0.1",
   "server_port": 6767,
+  "language": "es",
   "users": [
     {
       "username": "nacha",
