@@ -1,9 +1,10 @@
 import http.server
 import socketserver
 import json
-import urllib.parse
 from hardware_info import get_hardware_info
 import os
+from app_paths import writable_path
+from functional_core import bootstrap_store
 
 def load_config():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -13,6 +14,10 @@ def load_config():
             return json.load(f)
     except Exception:
         return {"users": []}
+
+
+def get_store():
+    return bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
 
 class SimpleHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -24,30 +29,31 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                 username = data.get('username')
                 password = data.get('password')
 
+                store = get_store()
+                authenticated = store.authenticate(str(username or ""), str(password or ""))
+                if not authenticated:
+                    locked = store.connection.execute(
+                        "SELECT is_locked FROM users WHERE username = ?", (str(username or ""),)
+                    ).fetchone()
+                    self.send_response(401)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    message = 'Cuenta bloqueada' if locked and locked['is_locked'] else 'Credenciales invalidas'
+                    self.wfile.write(json.dumps({'error': message}).encode('utf-8'))
+                    return
+
                 config = load_config()
-                users = config.get('users', [])
-                user = next((u for u in users if u['username'] == username), None)
-
-                if not user:
-                    self.send_response(401)
-                    self.end_headers()
-                    self.wfile.write(json.dumps({'error': 'Usuario no encontrado'}).encode('utf-8'))
-                    return
-
-                if str(user.get('password')) != str(password):
-                    self.send_response(401)
-                    self.end_headers()
-                    self.wfile.write(json.dumps({'error': 'Contraseña incorrecta'}).encode('utf-8'))
-                    return
-
+                user = next((u for u in config.get('users', []) if u.get('username') == username), {})
+                user = {key: value for key, value in user.items() if key != 'password_hash'}
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({'status': 'ok', 'user': user}).encode('utf-8'))
             except Exception as e:
                 self.send_response(400)
+                self.send_header('Content-type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({'error': str(e)}).encode('utf-8'))
+                self.wfile.write(json.dumps({'error': 'Error interno de autenticacion'}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()

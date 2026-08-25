@@ -1,5 +1,11 @@
 # Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
 
+## Acceso de demostracion
+
+Las credenciales se almacenan como hashes PBKDF2 en `config.json`. Para el usuario
+`nacha`, la clave vigente es `SemaforoIA1@`; para `maxine`, es `SemaforoIA2@`.
+La clave antigua `654321` ya no es valida porque no cumple la politica minima de seguridad.
+
 Este documento es la especificación técnica maestra (Technical Design Document) para el desarrollo del sistema Semáforo IA. Contiene el desglose a nivel de código, base de datos y algoritmos de los 70 Requerimientos Funcionales (RF) y 57 Casos de Uso estipulados en la documentación oficial.
 
 Si vas a desarrollar en Python, debes seguir esta estructura paso a paso.

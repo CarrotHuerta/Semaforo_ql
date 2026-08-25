@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
@@ -41,6 +42,7 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
+from functional_core import bootstrap_store, calculate_carbon, export_records, import_records, sensor_reading, validate_thresholds
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -62,14 +64,14 @@ def load_config():
                 "display_name": "Nacha",
                 "role": "Administrador",
                 "profile_photo": "img/nacha.png",
-                "password": "lolman12",
+                "password_hash": "pbkdf2_sha256$260000$c37fe72f5445644395a019b205ee555d$c710c08721d36a2a6d6320a44d2c090ff6d45a9b099bceb05b863807efa7258d",
             },
             {
                 "username": "maxine",
                 "display_name": "Maxine",
                 "role": "Usuario",
                 "profile_photo": "img/maxine.jpg",
-                "password": "123456",
+                "password_hash": "pbkdf2_sha256$260000$ac95afa719aaacd1f7c819b68936f308$74ba6a1be746a1322728cc890b406a339a0bf6560e0b200a46d8e2f6b5296d93",
             },
         ],
     }
@@ -98,7 +100,7 @@ def load_config():
                     "display_name": entry.get("display_name", username).strip() or username,
                     "role": entry.get("role", "Usuario").strip() or "Usuario",
                     "profile_photo": entry.get("profile_photo", "").strip(),
-                    "password": entry.get("password", ""),
+                    "password_hash": entry.get("password_hash", ""),
                 }
             )
     else:
@@ -1501,7 +1503,32 @@ class ModelsView(QWidget):
         import_btn = QPushButton(t("Importar JSON/CSV"))
         import_btn.setObjectName("secondaryButton")
         import_btn.setCursor(Qt.PointingHandCursor)
-        import_btn.clicked.connect(lambda: QMessageBox.information(self, t("Importar"), t("Validando esquema... Nuevos modelos añadidos a la lista local.")))
+
+        def import_models():
+            source, _ = QFileDialog.getOpenFileName(self, t("Importar Modelos"), "", "Datos (*.json *.csv)")
+            if not source:
+                return
+            try:
+                imported = import_records(source)
+            except ValueError as exc:
+                QMessageBox.warning(self, t("Importar"), str(exc))
+                return
+            model_file = writable_path("models.json")
+            existing = []
+            if os.path.isfile(model_file):
+                try:
+                    existing = import_records(model_file)
+                except ValueError:
+                    existing = []
+            merged = existing + [row for row in imported if isinstance(row, dict)]
+            try:
+                export_records(merged, model_file)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, t("Importar"), str(exc))
+                return
+            QMessageBox.information(self, t("Importar"), t("{count} registros validados y guardados.").format(count=len(imported)))
+
+        import_btn.clicked.connect(import_models)
         header_row.addWidget(import_btn)
 
         layout.addLayout(header_row)
@@ -1611,6 +1638,18 @@ class ModelsView(QWidget):
     def _handle_soft_delete(self):
         curr_idx = self.model_combo.currentIndex()
         if curr_idx >= 0:
+            model_name = self.model_combo.currentText()
+            model_file = writable_path("models.json")
+            if os.path.isfile(model_file):
+                try:
+                    rows = import_records(model_file)
+                    for row in rows:
+                        if row.get("Nombre_Modelo") == model_name or row.get("name") == model_name:
+                            row["is_active"] = False
+                    export_records(rows, model_file)
+                except (OSError, ValueError) as exc:
+                    QMessageBox.critical(self, t("Baja Lógica"), str(exc))
+                    return
             QMessageBox.information(self, t("Baja Lógica"), t("El modelo se ha marcado como 'Inactivo/Oculto' en los cálculos históricos."))
             self.model_combo.removeItem(curr_idx)
 
@@ -1619,6 +1658,15 @@ class ModelsView(QWidget):
         if curr_idx >= 0:
             reply = QMessageBox.question(self, t("Advertencia"), t("Se destruirá irremediablemente la información del modelo local. ¿Continuar?"), QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
+                model_name = self.model_combo.currentText()
+                model_file = writable_path("models.json")
+                if os.path.isfile(model_file):
+                    try:
+                        rows = [row for row in import_records(model_file) if row.get("Nombre_Modelo") != model_name and row.get("name") != model_name]
+                        export_records(rows, model_file)
+                    except (OSError, ValueError) as exc:
+                        QMessageBox.critical(self, t("Borrado Físico"), str(exc))
+                        return
                 QMessageBox.information(self, t("Borrado Físico"), t("Registro purgado totalmente del disco."))
                 self.model_combo.removeItem(curr_idx)
 
@@ -1995,13 +2043,29 @@ class SettingsView(QWidget):
         backup_btn = QPushButton(t("Crear Respaldo"))
         backup_btn.setObjectName("secondaryButton")
         backup_btn.setCursor(Qt.PointingHandCursor)
-        backup_btn.clicked.connect(lambda: QMessageBox.information(self, t("Respaldo"), t("Archivo de backup único generado en directorio externo.")))
+
+        def create_backup():
+            source = writable_path("semaforo.sqlite3")
+            if not os.path.isfile(source):
+                QMessageBox.warning(self, t("Respaldo"), t("No existe una base local para respaldar."))
+                return
+            destination, _ = QFileDialog.getSaveFileName(self, t("Guardar Respaldo"), source + ".bak", "SQLite (*.sqlite3 *.bak)")
+            if not destination:
+                return
+            try:
+                shutil.copy2(source, destination)
+            except OSError as exc:
+                QMessageBox.critical(self, t("Respaldo"), str(exc))
+                return
+            QMessageBox.information(self, t("Respaldo"), t("Respaldo creado correctamente."))
+
+        backup_btn.clicked.connect(create_backup)
 
         from PySide6.QtWidgets import QCheckBox
         notif_cb = QCheckBox(t("Generar Avisos al OS"))
         notif_cb.setChecked(True)
         notif_cb.setStyleSheet("color: white;")
-        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, t("Notificaciones"), t("Avisos al OS activados permanentemente.") if state else t("Avisos al OS desactivados permanentemente.")))
+        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, t("Notificaciones"), t("Avisos al OS activados.") if state else t("Avisos al OS desactivados.")))
 
         sys_row.addWidget(backup_btn)
         sys_row.addWidget(notif_cb)
@@ -2029,7 +2093,16 @@ class SettingsView(QWidget):
 
         ping_hw_btn = QPushButton(t("Probar Enlace Sensor On-Premise"))
         ping_hw_btn.setObjectName("secondaryButton")
-        ping_hw_btn.clicked.connect(lambda: QMessageBox.information(self, t("Sondeo Activo"), t("Conexión activa con hardware de corriente On-Premise exitosa.")))
+
+        def test_sensor():
+            try:
+                watts = sensor_reading("simulador")
+            except TimeoutError as exc:
+                QMessageBox.warning(self, t("Sondeo Sensor"), str(exc))
+                return
+            QMessageBox.information(self, t("Sondeo Activo"), t("Lectura del sensor: {watts} W").format(watts=f"{watts:.1f}"))
+
+        ping_hw_btn.clicked.connect(test_sensor)
 
         env_btn_row.addWidget(sync_env_btn)
         env_btn_row.addWidget(revert_env_btn)
@@ -2085,11 +2158,47 @@ class SettingsView(QWidget):
 
         save_thresh_btn = QPushButton(t("Guardar Umbrales"))
         save_thresh_btn.setObjectName("primaryButton")
-        save_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, t("Umbrales"), t("Nuevos rangos guardados y aplicados.")))
+        def save_thresholds():
+            try:
+                thresholds = validate_thresholds(
+                    float(green_input.text()), float(yellow_input.text()), float(red_input.text())
+                )
+            except (TypeError, ValueError) as exc:
+                QMessageBox.warning(self, t("Umbrales"), t("Valores de umbral invalidos: {error}").format(error=exc))
+                return
+            config_path = writable_path("config.json")
+            try:
+                config = load_config()
+                config["thresholds"] = {
+                    "green": thresholds[0], "yellow": thresholds[1], "red": thresholds[2]
+                }
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Umbrales"), str(exc))
+                return
+            QMessageBox.information(self, t("Umbrales"), t("Nuevos rangos guardados y aplicados."))
+
+        save_thresh_btn.clicked.connect(save_thresholds)
 
         reset_thresh_btn = QPushButton(t("Restablecer a fábrica"))
         reset_thresh_btn.setObjectName("secondaryButton")
-        reset_thresh_btn.clicked.connect(lambda: QMessageBox.information(self, t("Umbrales"), t("Variables devueltas a predeterminadas de origen.")))
+        def reset_thresholds():
+            config_path = writable_path("config.json")
+            try:
+                config = load_config()
+                config["thresholds"] = {"green": 50.0, "yellow": 90.0, "red": 100.0}
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+                green_input.setText("50")
+                yellow_input.setText("90")
+                red_input.setText("100")
+            except OSError as exc:
+                QMessageBox.critical(self, t("Umbrales"), str(exc))
+                return
+            QMessageBox.information(self, t("Umbrales"), t("Variables devueltas a predeterminadas de origen."))
+
+        reset_thresh_btn.clicked.connect(reset_thresholds)
 
         thresh_row.addWidget(green_input)
         thresh_row.addWidget(yellow_input)
@@ -2534,7 +2643,7 @@ class LoginWindow(QMainWindow):
         self.password_input.returnPressed.connect(self.handle_login)
 
     def handle_login(self):
-        if self.failed_attempts >= 3:
+        if self.failed_attempts >= 5:
             self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
             return
 
@@ -2557,10 +2666,12 @@ class LoginWindow(QMainWindow):
                     self._set_error(t("Usuario no encontrado."))
                 return
 
-            expected = str(profile.get("password", ""))
-            if expected and password != expected:
+            auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
+            authenticated = auth_store.authenticate(username, password)
+            auth_store.close()
+            if not authenticated:
                 self.failed_attempts += 1
-                if self.failed_attempts >= 3:
+                if self.failed_attempts >= 5:
                     self.login_button.setEnabled(False)
                     self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
@@ -3375,11 +3486,13 @@ class DashboardWindow(QMainWindow):
             self.current_score = None
             return
 
-        model_factor = 1.0
-        if model_energy is not None:
-            model_factor += math.log10(model_energy + 1.0)
-
-        score = intensity * (tdp / 1000.0) * model_factor
+        try:
+            # La seleccion actual aporta TDP y CIF; una ejecucion inicial se modela a una hora.
+            score = calculate_carbon(tdp, 1.0, 1.0, intensity)
+        except (TypeError, ValueError):
+            self.home_view.set_semaforo_level(None, None)
+            self.current_score = None
+            return
         self.current_score = score
         if score >= 350:
             level = "alto"

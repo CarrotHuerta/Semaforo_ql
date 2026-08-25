@@ -1,0 +1,108 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from functional_core import (
+    Execution,
+    LocalStore,
+    ValidationError,
+    calculate_carbon,
+    calculate_cost,
+    calculate_energy,
+    calculate_execution,
+    calculate_water,
+    estimate_cloud,
+    export_records,
+    format_carbon,
+    green_score,
+    import_records,
+    semaphore_level,
+    validate_password,
+    validate_thresholds,
+)
+
+
+class FunctionalCoreTests(unittest.TestCase):
+    def test_calculation_pipeline(self):
+        self.assertEqual(calculate_cost(12, 2, "USD"), 24.0)
+        self.assertEqual(calculate_energy(1000, 2, 1.5), 3.0)
+        self.assertEqual(calculate_carbon(1000, 2, 1, 400), 800.0)
+        self.assertEqual(calculate_carbon(1000, 2, 1, 400, 1, 1000), 1400.0)
+        self.assertEqual(calculate_water(3, 2, 3, immersion=True), 0.0)
+        self.assertEqual(format_carbon(10001), "10.00 kgCO2eq")
+
+    def test_invalid_business_values(self):
+        with self.assertRaises(ValidationError):
+            validate_thresholds(60, 50, 90)
+        with self.assertRaises(ValidationError):
+            validate_password("weak")
+        with self.assertRaises(ValidationError):
+            calculate_water(1, 1, 4)
+
+    def test_green_score_and_semaphore(self):
+        score, badge = green_score(10, 100, 10, 100)
+        self.assertEqual((score, badge), (90.0, "A+"))
+        self.assertEqual(semaphore_level(40, 50, 90, 100), "Verde")
+        self.assertEqual(semaphore_level(70, 50, 90, 100), "Amarillo")
+        self.assertEqual(semaphore_level(95, 50, 90, 100), "Rojo")
+
+    def test_cloud_traceability_and_execution(self):
+        estimate = estimate_cloud({"name": "small", "cost_per_hour_usd": 2, "watts": 500}, 3, 400)
+        self.assertEqual(estimate["cost_usd"], 6.0)
+        self.assertEqual(estimate["carbon_gco2eq"], 600.0)
+        self.assertEqual(estimate["inputs"]["watts"], 500.0)
+        execution, badge = calculate_execution(
+            model_id=1, hourly_cost=2, hours=3, currency="USD", tdp_watts=500,
+            pue=1.2, grid_factor=400, wue=1, wsi=1, cost_limit=100,
+            carbon_limit=1000,
+        )
+        self.assertEqual(execution.kwh, 1.8)
+        self.assertEqual(execution.carbon, 720.0)
+        self.assertEqual(badge, "C")
+
+    def test_secure_authentication_and_lockout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "test.sqlite3")
+            store.add_user("admin", "ClaveSegura1@", "admin")
+            self.assertEqual(store.authenticate("admin", "ClaveSegura1@")["role"], "admin")
+            for _ in range(5):
+                self.assertIsNone(store.authenticate("admin", "incorrecta"))
+            self.assertIsNone(store.authenticate("admin", "ClaveSegura1@"))
+            row = store.connection.execute(
+                "SELECT failed_attempts, is_locked FROM users WHERE username = ?", ("admin",)
+            ).fetchone()
+            self.assertEqual((row["failed_attempts"], row["is_locked"]), (5, 1))
+            store.close()
+
+    def test_json_round_trip_and_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "records.json"
+            records = [{"name": "modelo", "is_active": True}]
+            export_records(records, path)
+            self.assertEqual(import_records(path), records)
+            path.write_text("{bad", encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                import_records(path)
+
+    def test_project_lifecycle_and_reassignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "projects.sqlite3")
+            source = store.add_project("Proyecto A")
+            target = store.add_project("Proyecto B")
+            model = store.add_model(source, "Modelo QA", "# Descripcion")
+            store.add_execution(Execution(model, "2026-08-24 12:00:00", 10, 20, 2, 3, 900, "Verde"))
+            self.assertEqual(store.project_totals(source)["cost"], 10.0)
+            store.reassign_model(model, target)
+            self.assertEqual(store.project_totals(source)["cost"], 0.0)
+            self.assertEqual(store.project_totals(target)["cost"], 10.0)
+            store.archive_project(target)
+            with self.assertRaises(ValidationError):
+                store.add_model(target, "Bloqueado")
+            backup = Path(directory) / "backup.sqlite3"
+            store.backup(backup)
+            self.assertTrue(backup.exists())
+            store.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
