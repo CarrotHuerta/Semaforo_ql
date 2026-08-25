@@ -38,7 +38,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                     self.send_response(401)
                     self.send_header('Content-type', 'application/json')
                     self.end_headers()
-                    message = 'Cuenta bloqueada' if locked and locked['is_locked'] else 'Credenciales invalidas'
+                    message = 'Usuario bloqueado' if locked and locked['is_locked'] else 'Credenciales invalidas'
                     self.wfile.write(json.dumps({'error': message}).encode('utf-8'))
                     return
 

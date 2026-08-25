@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QFileDialog,
     QMessageBox,
+    QInputDialog,
 )
 
 from hardware_info import get_hardware_info
@@ -2429,6 +2430,7 @@ class AdminMenuView(QWidget):
     def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
         self.main_window = main_window
+        self.user_profile = user_profile or {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2448,6 +2450,7 @@ class AdminMenuView(QWidget):
                     (t("Resetear contrasena"), "menuButton", None),
                     (t("Desactivar usuario"), "menuButton", None),
                     (t("Editar roles"), "menuButton", None),
+                    (t("Ver bloqueos de usuarios"), "menuButton", self.show_user_locks),
                 ],
             ),
             1,
@@ -2492,6 +2495,47 @@ class AdminMenuView(QWidget):
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
+
+    def show_user_locks(self):
+        role = self.user_profile.get("role", "")
+        if str(role).lower() not in {"admin", "administrador"}:
+            QMessageBox.warning(self, t("Bloqueos de usuarios"), t("Solo un administrador puede consultar bloqueos."))
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            users = store.list_user_status()
+            if not users:
+                QMessageBox.information(self, t("Bloqueos de usuarios"), t("No hay usuarios registrados."))
+                return
+            lines = [
+                t("{username} | Rol: {role} | Intentos: {attempts} | Estado: {status}").format(
+                    username=row["username"], role=row["role"], attempts=row["failed_attempts"],
+                    status=t("Bloqueada") if row["is_locked"] else t("Activa")
+                )
+                for row in users
+            ]
+            locked_users = [row["username"] for row in users if row["is_locked"]]
+            if not locked_users:
+                QMessageBox.information(
+                    self, t("Bloqueos de usuarios"),
+                    "\n".join(lines) + "\n\n" + t("No hay cuentas bloqueadas.")
+                )
+                return
+            selected, accepted = QInputDialog.getItem(
+                self, t("Desbloquear usuario"), "\n".join(lines),
+                locked_users, 0, False
+            )
+            if not accepted:
+                return
+            store.unlock_user(selected, role)
+        except (OSError, ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, t("Bloqueos de usuarios"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, t("Bloqueos de usuarios"), t("Usuario desbloqueado correctamente."))
 
     def export_html_report(self):
         score = "N/A"
@@ -2733,9 +2777,14 @@ class LoginWindow(QMainWindow):
 
             auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
             authenticated = auth_store.authenticate(username, password)
+            is_locked = auth_store.is_user_locked(username)
             auth_store.close()
             if not authenticated:
                 self.failed_attempts += 1
+                if is_locked:
+                    self.login_button.setEnabled(False)
+                    self._set_error(t("Usuario bloqueado"))
+                    return
                 if self.failed_attempts >= 5:
                     self.login_button.setEnabled(False)
                     self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
@@ -2762,6 +2811,7 @@ class LoginWindow(QMainWindow):
                 self.failed_attempts += 1
                 try:
                     error_msg = json.loads(e.read().decode("utf-8")).get("error", t("Error de autenticación."))
+                    error_msg = t(error_msg)
                 except Exception:
                     error_msg = t("Error de autenticación.")
 

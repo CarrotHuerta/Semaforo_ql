@@ -80,6 +80,7 @@ class FunctionalCoreTests(unittest.TestCase):
             "Empate técnico": "Technical tie",
             "Sugerir hardware eficiente": "Suggest efficient hardware",
             "No hay ejecuciones registradas.": "No executions recorded.",
+            "Usuario bloqueado": "User locked",
         }
         for spanish, english in translations.items():
             self.assertEqual(i18n.t(spanish, "en"), english)
@@ -111,6 +112,21 @@ class FunctionalCoreTests(unittest.TestCase):
                 "SELECT failed_attempts, is_locked FROM users WHERE username = ?", ("admin",)
             ).fetchone()
             self.assertEqual((row["failed_attempts"], row["is_locked"]), (5, 1))
+            store.close()
+
+    def test_admin_can_view_and_unlock_accounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "users.sqlite3")
+            store.add_user("maxine", "ClaveSegura1@")
+            for _ in range(5):
+                store.authenticate("maxine", "incorrecta")
+            status = store.list_user_status()[0]
+            self.assertEqual((status["failed_attempts"], status["is_locked"]), (5, 1))
+            with self.assertRaises(PermissionError):
+                store.unlock_user("maxine", "Usuario")
+            store.unlock_user("maxine", "Administrador")
+            status = store.list_user_status()[0]
+            self.assertEqual((status["failed_attempts"], status["is_locked"]), (0, 0))
             store.close()
 
     def test_json_round_trip_and_corruption(self):

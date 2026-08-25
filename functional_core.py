@@ -335,6 +335,27 @@ class LocalStore:
         self.connection.commit()
         return None
 
+    def list_user_status(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT id, username, role, failed_attempts, is_locked, force_password_change FROM users ORDER BY username"
+        ).fetchall()
+
+    def is_user_locked(self, username: str) -> bool:
+        row = self.connection.execute(
+            "SELECT is_locked FROM users WHERE username = ?", (username.strip(),)
+        ).fetchone()
+        return bool(row and row["is_locked"])
+
+    def unlock_user(self, username: str, actor_role: str) -> None:
+        if str(actor_role).lower() not in {"admin", "administrador"}:
+            raise PermissionError("Solo un administrador puede desbloquear usuarios.")
+        cursor = self.connection.execute(
+            "UPDATE users SET failed_attempts = 0, is_locked = 0 WHERE username = ?", (username.strip(),)
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
     def add_project(self, name: str) -> int:
         name = str(name).strip()
         if not name:
