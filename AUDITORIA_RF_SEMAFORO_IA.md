@@ -21,9 +21,16 @@ Se implementaron y verificaron con pruebas automatizadas las siguientes piezas f
 - Login local probado con `load_config()` real y credenciales hash; el semaforo usa ahora `calculate_carbon()` en lugar de la formula aproximada anterior.
 - CRUD local de proyectos y modelos, archivado solo lectura, reasignacion transaccional, totales por proyecto e historial.
 - Estimacion cloud con trazabilidad de entradas y calculo integral de una ejecucion persistible.
-- Siete pruebas automatizadas en `test_functional_core.py`, todas exitosas.
+- Comparativa limitada de modelos con deteccion de empate tecnico.
+- Validacion de longitud y saneamiento de HTML para descripciones Markdown.
+- Historial de ejecuciones conectado a SQLite y estado explicito cuando no existen registros.
+- Heuristicas de rightsizing y pronostico de quiebre presupuestario cubiertas con pruebas.
+- Vista Comparativas con seleccion de dos modelos, emisiones lado a lado y empate tecnico.
+- Catalogo de Hardware con sugerencia visible de alternativa que ahorra mas del 10%.
+- Comparativa, rightsizing, historial, sensor y estados vacios con textos disponibles en espanol e ingles.
+- Once pruebas automatizadas en `test_functional_core.py`, todas exitosas.
 
-Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas, SNMP/Modbus real, XLSX, Markdown renderizado, comparativa, capacity planning, notificaciones OS, cuotas y disyuntores. El estado se mantiene estricto hasta completar tambien esas excepciones.
+Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas, SNMP/Modbus real, XLSX, Markdown renderizado, aplicacion persistente del hardware recomendado, capacity planning, notificaciones OS, cuotas y disyuntores. El estado se mantiene estricto hasta completar tambien esas excepciones.
 
 ## 1. Resumen ejecutivo
 

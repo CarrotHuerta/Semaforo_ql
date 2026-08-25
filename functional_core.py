@@ -15,6 +15,7 @@ import re
 import secrets
 import sqlite3
 import time
+from html import escape
 from calendar import monthrange
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timezone
@@ -160,6 +161,28 @@ def best_shifting_hour(hourly_factors: Iterable[float]) -> tuple[int, float]:
         raise ValidationError("La matriz horaria debe contener 24 factores validos.")
     minimum = min(factors)
     return factors.index(minimum), minimum
+
+
+def compare_models(models: Iterable[dict[str, Any]], limit: int = 4) -> list[dict[str, Any]]:
+    """Return comparable models ordered by carbon impact, marking all ties."""
+    rows = list(models)
+    if not 2 <= len(rows) <= limit:
+        raise ValidationError(f"La comparativa requiere entre 2 y {limit} modelos.")
+    for row in rows:
+        if float(row.get("carbon", -1)) < 0 or float(row.get("cost", -1)) < 0:
+            raise DataIntegrityError("La comparativa contiene metricas invalidas.")
+    best_value = min((float(row["carbon"]) for row in rows))
+    return [
+        {**row, "optimal": float(row["carbon"]) == best_value}
+        for row in rows
+    ]
+
+
+def sanitize_markdown(markdown: str, max_chars: int = 5000) -> str:
+    """Keep Markdown text bounded and remove raw HTML/script markup."""
+    if not isinstance(markdown, str) or len(markdown) > max_chars:
+        raise ValidationError(f"La descripcion no puede superar {max_chars} caracteres.")
+    return escape(markdown, quote=False)
 
 
 def rightsizing(current_tdp: float, candidates: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
@@ -374,9 +397,15 @@ class LocalStore:
 
     def list_history(self, model_id: int | None = None) -> list[sqlite3.Row]:
         if model_id is None:
-            return self.connection.execute("SELECT * FROM executions ORDER BY timestamp DESC").fetchall()
+            return self.connection.execute(
+                """SELECT e.*, m.name AS model_name FROM executions e
+                   JOIN models m ON m.id = e.model_id ORDER BY e.timestamp DESC"""
+            ).fetchall()
         return self.connection.execute(
-            "SELECT * FROM executions WHERE model_id = ? ORDER BY timestamp DESC", (model_id,)
+            """SELECT e.*, m.name AS model_name FROM executions e
+               JOIN models m ON m.id = e.model_id
+              WHERE e.model_id = ? ORDER BY e.timestamp DESC""",
+            (model_id,),
         ).fetchall()
 
     def backup(self, destination: str | os.PathLike[str]) -> None:

@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import i18n
+
 from functional_core import (
     Execution,
     LocalStore,
@@ -11,12 +13,16 @@ from functional_core import (
     calculate_energy,
     calculate_execution,
     calculate_water,
+    compare_models,
     estimate_cloud,
     export_records,
     format_carbon,
     green_score,
     import_records,
+    forecast_budget,
+    rightsizing,
     semaphore_level,
+    sanitize_markdown,
     validate_password,
     validate_thresholds,
 )
@@ -45,6 +51,39 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(semaphore_level(40, 50, 90, 100), "Verde")
         self.assertEqual(semaphore_level(70, 50, 90, 100), "Amarillo")
         self.assertEqual(semaphore_level(95, 50, 90, 100), "Rojo")
+
+    def test_comparison_ties_and_markdown_limits(self):
+        compared = compare_models([
+            {"name": "A", "carbon": 10, "cost": 2},
+            {"name": "B", "carbon": 10, "cost": 3},
+            {"name": "C", "carbon": 20, "cost": 1},
+        ])
+        self.assertEqual([row["optimal"] for row in compared], [True, True, False])
+        self.assertEqual(sanitize_markdown("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;")
+        with self.assertRaises(ValidationError):
+            sanitize_markdown("x" * 4, max_chars=3)
+
+    def test_rightsizing_and_budget_forecast(self):
+        recommendation = rightsizing(200, [
+            {"name": "same", "tdp_watts": 190},
+            {"name": "efficient", "tdp_watts": 150},
+        ])
+        self.assertEqual(recommendation["candidate"]["name"], "efficient")
+        self.assertEqual(recommendation["saving_percent"], 25.0)
+        self.assertEqual(forecast_budget(500, 15, 800, 30), 1000.0)
+        with self.assertRaises(ValidationError):
+            forecast_budget(500, 0, 800, 30)
+
+    def test_new_ui_strings_are_bilingual(self):
+        translations = {
+            "Comparativa de modelos": "Model comparison",
+            "Empate técnico": "Technical tie",
+            "Sugerir hardware eficiente": "Suggest efficient hardware",
+            "No hay ejecuciones registradas.": "No executions recorded.",
+        }
+        for spanish, english in translations.items():
+            self.assertEqual(i18n.t(spanish, "en"), english)
+            self.assertEqual(i18n.t(english, "es"), spanish)
 
     def test_cloud_traceability_and_execution(self):
         estimate = estimate_cloud({"name": "small", "cost_per_hour_usd": 2, "watts": 500}, 3, 400)
@@ -101,6 +140,12 @@ class FunctionalCoreTests(unittest.TestCase):
             backup = Path(directory) / "backup.sqlite3"
             store.backup(backup)
             self.assertTrue(backup.exists())
+            store.close()
+
+    def test_empty_history_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "history.sqlite3")
+            self.assertEqual(store.list_history(), [])
             store.close()
 
 

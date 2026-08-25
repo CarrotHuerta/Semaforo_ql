@@ -42,7 +42,7 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
-from functional_core import bootstrap_store, calculate_carbon, export_records, import_records, sensor_reading, validate_thresholds
+from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, import_records, rightsizing, sensor_reading, validate_thresholds
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -1377,6 +1377,60 @@ class CarbonDetailView(QWidget):
         layout.addWidget(make_label(t("Comparativas"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
+        model_rows = load_csv_rows("modelos_ia.csv")
+        model_data = {}
+        for row in model_rows:
+            name = row.get("Nombre_Modelo", "").strip()
+            energy = parse_number(row.get("Consumo_Energetico_Base"))
+            if name and energy is not None and name not in model_data:
+                model_data[name] = energy
+        model_names = list(model_data)
+        comparison_panel = QFrame()
+        comparison_panel.setObjectName("detailsPanel")
+        comparison_layout = QVBoxLayout(comparison_panel)
+        comparison_layout.addWidget(make_label(t("Comparativa de modelos"), "kpiTitle"))
+        selector_row = QHBoxLayout()
+        first_combo = ChevronComboBox()
+        second_combo = ChevronComboBox()
+        first_combo.addItems(model_names)
+        second_combo.addItems(model_names)
+        if len(model_names) > 1:
+            second_combo.setCurrentIndex(1)
+        compare_button = QPushButton(t("Comparar"))
+        compare_button.setObjectName("primaryButton")
+        result_label = make_label(t("Selecciona dos modelos para comparar."), "infoText")
+        selector_row.addWidget(first_combo, 1)
+        selector_row.addWidget(second_combo, 1)
+        selector_row.addWidget(compare_button)
+        comparison_layout.addLayout(selector_row)
+        comparison_layout.addWidget(result_label)
+
+        def run_comparison():
+            first_name = first_combo.currentText()
+            second_name = second_combo.currentText()
+            try:
+                results = compare_models([
+                    {"name": first_name, "carbon": model_data[first_name] * 400, "cost": model_data[first_name]},
+                    {"name": second_name, "carbon": model_data[second_name] * 400, "cost": model_data[second_name]},
+                ])
+            except (KeyError, ValueError) as exc:
+                result_label.setText(t("No se pudo comparar: {error}").format(error=exc))
+                return
+            first, second = results
+            if first["optimal"] and second["optimal"]:
+                winner = t("Empate técnico")
+            else:
+                winner = first_name if first["optimal"] else second_name
+            result_label.setText(
+                t("{first}: {first_value:.2f} gCO2eq | {second}: {second_value:.2f} gCO2eq | Óptimo: {winner}").format(
+                    first=first_name, first_value=first["carbon"], second=second_name,
+                    second_value=second["carbon"], winner=winner
+                )
+            )
+
+        compare_button.clicked.connect(run_comparison)
+        layout.addWidget(comparison_panel)
+
         panel = QFrame()
         panel.setObjectName("detailModal")
         panel_layout = QVBoxLayout(panel)
@@ -1998,12 +2052,23 @@ class HistoryView(QWidget):
         layout.addWidget(make_label(t("Historial"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
-        items = [
-            t("Hace 3 min — Evaluación ambiental completada (GPU A100)"),
-            t("Hace 1 h — Reporte de costos generado (FinOps)"),
-            t("Hace 4 h — Validación de modelo Llama 3 70B"),
-            t("Ayer — Rebalanceo de cargas a Europa del Norte"),
-        ]
+        items = []
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            history = store.list_history()
+            items = [
+                f"{row['timestamp']} — {row['model_name']} — {row['semaphore']} — "
+                f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
+                for row in history
+            ]
+        except (OSError, ValueError):
+            items = []
+        finally:
+            if store is not None:
+                store.close()
+        if not items:
+            items = [t("No hay ejecuciones registradas.")]
         list_panel = ListPanel(t("Últimas ejecuciones"), items)
 
         layout.addWidget(list_panel)
@@ -2405,7 +2470,7 @@ class AdminMenuView(QWidget):
             MenuSection(
                 t("Auditoria"),
                 [
-                    (t("Registro de actividad"), "menuButton", None),
+                    (t("Registro de Actividad"), "menuButton", None),
                     (t("Alertas"), "menuButton", None),
                     (t("Exportar reporte"), "menuButton", self.export_html_report),
                 ],
@@ -2659,7 +2724,7 @@ class LoginWindow(QMainWindow):
             profile = find_user_profile(self.config, username)
             if not profile:
                 self.failed_attempts += 1
-                if self.failed_attempts >= 3:
+                if self.failed_attempts >= 5:
                     self.login_button.setEnabled(False)
                     self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
@@ -2700,7 +2765,7 @@ class LoginWindow(QMainWindow):
                 except Exception:
                     error_msg = t("Error de autenticación.")
 
-                if self.failed_attempts >= 3:
+                if self.failed_attempts >= 5:
                     self.login_button.setEnabled(False)
                     self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
@@ -2822,8 +2887,14 @@ class HardwareCatalogView(QWidget):
         self.filter_combo.setFixedHeight(42)
         self.filter_combo.setMinimumWidth(220)
 
+        self.rightsize_btn = QPushButton(t("Sugerir hardware eficiente"))
+        self.rightsize_btn.setObjectName("secondaryButton")
+        self.rightsize_btn.setEnabled(False)
+        self.rightsize_btn.clicked.connect(self._suggest_rightsize)
+
         search_row.addWidget(self.search_input, 3)
         search_row.addWidget(self.filter_combo, 1)
+        search_row.addWidget(self.rightsize_btn)
 
         header = QFrame()
         header.setObjectName("catalogHeader")
@@ -2858,6 +2929,9 @@ class HardwareCatalogView(QWidget):
         layout.addWidget(make_separator("separator"))
         layout.addWidget(self.hardware_panel)
         layout.addWidget(catalog_panel)
+
+        self.rightsize_result = make_label("", "infoText")
+        layout.addWidget(self.rightsize_result)
 
         self.search_input.textChanged.connect(self._apply_hardware_filters)
         self.filter_combo.currentTextChanged.connect(self._apply_hardware_filters)
@@ -2943,7 +3017,34 @@ class HardwareCatalogView(QWidget):
             return
         name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
         tdp_value = parse_number(row.get("TDP_Max_Watts", ""))
+        self.selected_hardware_row = row
+        self.rightsize_btn.setEnabled(tdp_value is not None)
+        self.rightsize_result.setText(t("Hardware seleccionado: {name}").format(name=name))
         self.on_assign(hardware=name, hardware_tdp=tdp_value)
+
+    def _suggest_rightsize(self):
+        selected = getattr(self, "selected_hardware_row", {})
+        current_tdp = parse_number(selected.get("TDP_Max_Watts", ""))
+        candidates = [
+            {"name": f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip(),
+             "tdp_watts": parse_number(row.get("TDP_Max_Watts", ""))}
+            for row in self.hardware_rows
+            if parse_number(row.get("TDP_Max_Watts", "")) is not None
+        ]
+        try:
+            recommendation = rightsizing(current_tdp, candidates)
+        except (TypeError, ValueError) as exc:
+            self.rightsize_result.setText(t("No se pudo calcular la recomendación: {error}").format(error=exc))
+            return
+        if not recommendation:
+            self.rightsize_result.setText(t("No existe una alternativa con ahorro superior al 10%.") )
+            return
+        candidate = recommendation["candidate"]
+        self.rightsize_result.setText(
+            t("Alternativa: {name} ({tdp:.0f} W), ahorro estimado {saving:.1f}%.").format(
+                name=candidate["name"], tdp=candidate["tdp_watts"], saving=recommendation["saving_percent"]
+            )
+        )
 
     def _clear_layout(self, layout):
         while layout.count():
@@ -3049,8 +3150,9 @@ class Sidebar(QFrame):
 
         self.button_group.addButton(button)
         self.nav_layout.addWidget(button)
-        self.nav_buttons.append((button, text))
-        self._apply_nav_button_state(button, text)
+        label_key = i18n.key_for(text)
+        self.nav_buttons.append((button, label_key))
+        self._apply_nav_button_state(button, label_key)
         return button
 
     def _build_user_card(self):
@@ -3243,11 +3345,12 @@ class Sidebar(QFrame):
             self._apply_nav_button_state(button, label)
 
     def _apply_nav_button_state(self, button, label):
+        translated_label = t(label)
         if self.is_collapsed:
             button.setText("")
-            button.setToolTip(label)
+            button.setToolTip(translated_label)
         else:
-            button.setText(label)
+            button.setText(translated_label)
             button.setToolTip("")
 
         button.setProperty("collapsed", self.is_collapsed)
