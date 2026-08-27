@@ -1,10 +1,13 @@
 import http.server
 import socketserver
 import json
+from urllib.parse import urlparse
+
 from hardware_info import get_hardware_info
 import os
 from app_paths import writable_path
 from functional_core import bootstrap_store
+
 
 def load_config():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,13 +20,17 @@ def load_config():
 
 
 def get_store():
-    return bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+    store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+    return store
+
 
 class SimpleHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path == '/login':
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == '/login':
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
+            store = None
             try:
                 data = json.loads(post_data.decode('utf-8'))
                 username = data.get('username')
@@ -43,23 +50,27 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                     return
 
                 config = load_config()
-                user = next((u for u in config.get('users', []) if u.get('username') == username), {})
+                user = next((u for u in config.get('users', []) if str(u.get('username')) == str(username)), {})
                 user = {key: value for key, value in user.items() if key != 'password_hash'}
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({'status': 'ok', 'user': user}).encode('utf-8'))
-            except Exception as e:
+            except Exception:
                 self.send_response(400)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': 'Error interno de autenticacion'}).encode('utf-8'))
+            finally:
+                if store is not None:
+                    store.close()
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_GET(self):
-        if self.path == '/hardware':
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == '/hardware':
             info = get_hardware_info()
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -69,6 +80,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+
 def run():
     config = load_config()
     port = config.get("server_port", 8000)
@@ -77,6 +89,7 @@ def run():
     httpd = socketserver.TCPServer(server_address, SimpleHandler)
     print(f"Servidor corriendo en el puerto {port}")
     httpd.serve_forever()
+
 
 if __name__ == '__main__':
     run()

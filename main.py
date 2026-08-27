@@ -2900,6 +2900,10 @@ class HardwareCatalogView(QWidget):
 
         self._hardware_loaded = False
         self.hardware_rows = load_csv_rows("hardware.csv")
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(120)
+        self._filter_timer.timeout.connect(self._apply_hardware_filters)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2983,9 +2987,13 @@ class HardwareCatalogView(QWidget):
         self.rightsize_result = make_label("", "infoText")
         layout.addWidget(self.rightsize_result)
 
-        self.search_input.textChanged.connect(self._apply_hardware_filters)
-        self.filter_combo.currentTextChanged.connect(self._apply_hardware_filters)
+        self.search_input.textChanged.connect(self._schedule_hardware_filter)
+        self.filter_combo.currentTextChanged.connect(self._schedule_hardware_filter)
         self._apply_hardware_filters()
+
+    def _schedule_hardware_filter(self):
+        self._filter_timer.stop()
+        self._filter_timer.start()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -3367,15 +3375,16 @@ class Sidebar(QFrame):
     def _apply_sidebar_state(self):
         target_width = self.collapsed_width if self.is_collapsed else self.expanded_width
 
+        self.anim_group.stop()
         self.anim_min.setStartValue(self.width())
         self.anim_min.setEndValue(target_width)
-        self.anim_min.setDuration(300)
-        self.anim_min.setEasingCurve(QEasingCurve.InOutQuad)
+        self.anim_min.setDuration(260)
+        self.anim_min.setEasingCurve(QEasingCurve.InOutCubic)
 
         self.anim_max.setStartValue(self.width())
         self.anim_max.setEndValue(target_width)
-        self.anim_max.setDuration(300)
-        self.anim_max.setEasingCurve(QEasingCurve.InOutQuad)
+        self.anim_max.setDuration(260)
+        self.anim_max.setEasingCurve(QEasingCurve.InOutCubic)
 
         self.anim_group.start()
 
@@ -3507,6 +3516,10 @@ class DashboardWindow(QMainWindow):
         def on_click(checked=False, idx=index):
             if self.stack.currentIndex() != idx:
                 self.fade_effect.setEnabled(True)
+                self.fade_anim.stop()
+                self.fade_anim.setStartValue(self.fade_effect.opacity())
+                self.fade_anim.setEndValue(1.0)
+                self.fade_effect.setOpacity(0.0)
                 self.stack.setCurrentIndex(idx)
                 self.fade_anim.start()
         button.clicked.connect(on_click)
