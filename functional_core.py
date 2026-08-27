@@ -15,6 +15,7 @@ import re
 import secrets
 import sqlite3
 import time
+from decimal import Decimal, InvalidOperation
 from html import escape
 from calendar import monthrange
 from dataclasses import dataclass, asdict
@@ -24,9 +25,13 @@ from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import requests
+
 
 PASSWORD_PATTERN = re.compile(r"^(?=.*[A-Z])(?=.*\d)(?=.*[@_-])[\x21-\x7E]{8,}$")
 DEFAULT_RATES = {"USD": 1.0, "CLP": 950.0, "EUR": 0.9}
+EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/CLP"
+SUPPORTED_CURRENCIES = ("CLP", "USD", "EUR", "BRL", "PEN", "ARS", "CNY", "GBP", "JPY", "CAD", "CHF")
 
 
 class ValidationError(ValueError):
@@ -39,6 +44,78 @@ class UnsupportedCurrencyError(ValidationError):
 
 class DataIntegrityError(ValidationError):
     pass
+
+
+def fetch_exchange_rates(
+    fallback_path: str | os.PathLike[str] | None = None,
+    timeout: float = 5.0,
+    url: str = EXCHANGE_RATE_URL,
+) -> dict[str, float]:
+    """Fetch CLP-based rates and retain the last valid response locally."""
+    data = None
+    try:
+        response = requests.get(url, timeout=timeout, headers={"Accept": "application/json"})
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or data.get("result") != "success":
+            raise DataIntegrityError("La API de divisas devolvio una respuesta invalida.")
+        rates = data.get("rates")
+        if not isinstance(rates, dict):
+            raise DataIntegrityError("La API de divisas no contiene tasas.")
+        parsed = {"CLP": 1.0}
+        for currency in SUPPORTED_CURRENCIES:
+            if currency == "CLP":
+                continue
+            value = rates.get(currency)
+            try:
+                parsed[currency] = float(Decimal(str(value)))
+            except (InvalidOperation, TypeError, ValueError):
+                raise DataIntegrityError(f"La tasa {currency} no es valida.")
+            if parsed[currency] <= 0:
+                raise DataIntegrityError(f"La tasa {currency} debe ser positiva.")
+        data = {"result": "success", "base_code": "CLP", "rates": parsed}
+        if fallback_path:
+            Path(fallback_path).write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+        return parsed
+    except (requests.RequestException, OSError, ValueError, DataIntegrityError) as exc:
+        if fallback_path:
+            try:
+                cached = json.loads(Path(fallback_path).read_text(encoding="utf-8"))
+                rates = cached.get("rates") if isinstance(cached, dict) else None
+                if isinstance(rates, dict):
+                    return fetch_exchange_rates_from_mapping(rates)
+            except (OSError, UnicodeError, json.JSONDecodeError, AttributeError, DataIntegrityError):
+                pass
+        raise DataIntegrityError(f"No se pudieron obtener tasas de divisas: {exc}") from exc
+
+
+def fetch_exchange_rates_from_mapping(rates: dict[str, Any]) -> dict[str, float]:
+    """Validate a cached CLP-based rate mapping without making a network call."""
+    parsed = {"CLP": 1.0}
+    for currency in SUPPORTED_CURRENCIES:
+        if currency == "CLP":
+            continue
+        try:
+            value = float(Decimal(str(rates[currency])))
+        except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+            raise DataIntegrityError(f"La tasa {currency} no es valida.") from exc
+        if value <= 0:
+            raise DataIntegrityError(f"La tasa {currency} debe ser positiva.")
+        parsed[currency] = value
+    return parsed
+
+
+def convert_clp(amount_clp: float, currency: str, rates: dict[str, float]) -> tuple[float, float]:
+    """Return foreign amount and CLP cost of one unit of that currency."""
+    if amount_clp < 0:
+        raise ValidationError("El monto en CLP no puede ser negativo.")
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        raise UnsupportedCurrencyError(f"Divisa no soportada: {currency}")
+    rate = float(rates[currency])
+    if rate <= 0:
+        raise ValidationError("La tasa de cambio debe ser positiva.")
+    return round(amount_clp * rate, 2), round(1 / rate, 8)
 
 
 def validate_password(password: str) -> bool:

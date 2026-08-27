@@ -1,6 +1,8 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import i18n
 
@@ -14,8 +16,10 @@ from functional_core import (
     calculate_execution,
     calculate_water,
     compare_models,
+    convert_clp,
     estimate_cloud,
     export_records,
+    fetch_exchange_rates,
     format_carbon,
     green_score,
     import_records,
@@ -36,6 +40,30 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(calculate_carbon(1000, 2, 1, 400, 1, 1000), 1400.0)
         self.assertEqual(calculate_water(3, 2, 3, immersion=True), 0.0)
         self.assertEqual(format_carbon(10001), "10.00 kgCO2eq")
+
+    @patch("functional_core.requests.get")
+    def test_exchange_rates_from_api_and_inverse_conversion(self, get):
+        response = Mock()
+        response.json.return_value = {
+            "result": "success",
+            "rates": {currency: index + 1 for index, currency in enumerate(("USD", "EUR", "BRL", "PEN", "ARS", "CNY", "GBP", "JPY", "CAD", "CHF"))},
+        }
+        get.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            rates = fetch_exchange_rates(Path(directory) / "rates.json")
+        self.assertEqual(rates["CLP"], 1.0)
+        self.assertEqual(set(rates), {"CLP", "USD", "EUR", "BRL", "PEN", "ARS", "CNY", "GBP", "JPY", "CAD", "CHF"})
+        self.assertEqual(convert_clp(100, "USD", rates), (100.0, 1.0))
+        get.assert_called_once()
+
+    @patch("functional_core.requests.get", side_effect=ConnectionError("offline"))
+    def test_exchange_rates_use_local_fallback(self, get):
+        rates_data = {currency: 0.5 for currency in ("USD", "EUR", "BRL", "PEN", "ARS", "CNY", "GBP", "JPY", "CAD", "CHF")}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rates.json"
+            path.write_text(json.dumps({"rates": rates_data}), encoding="utf-8")
+            rates = fetch_exchange_rates(path)
+        self.assertEqual(rates["USD"], 0.5)
 
     def test_invalid_business_values(self):
         with self.assertRaises(ValidationError):
@@ -156,6 +184,10 @@ class FunctionalCoreTests(unittest.TestCase):
             backup = Path(directory) / "backup.sqlite3"
             store.backup(backup)
             self.assertTrue(backup.exists())
+            backup_store = LocalStore(backup)
+            self.assertEqual(backup_store.project_totals(target)["cost"], 10.0)
+            self.assertEqual(len(backup_store.list_history()), 1)
+            backup_store.close()
             store.close()
 
     def test_empty_history_is_explicit(self):

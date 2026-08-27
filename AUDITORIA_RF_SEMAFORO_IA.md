@@ -34,9 +34,35 @@ Se implementaron y verificaron con pruebas automatizadas las siguientes piezas f
 
 Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas, SNMP/Modbus real, XLSX, Markdown renderizado, aplicacion persistente del hardware recomendado, capacity planning, notificaciones OS, cuotas y disyuntores. El estado se mantiene estricto hasta completar tambien esas excepciones.
 
+### Estado verificado de componentes
+
+Estos componentes se consideran `[LISTO]` porque tienen implementacion en el codigo y cobertura en `test_functional_core.py`:
+
+- `[LISTO]` Motor de costo, divisas, energia, carbono con diesel, agua con WUE/WSI/inmersion, Green Score y semaforo.
+- `[LISTO]` Validacion anti-colision de umbrales (`Verde < Amarillo < Rojo`).
+- `[LISTO]` Autenticacion PBKDF2, politica de contrasenas, bloqueo persistente tras cinco fallos y desbloqueo por Administrador.
+- `[LISTO]` Persistencia SQLite de usuarios, proyectos, modelos y ejecuciones, incluyendo historial vacio explicito.
+- `[LISTO]` Reasignacion transaccional de modelos y totales por proyecto.
+- `[LISTO]` Importacion y exportacion de JSON/CSV con deteccion de corrupcion.
+- `[LISTO]` Vista de modelos integrada con `models.json`; las importaciones se refrescan en el selector y excluyen registros inactivos.
+- `[LISTO]` Borrado logico y fisico del archivo local de modelos.
+- `[LISTO]` Backup SQLite consistente mediante la API online de SQLite; la interfaz de Ajustes usa este mecanismo.
+- `[LISTO]` Sensor simulado con rango 100-500 W y timeout controlado.
+- `[LISTO]` Comparativa de dos modelos con deteccion de empate tecnico.
+- `[LISTO]` Rightsizing con umbral de ahorro superior al 10% y aplicacion sobre el hardware seleccionado.
+- `[LISTO]` Pronostico de quiebre presupuestario y trazabilidad de estimaciones cloud.
+- `[LISTO]` Saneamiento y limite de longitud para descripciones con contenido tipo Markdown.
+- `[LISTO]` Semaforo inicial conectado a `calculate_carbon()`, `semaphore_level()` y umbrales persistidos.
+- `[LISTO]` Green Score de la evaluacion inicial calculado por `green_score()`; el costo se considera cero cuando esta vista no tiene una tarifa seleccionada.
+- `[LISTO]` Metricas locales PUE y porcentaje de energia verde validadas y persistidas en `config.json`.
+- `[LISTO]` Exportacion del informe de Inicio alineada con el dashboard: impacto, Green Score, nivel y progreso usan los mismos valores calculados.
+- `[LISTO]` Divisas FinOps conectadas por HTTP GET con `requests` a Open ER API usando CLP como base, con 10 monedas extranjeras, conversión desde CLP, tasa inversa y fallback local.
+
+Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: calculos visuales demostrativos en algunas vistas, sincronizacion real de factores ambientales, persistencia cifrada de API keys, graficos CPU/RAM/GPU, cuotas y disyuntores, notificaciones OS, SNMP/Modbus, Markdown renderizado, XLSX y capacity planning.
+
 ## 1. Resumen ejecutivo
 
-**Resultado:** 0 de 30 bloques funcionales evaluados como completamente listos.
+**Resultado:** 0 de 30 bloques funcionales evaluados como completamente listos bajo el criterio estricto de este documento. Sin embargo, hay componentes individuales ya implementados y probados; se marcan como `[LISTO]` en el checklist actualizado.
 
 El proyecto cuenta actualmente con:
 
@@ -47,27 +73,26 @@ El proyecto cuenta actualmente con:
 - Sistema de traducciones en `i18n.py` y `locales/translations.json`.
 - Algunos controles visuales para semaforo, progreso, importacion, backup, sincronizacion y alertas.
 
-Las principales deficiencias son:
+Las deficiencias que permanecen son principalmente:
 
-- Calculos de costos, carbono, agua y Green Score incompletos o hardcodeados.
-- Botones de UI que solo muestran mensajes y no ejecutan operaciones.
-- Persistencia de ejecuciones, proyectos, modelos y configuracion incompleta.
-- Autenticacion con contrasenas en texto plano y sin bloqueo Brute Force.
+- Integracion incompleta entre algunas vistas y la persistencia local.
+- Botones de sincronizacion, tarifas, notificaciones y algunas metricas que aun solo muestran mensajes.
+- Costo y Green Score de algunas vistas visuales aun usan valores demostrativos.
 - Ausencia de APIs cloud, SNMP/Modbus, notificaciones OS y fallback de datos.
-- Ausencia de comparativa de modelos, heuristicas, capacidad predictiva y disyuntores.
-- Falta de validacion anti-colision de umbrales y controles de permisos.
+- Ausencia de capacity planning, cuotas/disyuntores y exportacion XLSX.
+- Markdown sanitizado pero aun no renderizado en la interfaz.
 
 ## 2. Evidencia revisada
 
 - `main.py`: UI, datos estaticos, semaforo, exportacion y controles de configuracion.
-- `db.py`: conexion PostgreSQL y lecturas parciales; no contiene CRUD completo.
+- `db.py`: conexion PostgreSQL y lecturas parciales; la operacion funcional actual usa `LocalStore` sobre SQLite.
 - `server.py`: servidor HTTP basico y login inseguro.
 - `basededatossql`: esquema relacional amplio, pero sin capa de servicios que lo utilice completamente.
 - `export_handler.py`: exportacion PDF/JSON con worker Qt.
 - `export handler/eco.py`, `economia.py` e `inicio.py`: plantillas PDF y JSON.
 - `data/hardware.csv`, `data/intensidad_carbono.csv` y `data/modelos_ia.csv`: fuentes estaticas.
 - `requirements.txt`: no incluye librerias para SNMP, Modbus, notificaciones OS, criptografia, XLSX o Markdown.
-- `config.json`: usuarios y contrasenas en texto plano.
+- `config.json`: usuarios de demostracion con hashes PBKDF2; no se deben reintroducir claves en texto plano.
 
 ## 3. Evaluacion completa
 

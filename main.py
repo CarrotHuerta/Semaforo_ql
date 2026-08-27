@@ -43,7 +43,8 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
-from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, import_records, rightsizing, sensor_reading, validate_thresholds
+from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, green_score, import_records, rightsizing, semaphore_level, sensor_reading, validate_thresholds
+from functional_core import convert_clp, fetch_exchange_rates
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -59,6 +60,9 @@ def load_config():
     config_path = writable_path("config.json")
     data = {
         "default_user": "nacha",
+        "server_ip": "127.0.0.1",
+        "server_port": 6767,
+        "language": "es",
         "users": [
             {
                 "username": "nacha",
@@ -122,9 +126,17 @@ def load_config():
     if users:
         data["users"] = users
 
+    for key in ("thresholds", "local_metrics"):
+        if isinstance(config.get(key), dict):
+            data[key] = config[key]
+
     default_user = str(config.get("default_user", "")).strip()
     if default_user:
         data["default_user"] = default_user
+
+    for key in ("server_ip", "server_port", "language"):
+        if key in config:
+            data[key] = config[key]
 
     return data
 
@@ -146,6 +158,25 @@ def load_csv_rows(filename):
             return rows
     except OSError:
         return []
+
+
+def load_model_records():
+    """Load offline models and merge user imports, excluding inactive records."""
+    records = load_csv_rows("modelos_ia.csv")
+    model_file = writable_path("models.json")
+    if os.path.isfile(model_file):
+        try:
+            records.extend(import_records(model_file))
+        except (OSError, ValueError):
+            pass
+    merged = {}
+    for row in records:
+        if not isinstance(row, dict) or row.get("is_active", True) is False:
+            continue
+        name = str(row.get("Nombre_Modelo") or row.get("name") or "").strip()
+        if name:
+            merged[name] = row
+    return list(merged.values())
 
 
 def parse_number(value):
@@ -997,12 +1028,12 @@ class HomeView(QWidget):
         layout.addLayout(cards_layout, 1)
         layout.addWidget(info_bar)
 
-    def set_semaforo_level(self, level, score=None):
+    def set_semaforo_level(self, level, score=None, green_score_value=None):
         for key, card in self.status_cards.items():
             card.set_selected(level == key)
             if level == key and score is not None:
                 # Dynamic green score and tips
-                green_score = max(0.0, 100.0 - (score / 5.0))
+                green_score = green_score_value if green_score_value is not None else max(0.0, 100.0 - (score / 5.0))
 
                 # El idioma se resuelve dinamicamente vía el motor i18n compartido
                 lang = getattr(self.window(), "current_lang", i18n.get_language())
@@ -1047,9 +1078,13 @@ class HomeView(QWidget):
         import export_handler
 
         score = None
+        green_score_value = None
+        semaphore_value = None
         selection = {}
         if self.main_window is not None:
             score = getattr(self.main_window, "current_score", None)
+            green_score_value = getattr(self.main_window, "current_green_score", None)
+            semaphore_value = getattr(self.main_window, "current_semaphore_level", None)
             selection = getattr(self.main_window, "selection_state", {}) or {}
 
         hardware = selection.get("hardware") or "N/A"
@@ -1091,48 +1126,40 @@ class HomeView(QWidget):
                 [t("Impacto de Carbono y Green Score no disponibles sin selección completa."), "gray_500"],
             ]
         else:
-            green_score = max(0.0, 100.0 - (score / 5.0))
-            score_text = f"{score:.1f}"
-            green_score_text = f"{green_score:.1f}"
-            margin = max(0.0, 100.0 - green_score)
-
-            if green_score <= 0:
-                state = "error"
-                badge = t("Error: Green Score en 0")
-                level = t("Error Crítico")
-                logs_extra = [
-                    [t("Error: el Green Score llegó a 0. Revisa la configuración de inmediato."), "red_500"],
-                ]
-            elif score >= 350:
-                state = "alto"
-                badge = t("Nivel Alto")
-                level = t("Alto")
-                logs_extra = [
-                    [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
-                    [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
-                ]
-            elif score >= 150:
-                state = "moderado"
-                badge = t("Nivel Moderado")
-                level = t("Moderado")
-                logs_extra = [
-                    [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
-                    [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
-                ]
+            if score is None or green_score_value is None:
+                state = "advertencia"
+                score_text = "N/A"
+                green_score_text = "N/A"
+                badge = t("Advertencia: Datos incompletos")
+                level = t("Sin datos suficientes")
+                chart_values = [100]
+                chart_labels = [t("Sin datos suficientes para calcular")]
+                chart_colors = ["#d1d5db"]
+                progress_value = 0
+                logs_extra = [[t("Impacto de Carbono y Green Score no disponibles sin datos calculados."), "amber_500"]]
             else:
-                state = "bajo"
-                badge = t("Nivel Bajo")
-                level = t("Bajo")
+                green_score = float(green_score_value)
+                score_text = f"{score:.1f}"
+                green_score_text = f"{green_score:.1f}"
+                margin = max(0.0, 100.0 - green_score)
+
+                status_map = {
+                    "Verde": ("bajo", t("Nivel Bajo"), "Bajo"),
+                    "Amarillo": ("moderado", t("Nivel Moderado"), "Moderado"),
+                    "Rojo": ("alto", t("Nivel Alto"), "Alto"),
+                }
+                state, badge, level = status_map.get(
+                    semaphore_value,
+                    ("advertencia", t("Advertencia: Estado no disponible"), t("Sin selección")),
+                )
                 logs_extra = [
                     [t("Impacto de Carbono y Green Score calculados correctamente."), "emerald_500"],
                     [t("Configuración completa: proveedor, región, modelo y hardware detectados."), "cyan_500"],
                 ]
-
-            accent_name = ACCENT_COLORS[state][0]
-            chart_values = [round(green_score, 1), round(margin, 1)]
-            chart_labels = [f"{t('Green Score')}: {green_score_text}", f"{t('Margen restante')}: {margin:.1f}"]
-            chart_colors = [ACCENT_HEX[accent_name], "#e5e7eb"]
-            progress_value = round(green_score)
+                chart_values = [round(green_score, 1), round(margin, 1)]
+                chart_labels = [f"{t('Green Score')}: {green_score_text}", f"{t('Margen restante')}: {margin:.1f}"]
+                chart_colors = ["#ef4444" if state == "alto" else "#f59e0b" if state == "moderado" else "#10b981", "#e5e7eb"]
+                progress_value = round(green_score)
 
         accent, accent_dark, accent_light = ACCENT_COLORS[state]
 
@@ -1368,8 +1395,9 @@ class EnvironmentalPerformanceView(QWidget):
 
 
 class CarbonDetailView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_apply_recommendation=None):
         super().__init__(parent)
+        self.on_apply_recommendation = on_apply_recommendation
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1492,7 +1520,10 @@ class CarbonDetailView(QWidget):
         apply_btn = QPushButton(t("Aplicar recomendación"))
         apply_btn.setObjectName("primaryButton")
         apply_btn.setCursor(Qt.PointingHandCursor)
-        apply_btn.clicked.connect(lambda: QMessageBox.information(self, t("Recomendación Aplicada"), t("Variables del modelo reconfiguradas en memoria.")))
+        if self.on_apply_recommendation:
+            apply_btn.clicked.connect(self.on_apply_recommendation)
+        else:
+            apply_btn.setEnabled(False)
 
         minimize_btn = QPushButton(t("Minimizar consejo"))
         minimize_btn.setObjectName("secondaryButton")
@@ -1581,6 +1612,7 @@ class ModelsView(QWidget):
             except (OSError, ValueError) as exc:
                 QMessageBox.critical(self, t("Importar"), str(exc))
                 return
+            self._refresh_models()
             QMessageBox.information(self, t("Importar"), t("{count} registros validados y guardados.").format(count=len(imported)))
 
         import_btn.clicked.connect(import_models)
@@ -1589,7 +1621,7 @@ class ModelsView(QWidget):
         layout.addLayout(header_row)
         layout.addWidget(make_separator("separator"))
 
-        self.models_data = load_csv_rows("modelos_ia.csv")
+        self.models_data = load_model_records()
 
         cards = QHBoxLayout()
         cards.setSpacing(18)
@@ -1708,6 +1740,18 @@ class ModelsView(QWidget):
             QMessageBox.information(self, t("Baja Lógica"), t("El modelo se ha marcado como 'Inactivo/Oculto' en los cálculos históricos."))
             self.model_combo.removeItem(curr_idx)
 
+    def _refresh_models(self):
+        self.models_data = load_model_records()
+        self.model_map = {}
+        self.model_combo.clear()
+        for row in self.models_data:
+            name = str(row.get("Nombre_Modelo") or row.get("name") or "").strip()
+            if name and name not in self.model_map:
+                self.model_map[name] = row
+                self.model_combo.addItem(name)
+        if self.model_combo.count():
+            self._handle_model_change(self.model_combo.currentText())
+
     def _handle_hard_delete(self):
         curr_idx = self.model_combo.currentIndex()
         if curr_idx >= 0:
@@ -1740,7 +1784,7 @@ class ModelsView(QWidget):
         if not self.on_selection:
             return
         row = self.model_map.get(model_name, {})
-        energy = parse_number(row.get("Consumo_Energetico_Base"))
+        energy = parse_number(row.get("Consumo_Energetico_Base") or row.get("energy"))
         self.on_selection(model=model_name, model_energy=energy)
 
 
@@ -1759,8 +1803,16 @@ class FinOpsView(QWidget):
         header_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"), 1)
 
         self.currency_combo = ChevronComboBox()
-        self.currency_combo.addItems(["CLP ($)", "USD (U$D)", "EUR (€)"])
-        self.currency_combo.setFixedWidth(120)
+        self.currency_options = [
+            ("CLP", "Peso chileno ($)"), ("USD", "Dólar estadounidense ($)"),
+            ("EUR", "Euro (€)"), ("BRL", "Real brasileño (R$)"),
+            ("PEN", "Sol peruano (S/)"), ("ARS", "Peso argentino ($)"),
+            ("CNY", "Yuan chino (¥)"), ("GBP", "Libra esterlina (£)"),
+            ("JPY", "Yen japonés (¥)"), ("CAD", "Dólar canadiense (C$)"),
+            ("CHF", "Franco suizo (CHF)"),
+        ]
+        self.currency_combo.addItems([f"{code} - {label}" for code, label in self.currency_options])
+        self.currency_combo.setFixedWidth(250)
         self.currency_combo.currentTextChanged.connect(self._update_currency)
         header_row.addWidget(self.currency_combo)
 
@@ -1779,11 +1831,14 @@ class FinOpsView(QWidget):
         self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$7.500.000")
         self.card_ahorro = InfoCard(t("Ahorro estimado"), "$1.120.000")
 
-        # Referencia fija temporal de conversión (20-08-2026).
-        # TODO: reemplazar por consulta en tiempo real cuando se integre el endpoint.
-        self.conversion_reference_date = "2026-08-20"
-        self.usd_to_clp_rate = 922
-        self.eur_to_clp_rate = 1077
+        self.exchange_rates = {"CLP": 1.0}
+        self.exchange_status = make_label(t("Cargando tasas de cambio..."), "infoText")
+        self.exchange_rate_label = make_label("", "infoText")
+        try:
+            self.exchange_rates = fetch_exchange_rates(writable_path("exchange_rates.json"))
+            self.exchange_status.setText(t("Tasas actualizadas desde API pública."))
+        except ValueError as exc:
+            self.exchange_status.setText(t("No se pudieron actualizar las tasas: {error}").format(error=exc))
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
         self.base_cost_actual_clp = 4_820_000
@@ -1793,6 +1848,8 @@ class FinOpsView(QWidget):
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
         cards.addWidget(self.card_ahorro, 1)
+        layout.addWidget(self.exchange_status)
+        layout.addWidget(self.exchange_rate_label)
 
         items = [
             t("GPU compute — 48% del gasto"),
@@ -1819,31 +1876,31 @@ class FinOpsView(QWidget):
         layout.addLayout(cards)
         layout.addWidget(budget_panel)
         layout.addWidget(list_panel)
+        self._update_currency(self.currency_combo.currentText())
 
     def _update_currency(self, currency_str):
-        # Conversión visual con tasa de referencia fija al 2026-08-20.
-        # 1 USD ~= 922 CLP | 1 EUR ~= 1.077 CLP | 1 EUR ~= 1,16 USD.
-        def to_clp_text(value):
-            return f"${int(round(value)):,}".replace(",", ".")
-
-        def to_usd_text(value_clp):
-            return f"U$D {value_clp / self.usd_to_clp_rate:,.2f}"
-
-        def to_eur_text(value_clp):
-            return f"€ {value_clp / self.eur_to_clp_rate:,.2f}"
-
-        if "USD" in currency_str:
-            self.card_actual.set_value(to_usd_text(self.base_cost_actual_clp))
-            self.card_presupuesto.set_value(to_usd_text(self.base_presupuesto_clp))
-            self.card_ahorro.set_value(to_usd_text(self.base_ahorro_clp))
-        elif "EUR" in currency_str:
-            self.card_actual.set_value(to_eur_text(self.base_cost_actual_clp))
-            self.card_presupuesto.set_value(to_eur_text(self.base_presupuesto_clp))
-            self.card_ahorro.set_value(to_eur_text(self.base_ahorro_clp))
-        else:
-            self.card_actual.set_value(to_clp_text(self.base_cost_actual_clp))
-            self.card_presupuesto.set_value(to_clp_text(self.base_presupuesto_clp))
-            self.card_ahorro.set_value(to_clp_text(self.base_ahorro_clp))
+        currency_code = currency_str.split(" - ", 1)[0]
+        symbol_map = {code: label[label.find("(") + 1:-1] for code, label in self.currency_options}
+        symbol = symbol_map.get(currency_code, currency_code)
+        try:
+            actual, inverse = convert_clp(self.base_cost_actual_clp, currency_code, self.exchange_rates)
+            presupuesto, _ = convert_clp(self.base_presupuesto_clp, currency_code, self.exchange_rates)
+            ahorro, _ = convert_clp(self.base_ahorro_clp, currency_code, self.exchange_rates)
+        except (KeyError, TypeError, ValueError) as exc:
+            error = t("Tasa no disponible: {error}").format(error=exc)
+            self.card_actual.set_value("N/A")
+            self.card_presupuesto.set_value("N/A")
+            self.card_ahorro.set_value("N/A")
+            self.exchange_rate_label.setText(error)
+            return
+        self.card_actual.set_value(f"{symbol} {actual:,.2f}")
+        self.card_presupuesto.set_value(f"{symbol} {presupuesto:,.2f}")
+        self.card_ahorro.set_value(f"{symbol} {ahorro:,.2f}")
+        self.exchange_rate_label.setText(
+            t("1 CLP = {rate:.8f} {currency} | 1 {currency} = {inverse:.8f} CLP").format(
+                rate=self.exchange_rates[currency_code], currency=currency_code, inverse=inverse
+            )
+        )
 
 
     def _sanitize_money_value(self, value, currency_code):
@@ -2118,11 +2175,16 @@ class SettingsView(QWidget):
             destination, _ = QFileDialog.getSaveFileName(self, t("Guardar Respaldo"), source + ".bak", "SQLite (*.sqlite3 *.bak)")
             if not destination:
                 return
+            store = None
             try:
-                shutil.copy2(source, destination)
-            except OSError as exc:
+                store = bootstrap_store(load_config(), source)
+                store.backup(destination)
+            except (OSError, ValueError, PermissionError) as exc:
                 QMessageBox.critical(self, t("Respaldo"), str(exc))
                 return
+            finally:
+                if store is not None:
+                    store.close()
             QMessageBox.information(self, t("Respaldo"), t("Respaldo creado correctamente."))
 
         backup_btn.clicked.connect(create_backup)
@@ -2186,9 +2248,36 @@ class SettingsView(QWidget):
         green_energy_input.setPlaceholderText(t("% Energía Verde Privada"))
         green_energy_input.setFixedWidth(160)
 
+        saved_metrics = load_config().get("local_metrics", {})
+        pue_input.setText(str(saved_metrics.get("pue", "1.0")))
+        green_energy_input.setText(str(saved_metrics.get("green_energy_percent", "0")))
+
         save_metrics_btn = QPushButton(t("Guardar Métricas"))
         save_metrics_btn.setObjectName("primaryButton")
-        save_metrics_btn.clicked.connect(lambda: QMessageBox.information(self, t("Métricas Locales"), t("Métricas PUE y Energía Verde sobrescritas localmente.")))
+        def save_metrics():
+            try:
+                pue = float(pue_input.text())
+                green_energy = float(green_energy_input.text())
+                if pue < 1 or not 0 <= green_energy <= 100:
+                    raise ValueError(t("PUE debe ser >= 1 y energía verde debe estar entre 0 y 100."))
+            except (TypeError, ValueError) as exc:
+                QMessageBox.warning(self, t("Métricas Locales"), str(exc))
+                return
+            config_path = writable_path("config.json")
+            try:
+                config = load_config()
+                config["local_metrics"] = {
+                    "pue": pue,
+                    "green_energy_percent": green_energy,
+                }
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Métricas Locales"), str(exc))
+                return
+            QMessageBox.information(self, t("Métricas Locales"), t("Métricas PUE y Energía Verde sobrescritas localmente."))
+
+        save_metrics_btn.clicked.connect(save_metrics)
 
         local_metrics_row.addWidget(make_label(t("PUE Local:"), "infoText"))
         local_metrics_row.addWidget(pue_input)
@@ -2544,7 +2633,9 @@ class AdminMenuView(QWidget):
         if hasattr(self, 'main_window') and self.main_window:
             if hasattr(self.main_window, 'current_score') and self.main_window.current_score is not None:
                 score = f"{self.main_window.current_score:.2f}"
-                gs = f"{max(0.0, 100.0 - (self.main_window.current_score / 5.0)):.1f}"
+                current_green_score = getattr(self.main_window, "current_green_score", None)
+                if current_green_score is not None:
+                    gs = f"{current_green_score:.1f}"
 
             if hasattr(self.main_window, 'selection_state'):
                 details_dict = self.main_window.selection_state.copy()
@@ -2844,6 +2935,8 @@ class CatalogRow(QFrame):
         super().__init__(parent)
         self.setObjectName("catalogRow")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAutoFillBackground(True)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 12, 18, 12)
@@ -2862,6 +2955,18 @@ class CatalogRow(QFrame):
         if on_assign:
             assign_button.clicked.connect(lambda checked=False: on_assign(payload))
         layout.addWidget(assign_button, 1, alignment=Qt.AlignRight)
+
+    def enterEvent(self, event):
+        self.setProperty("hovered", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setProperty("hovered", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().leaveEvent(event)
 
 
 class HardwareLookupThread(QThread):
@@ -3227,17 +3332,24 @@ class Sidebar(QFrame):
         photo_path = self.user_profile.get("profile_photo", "")
 
         avatar_pixmap = None
+        avatar_pixmap_compact = None
         if photo_path:
             resolved = resolve_path(photo_path)
             avatar_pixmap = make_round_pixmap(resolved, 42)
+            avatar_pixmap_compact = make_round_pixmap(resolved, 18)
 
         avatar_expanded = QLabel()
         avatar_compact = QLabel()
         if avatar_pixmap:
             avatar_expanded.setObjectName("userAvatar")
             avatar_expanded.setPixmap(avatar_pixmap)
-            avatar_compact.setObjectName("userAvatar")
-            avatar_compact.setPixmap(avatar_pixmap)
+            if avatar_pixmap_compact:
+                avatar_compact.setObjectName("userAvatar")
+                avatar_compact.setPixmap(avatar_pixmap_compact)
+            else:
+                avatar_compact.setObjectName("userInitial")
+                avatar_compact.setText(user_name[:1].upper() if user_name else "?")
+                avatar_compact.setAlignment(Qt.AlignCenter)
         else:
             initial = user_name[:1].upper() if user_name else "?"
             avatar_expanded.setText(initial)
@@ -3248,10 +3360,9 @@ class Sidebar(QFrame):
             avatar_compact.setAlignment(Qt.AlignCenter)
 
         avatar_expanded.setFixedSize(42, 42)
-        avatar_compact.setFixedSize(42, 42)
+        avatar_compact.setFixedSize(18, 18)
 
         self.user_menu = self._build_account_menu()
-
         self.user_info = MenuTriggerWidget(self.user_menu)
         self.user_info.setObjectName("userInfo")
         self.user_info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -3279,11 +3390,13 @@ class Sidebar(QFrame):
 
         self.user_compact_trigger = MenuTriggerWidget(self.user_menu)
         self.user_compact_trigger.setObjectName("userCompactTrigger")
+        self.user_compact_trigger.setFixedSize(32, 32)
         compact_trigger_layout = QVBoxLayout(self.user_compact_trigger)
         compact_trigger_layout.setContentsMargins(0, 0, 0, 0)
         compact_trigger_layout.setSpacing(0)
+        compact_trigger_layout.setAlignment(Qt.AlignCenter)
         avatar_compact.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        compact_trigger_layout.addWidget(avatar_compact, 0, Qt.AlignHCenter)
+        compact_trigger_layout.addWidget(avatar_compact, 0, Qt.AlignCenter)
 
         # Language Toggle Button
         self.user_card_expanded = QWidget()
@@ -3296,10 +3409,12 @@ class Sidebar(QFrame):
 
         self.user_card_compact = QWidget()
         self.user_card_compact.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.user_card_compact.setFixedHeight(42)
         compact_layout = QVBoxLayout(self.user_card_compact)
         compact_layout.setContentsMargins(0, 0, 0, 0)
-        compact_layout.setSpacing(6)
-        compact_layout.addWidget(self.user_compact_trigger, 0, Qt.AlignHCenter)
+        compact_layout.setSpacing(0)
+        compact_layout.setAlignment(Qt.AlignCenter)
+        compact_layout.addWidget(self.user_compact_trigger, 0, Qt.AlignCenter)
 
         self.user_card_compact.setVisible(False)
 
@@ -3470,6 +3585,8 @@ class DashboardWindow(QMainWindow):
             "hardware_tdp": None,
         }
         self.current_score = None
+        self.current_green_score = None
+        self.current_semaphore_level = None
         self.current_lang = i18n.load_saved_language()
 
         self.home_view = HomeView(main_window=self)
@@ -3494,7 +3611,12 @@ class DashboardWindow(QMainWindow):
             make_text_icon("$", 18, "#66bb22"),
             FinOpsView(),
         )
-        self._add_nav_item(sidebar, t("Comparativas"), make_bars_icon(), CarbonDetailView())
+        self._add_nav_item(
+            sidebar,
+            t("Comparativas"),
+            make_bars_icon(),
+            CarbonDetailView(on_apply_recommendation=self._apply_recommendation),
+        )
         self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), self.hardware_view)
         self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), self.cloud_view)
         self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), HistoryView())
@@ -3549,6 +3671,35 @@ class DashboardWindow(QMainWindow):
             self.selection_state["hardware"] = hardware
         self.selection_state["hardware_tdp"] = hardware_tdp
         self._update_semaforo()
+
+    def _apply_recommendation(self):
+        current_tdp = self.selection_state.get("hardware_tdp")
+        if current_tdp is None:
+            QMessageBox.warning(self, t("Recomendación"), t("Selecciona primero un hardware válido."))
+            return
+        candidates = []
+        for row in self.hardware_view.hardware_rows:
+            tdp = parse_number(row.get("TDP_Max_Watts"))
+            if tdp is not None:
+                name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
+                candidates.append({"name": name, "tdp_watts": tdp})
+        try:
+            recommendation = rightsizing(current_tdp, candidates)
+        except (TypeError, ValueError) as exc:
+            QMessageBox.warning(self, t("Recomendación"), str(exc))
+            return
+        if not recommendation:
+            QMessageBox.information(self, t("Recomendación"), t("No existe una alternativa con ahorro superior al 10%."))
+            return
+        candidate = recommendation["candidate"]
+        self._handle_hardware_assign(candidate["name"], candidate["tdp_watts"])
+        QMessageBox.information(
+            self,
+            t("Recomendación Aplicada"),
+            t("Hardware actualizado: {name}. Ahorro estimado: {saving:.1f}%.").format(
+                name=candidate["name"], saving=recommendation["saving_percent"]
+            ),
+        )
 
     def _toggle_language(self):
         """Cicla entre todos los idiomas definidos en locales/translations.json."""
@@ -3627,7 +3778,7 @@ class DashboardWindow(QMainWindow):
         if hasattr(self, 'home_view') and hasattr(self, 'current_score'):
             for key, card in self.home_view.status_cards.items():
                 if card.property("selected"):
-                    self.home_view.set_semaforo_level(key, self.current_score)
+                    self.home_view.set_semaforo_level(key, self.current_score, self.current_green_score)
 
         self._update_semaforo()
 
@@ -3646,27 +3797,40 @@ class DashboardWindow(QMainWindow):
         if not (provider and region and model and hardware):
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
+            self.current_green_score = None
+            self.current_semaphore_level = None
             return
         if intensity is None or tdp is None:
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
+            self.current_green_score = None
+            self.current_semaphore_level = None
             return
 
         try:
             # La seleccion actual aporta TDP y CIF; una ejecucion inicial se modela a una hora.
             score = calculate_carbon(tdp, 1.0, 1.0, intensity)
+            config = load_config()
+            thresholds_config = config.get("thresholds", {})
+            thresholds = validate_thresholds(
+                thresholds_config.get("green", 50),
+                thresholds_config.get("yellow", 90),
+                thresholds_config.get("red", 100),
+            )
+            impact_percent = score / 10.0
+            green_score_value, _ = green_score(0, 1, score, 1000)
+            level = semaphore_level(impact_percent, *thresholds)
         except (TypeError, ValueError):
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
+            self.current_green_score = None
+            self.current_semaphore_level = None
             return
         self.current_score = score
-        if score >= 350:
-            level = "alto"
-        elif score >= 150:
-            level = "moderado"
-        else:
-            level = "bajo"
-        self.home_view.set_semaforo_level(level, score)
+        self.current_green_score = green_score_value
+        self.current_semaphore_level = level
+        status_level = {"Verde": "bajo", "Amarillo": "moderado", "Rojo": "alto"}[level]
+        self.home_view.set_semaforo_level(status_level, score, green_score_value)
 
 
 def apply_stylesheet(app):
@@ -3997,6 +4161,21 @@ def apply_stylesheet(app):
         "QFrame#catalogRow {"
         "  background-color: transparent;"
         "  border-bottom: 1px solid #2c2c2c;"
+        "  border-radius: 10px;"
+        "}"
+        "QFrame#catalogRow:hover {"
+        "  background-color: #171717;"
+        "  border: 1px solid #3a3a3a;"
+        "  border-bottom: 1px solid #3a3a3a;"
+        "}"
+        "QFrame#statusCard {"
+        "  background-color: #141414;"
+        "  border: 1px solid #2b2b2b;"
+        "  border-radius: 22px;"
+        "}"
+        "QFrame#statusCard:hover {"
+        "  border: 1px solid #5a5a5a;"
+        "  background-color: #181818;"
         "}"
         "QLabel#pageTitle {"
         "  font-size: 26px;"
@@ -4196,6 +4375,14 @@ def apply_stylesheet(app):
         "QPushButton#secondaryButton:hover {"
         "  background-color: #171717;"
         "  border: 1px solid #a0a0a0;"
+        "  color: #ffffff;"
+        "}"
+        "QPushButton#assignButton:hover {"
+        "  background-color: #1a1a1a;"
+        "  border: 1px solid #d8d8d8;"
+        "  color: #ffffff;"
+        "}"
+        "QFrame#catalogRow:hover QLabel#catalogCell {"
         "  color: #ffffff;"
         "}"
         "QPushButton#dangerButton {"
