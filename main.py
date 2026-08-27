@@ -1794,13 +1794,14 @@ class FinOpsView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setSpacing(10)
 
         layout.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         header_row = QHBoxLayout()
-        header_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"), 1)
+        header_row.setSpacing(10)
+        header_row.addStretch()
 
         self.currency_combo = ChevronComboBox()
         self.currency_options = [
@@ -1848,8 +1849,11 @@ class FinOpsView(QWidget):
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
         cards.addWidget(self.card_ahorro, 1)
-        layout.addWidget(self.exchange_status)
-        layout.addWidget(self.exchange_rate_label)
+        exchange_row = QHBoxLayout()
+        exchange_row.setSpacing(12)
+        exchange_row.addWidget(self.exchange_status, 1)
+        exchange_row.addWidget(self.exchange_rate_label, 2)
+        layout.addLayout(exchange_row)
 
         items = [
             t("GPU compute — 48% del gasto"),
