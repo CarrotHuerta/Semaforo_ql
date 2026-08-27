@@ -57,8 +57,11 @@ Estos componentes se consideran `[LISTO]` porque tienen implementacion en el cod
 - `[LISTO]` Metricas locales PUE y porcentaje de energia verde validadas y persistidas en `config.json`.
 - `[LISTO]` Exportacion del informe de Inicio alineada con el dashboard: impacto, Green Score, nivel y progreso usan los mismos valores calculados.
 - `[LISTO]` Divisas FinOps conectadas por HTTP GET con `requests` a Open ER API usando CLP como base, con 10 monedas extranjeras, conversión desde CLP, tasa inversa y fallback local.
+- `[LISTO]` Actualización de divisas en segundo plano con botón de reintento, indicador de estado y cache local, sin bloquear la interfaz.
+- `[LISTO]` Notificaciones OS opcionales mediante `plyer`, con preferencia persistida en `config.json` y respetada por las exportaciones completadas.
+- `[LISTO]` Exportación XLSX integrada en `export_handler` y disponible para informes Inicio, Ambiental y FinOps, con hojas de KPIs, detalles, logs y resumen.
 
-Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: calculos visuales demostrativos en algunas vistas, sincronizacion real de factores ambientales, persistencia cifrada de API keys, graficos CPU/RAM/GPU, cuotas y disyuntores, notificaciones OS, SNMP/Modbus, Markdown renderizado, XLSX y capacity planning.
+Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: calculos visuales demostrativos en algunas vistas, sincronizacion real de factores ambientales y tarifas cloud, persistencia cifrada de API keys, graficos CPU/RAM/GPU, cuotas y disyuntores, SNMP/Modbus, Markdown renderizado y capacity planning.
 
 ## 1. Resumen ejecutivo
 

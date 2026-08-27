@@ -63,6 +63,7 @@ def load_config():
         "server_ip": "127.0.0.1",
         "server_port": 6767,
         "language": "es",
+        "notifications_os": True,
         "users": [
             {
                 "username": "nacha",
@@ -134,7 +135,7 @@ def load_config():
     if default_user:
         data["default_user"] = default_user
 
-    for key in ("server_ip", "server_port", "language"):
+    for key in ("server_ip", "server_port", "language", "notifications_os"):
         if key in config:
             data[key] = config[key]
 
@@ -177,6 +178,21 @@ def load_model_records():
         if name:
             merged[name] = row
     return list(merged.values())
+
+
+class ExchangeRateThread(QThread):
+    rates_ready = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, fallback_path, parent=None):
+        super().__init__(parent)
+        self.fallback_path = fallback_path
+
+    def run(self):
+        try:
+            self.rates_ready.emit(fetch_exchange_rates(self.fallback_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 def parse_number(value):
@@ -1064,6 +1080,7 @@ class HomeView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
+        export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
 
         chosen_action = menu.exec(self.export_home_btn.mapToGlobal(self.export_home_btn.rect().bottomLeft()))
@@ -1071,6 +1088,8 @@ class HomeView(QWidget):
             self.export_home_report("pdf")
         elif chosen_action == export_json_action:
             self.export_home_report("json")
+        elif chosen_action == export_xlsx_action:
+            self.export_home_report("xlsx")
         elif chosen_action == export_both_action:
             self.export_home_report("both")
 
@@ -1320,6 +1339,7 @@ class EnvironmentalPerformanceView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
+        export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
 
         chosen_action = menu.exec(self.export_eco_btn.mapToGlobal(self.export_eco_btn.rect().bottomLeft()))
@@ -1327,6 +1347,8 @@ class EnvironmentalPerformanceView(QWidget):
             self.export_eco_report("pdf")
         elif chosen_action == export_json_action:
             self.export_eco_report("json")
+        elif chosen_action == export_xlsx_action:
+            self.export_eco_report("xlsx")
         elif chosen_action == export_both_action:
             self.export_eco_report("both")
 
@@ -1817,6 +1839,11 @@ class FinOpsView(QWidget):
         self.currency_combo.currentTextChanged.connect(self._update_currency)
         header_row.addWidget(self.currency_combo)
 
+        self.refresh_rates_btn = QPushButton(t("Actualizar tasas"))
+        self.refresh_rates_btn.setObjectName("secondaryButton")
+        self.refresh_rates_btn.clicked.connect(self._refresh_exchange_rates)
+        header_row.addWidget(self.refresh_rates_btn)
+
         self.export_finops_btn = QPushButton(t("Exportar"))
         self.export_finops_btn.setObjectName("secondaryButton")
         self.export_finops_btn.setCursor(Qt.PointingHandCursor)
@@ -1835,11 +1862,6 @@ class FinOpsView(QWidget):
         self.exchange_rates = {"CLP": 1.0}
         self.exchange_status = make_label(t("Cargando tasas de cambio..."), "infoText")
         self.exchange_rate_label = make_label("", "infoText")
-        try:
-            self.exchange_rates = fetch_exchange_rates(writable_path("exchange_rates.json"))
-            self.exchange_status.setText(t("Tasas actualizadas desde API pública."))
-        except ValueError as exc:
-            self.exchange_status.setText(t("No se pudieron actualizar las tasas: {error}").format(error=exc))
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
         self.base_cost_actual_clp = 4_820_000
@@ -1881,6 +1903,36 @@ class FinOpsView(QWidget):
         layout.addWidget(budget_panel)
         layout.addWidget(list_panel)
         self._update_currency(self.currency_combo.currentText())
+        self._refresh_exchange_rates()
+
+    def _refresh_exchange_rates(self):
+        if hasattr(self, "_exchange_thread") and self._exchange_thread.isRunning():
+            return
+        self.refresh_rates_btn.setEnabled(False)
+        self.exchange_status.setText(t("Actualizando tasas de cambio..."))
+        self._exchange_thread = ExchangeRateThread(writable_path("exchange_rates.json"), self)
+        self._exchange_thread.rates_ready.connect(self._on_exchange_rates_ready)
+        self._exchange_thread.failed.connect(self._on_exchange_rates_failed)
+        self._exchange_thread.finished.connect(lambda: self.refresh_rates_btn.setEnabled(True))
+        self._exchange_thread.start()
+
+    def _on_exchange_rates_ready(self, rates):
+        self.exchange_rates = rates
+        self.exchange_status.setText(t("Tasas actualizadas desde API pública."))
+        self._update_currency(self.currency_combo.currentText())
+
+    def _on_exchange_rates_failed(self, error):
+        self.exchange_status.setText(t("No se pudieron actualizar las tasas: {error}").format(error=error))
+
+    def shutdown(self):
+        exchange_thread = getattr(self, "_exchange_thread", None)
+        if exchange_thread is not None and exchange_thread.isRunning():
+            exchange_thread.requestInterruption()
+            exchange_thread.wait(6000)
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 
     def _update_currency(self, currency_str):
         currency_code = currency_str.split(" - ", 1)[0]
@@ -1918,6 +1970,7 @@ class FinOpsView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
+        export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
 
         chosen_action = menu.exec(self.export_finops_btn.mapToGlobal(self.export_finops_btn.rect().bottomLeft()))
@@ -1925,6 +1978,8 @@ class FinOpsView(QWidget):
             self.export_finops_report("pdf")
         elif chosen_action == export_json_action:
             self.export_finops_report("json")
+        elif chosen_action == export_xlsx_action:
+            self.export_finops_report("xlsx")
         elif chosen_action == export_both_action:
             self.export_finops_report("both")
 
@@ -2193,9 +2248,21 @@ class SettingsView(QWidget):
 
         from PySide6.QtWidgets import QCheckBox
         notif_cb = QCheckBox(t("Generar Avisos al OS"))
-        notif_cb.setChecked(True)
+        notif_cb.setChecked(bool(load_config().get("notifications_os", True)))
         notif_cb.setStyleSheet("color: white;")
-        notif_cb.stateChanged.connect(lambda state: QMessageBox.information(self, t("Notificaciones"), t("Avisos al OS activados.") if state else t("Avisos al OS desactivados.")))
+        def save_notification_setting(state):
+            try:
+                config_path = writable_path("config.json")
+                config = load_config()
+                config["notifications_os"] = bool(state)
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Notificaciones"), str(exc))
+                return
+            QMessageBox.information(self, t("Notificaciones"), t("Avisos al OS activados.") if state else t("Avisos al OS desactivados."))
+
+        notif_cb.stateChanged.connect(save_notification_setting)
 
         sys_row.addWidget(backup_btn)
         sys_row.addWidget(notif_cb)
@@ -3653,6 +3720,11 @@ class DashboardWindow(QMainWindow):
         self.login_window = LoginWindow()
         self.login_window.show()
         self.close()
+
+    def closeEvent(self, event):
+        for view in self.findChildren(FinOpsView):
+            view.shutdown()
+        super().closeEvent(event)
 
     def _handle_cloud_selection(self, provider=None, region=None, region_intensity=None):
         if provider is not None:

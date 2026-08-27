@@ -3,3 +3,5 @@ psycopg2-binary
 matplotlib
 fpdf2
 requests
+openpyxl
+plyer

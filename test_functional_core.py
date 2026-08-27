@@ -65,6 +65,29 @@ class FunctionalCoreTests(unittest.TestCase):
             rates = fetch_exchange_rates(path)
         self.assertEqual(rates["USD"], 0.5)
 
+    def test_xlsx_report_contains_structured_sheets(self):
+        from openpyxl import load_workbook
+        from export_handler import _create_xlsx_report
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.xlsx"
+            _create_xlsx_report(
+                "economia",
+                {
+                    "kpis": [["Costo", "100", "USD ($)"]],
+                    "details": [["GPU", "48%"]],
+                    "logs": [["OK"]],
+                    "exported_by": "Test",
+                    "progress": 64,
+                },
+                path,
+            )
+            workbook = load_workbook(path, read_only=True)
+            self.assertEqual(set(workbook.sheetnames), {"Kpis", "Details", "Logs", "Resumen"})
+            self.assertEqual(workbook["Kpis"]["A1"].value, "Costo")
+            self.assertEqual(workbook["Resumen"]["B2"].value, "Test")
+            workbook.close()
+
     def test_invalid_business_values(self):
         with self.assertRaises(ValidationError):
             validate_thresholds(60, 50, 90)

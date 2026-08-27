@@ -1,11 +1,12 @@
 import os
 import sys
+from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, QStandardPaths, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
 
 import i18n
 from i18n import t
-from app_paths import resource_path
+from app_paths import resource_path, writable_path
 
 # Add export handler to path
 sys.path.append(resource_path("export handler"))
@@ -24,10 +25,59 @@ except Exception as exc:
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
 _active_exports = []
 
+
+def _create_xlsx_report(report_type, data, file_path):
+    """Write the report data to a workbook with KPI, detail, log and chart sheets."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheets = {
+        "kpis": data.get("kpis", []),
+        "details": data.get("details", []),
+        "logs": data.get("logs", []),
+    }
+    for index, (sheet_name, rows) in enumerate(sheets.items()):
+        sheet = workbook.active if index == 0 else workbook.create_sheet()
+        sheet.title = sheet_name.capitalize()
+        for row in rows:
+            sheet.append([str(value) for value in row])
+        sheet.freeze_panes = "A2"
+        for column in sheet.columns:
+            width = min(max(len(str(cell.value or "")) for cell in column) + 2, 48)
+            sheet.column_dimensions[column[0].column_letter].width = width
+    summary = workbook.create_sheet("Resumen")
+    summary.append(["Reporte", report_type])
+    summary.append(["Exportado por", data.get("exported_by", "")])
+    summary.append(["Progreso", data.get("progress", "")])
+    workbook.save(file_path)
+
+
+def _send_os_notification():
+    """Send a best-effort native notification when enabled in application config."""
+    try:
+        config_path = writable_path("config.json")
+        if os.path.isfile(config_path):
+            import json
+            with open(config_path, "r", encoding="utf-8") as handle:
+                if not json.load(handle).get("notifications_os", True):
+                    return
+        from plyer import notification
+        notification.notify(
+            title="Semaforo IA",
+            message="Evaluacion completada",
+            app_name="Semaforo IA",
+            timeout=5,
+        )
+    except Exception:
+        pass
+
 def _pick_export_target(parent_widget, report_type, export_format, lang=None):
     if export_format == "json":
         ext = ".json"
         file_filter = t("Archivo JSON (*.json);;Todos los archivos (*)", lang)
+    elif export_format == "xlsx":
+        ext = ".xlsx"
+        file_filter = t("Archivo Excel (*.xlsx);;Todos los archivos (*)", lang)
     else:
         ext = ".pdf"
         file_filter = t("Archivo PDF (*.pdf);;Todos los archivos (*)", lang)
@@ -53,6 +103,8 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 
     if export_format == "json" and not selected_path.lower().endswith(".json"):
         selected_path += ".json"
+    elif export_format == "xlsx" and not selected_path.lower().endswith(".xlsx"):
+        selected_path += ".xlsx"
     elif export_format in {"pdf", "both"} and not selected_path.lower().endswith(".pdf"):
         selected_path += ".pdf"
 
@@ -61,6 +113,10 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 
 def _apply_report_data(report_type, data, file_path, export_format, lang):
     """Actualiza el modulo de reporte y genera el PDF/JSON. Pensada para correr en un hilo aparte."""
+    if export_format == "xlsx":
+        _create_xlsx_report(report_type, data, file_path)
+        return
+
     if _EXPORT_IMPORT_ERROR is not None:
         raise RuntimeError(f"No se pudieron cargar los módulos de exportación: {_EXPORT_IMPORT_ERROR}") from _EXPORT_IMPORT_ERROR
 
@@ -183,6 +239,9 @@ class _ExportController(QObject):
                 t("Ocurrió un error al generar el archivo:\n{error}", self.lang).format(error=error_message)
             )
 
+        if success:
+            _send_os_notification()
+
         self.thread.quit()
         self.thread.wait()
         if self.export_entry in _active_exports:
@@ -197,8 +256,8 @@ def generate_and_save_report(parent_widget, report_type, data, export_format="pd
     trigger_widget: boton que dispara la exportacion; se deshabilita mientras se genera
     el reporte en segundo plano para evitar que la UI se congele o se dispare dos veces.
     """
-    if export_format not in {"pdf", "json", "both"}:
-        raise ValueError("export_format debe ser 'pdf', 'json' o 'both'")
+    if export_format not in {"pdf", "json", "xlsx", "both"}:
+        raise ValueError("export_format debe ser 'pdf', 'json', 'xlsx' o 'both'")
 
     lang = lang or i18n.get_language()
 
