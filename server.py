@@ -1,6 +1,10 @@
 import http.server
 import socketserver
 import json
+import base64
+import hashlib
+import hmac
+import time
 from urllib.parse import urlparse
 
 from hardware_info import get_hardware_info
@@ -10,6 +14,7 @@ from functional_core import bootstrap_store
 
 
 MAX_REQUEST_BYTES = 64 * 1024
+SESSION_TTL_SECONDS = 8 * 60 * 60
 
 
 def load_config():
@@ -25,6 +30,40 @@ def load_config():
 def get_store():
     store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
     return store
+
+
+def _token_secret():
+    hashes = sorted(
+        str(user.get("password_hash", ""))
+        for user in load_config().get("users", [])
+        if user.get("password_hash")
+    )
+    return hashlib.sha256("|".join(hashes).encode("utf-8")).digest()
+
+
+def create_session_token(username):
+    payload = json.dumps(
+        {"username": username, "expires": int(time.time()) + SESSION_TTL_SECONDS},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(_token_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def validate_session_token(token):
+    if not isinstance(token, str) or "." not in token:
+        return False
+    encoded, signature = token.split(".", 1)
+    expected = hmac.new(_token_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return False
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode((encoded + padding).encode("ascii")))
+        return isinstance(payload, dict) and int(payload["expires"]) > int(time.time())
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def authenticate_request(username, password):
@@ -83,7 +122,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                 if error:
                     self._send_json(status, {"error": error})
                     return
-                self._send_json(status, {"status": "ok", "user": user})
+                self._send_json(status, {"status": "ok", "user": user, "token": create_session_token(user["username"])})
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send_json(400, {"error": "JSON invalido"})
             except OSError:
@@ -94,6 +133,11 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urlparse(self.path)
         if parsed_path.path == '/hardware':
+            authorization = self.headers.get("Authorization", "")
+            token = authorization.removeprefix("Bearer ").strip()
+            if not validate_session_token(token):
+                self._send_json(401, {"error": "Autenticacion requerida"})
+                return
             try:
                 self._send_json(200, get_hardware_info())
             except OSError:

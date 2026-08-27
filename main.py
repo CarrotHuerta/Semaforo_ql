@@ -180,6 +180,25 @@ def load_model_records():
     return list(merged.values())
 
 
+def load_finops_demo():
+    """Load demo FinOps values from data instead of embedding them in the UI."""
+    rows = load_csv_rows("finops_demo.csv")
+    metrics = {"costo_actual": 0.0, "presupuesto_mensual": 0.0, "ahorro_estimado": 0.0}
+    services = []
+    for row in rows:
+        metric = row.get("metrica", "").strip().lower()
+        if metric in metrics:
+            value = parse_number(row.get("valor_clp"))
+            if value is not None:
+                metrics[metric] = value
+        elif metric == "servicio":
+            percentage = parse_number(row.get("porcentaje"))
+            service = row.get("servicio", "").strip()
+            if service and percentage is not None:
+                services.append((service, percentage))
+    return metrics, services
+
+
 class ExchangeRateThread(QThread):
     rates_ready = Signal(dict)
     failed = Signal(str)
@@ -1855,18 +1874,19 @@ class FinOpsView(QWidget):
 
         cards = QHBoxLayout()
         cards.setSpacing(18)
-        self.card_actual = InfoCard(t("Costo actual"), "$4.820.000")
-        self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$7.500.000")
-        self.card_ahorro = InfoCard(t("Ahorro estimado"), "$1.120.000")
+        self.finops_metrics, self.finops_services = load_finops_demo()
+        self.card_actual = InfoCard(t("Costo actual"), "$0.00")
+        self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$0.00")
+        self.card_ahorro = InfoCard(t("Ahorro estimado"), "$0.00")
 
         self.exchange_rates = {"CLP": 1.0}
         self.exchange_status = make_label(t("Cargando tasas de cambio..."), "infoText")
         self.exchange_rate_label = make_label("", "infoText")
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
-        self.base_cost_actual_clp = 4_820_000
-        self.base_presupuesto_clp = 7_500_000
-        self.base_ahorro_clp = 1_120_000
+        self.base_cost_actual_clp = self.finops_metrics["costo_actual"]
+        self.base_presupuesto_clp = self.finops_metrics["presupuesto_mensual"]
+        self.base_ahorro_clp = self.finops_metrics["ahorro_estimado"]
 
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
@@ -1877,12 +1897,9 @@ class FinOpsView(QWidget):
         exchange_row.addWidget(self.exchange_rate_label, 2)
         layout.addLayout(exchange_row)
 
-        items = [
-            t("GPU compute — 48% del gasto"),
-            t("Storage + snapshots — 22% del gasto"),
-            t("Networking — 14% del gasto"),
-            t("Servicios administrados — 16% del gasto"),
-        ]
+        items = [f"{t(service)} — {percentage:.0f}% del gasto" for service, percentage in self.finops_services]
+        if not items:
+            items = [t("No hay desglose de servicios disponible.")]
         list_panel = ListPanel(t("Desglose por servicio"), items)
 
         # Budget bar CU 62.1, 62.2
@@ -1894,8 +1911,8 @@ class FinOpsView(QWidget):
         budget_layout.addWidget(make_label(t("% Presupuesto Límite Utilizado"), "kpiTitle"))
         self.budget_bar = QProgressBar()
         self.budget_bar.setRange(0, 100)
-        # 4.82M / 7.5M is roughly 64%
-        self.budget_bar.setValue(64)
+        budget_percent = round(self.base_cost_actual_clp / self.base_presupuesto_clp * 100) if self.base_presupuesto_clp else 0
+        self.budget_bar.setValue(max(0, min(100, budget_percent)))
         self.budget_bar.setTextVisible(True)
         budget_layout.addWidget(self.budget_bar)
 
@@ -2967,6 +2984,7 @@ class LoginWindow(QMainWindow):
                 with urllib.request.urlopen(req) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     profile = res_data.get("user")
+                    profile["server_token"] = res_data.get("token")
             except urllib.error.HTTPError as e:
                 self.failed_attempts += 1
                 try:
@@ -3058,8 +3076,11 @@ class HardwareLookupThread(QThread):
             import json
 
             server_url = self.profile.get("server_url", "127.0.0.1:6767")
+            token = self.profile.get("server_token")
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             try:
-                with urllib.request.urlopen(f"http://{server_url}/hardware", timeout=5) as response:
+                request = urllib.request.Request(f"http://{server_url}/hardware", headers=headers)
+                with urllib.request.urlopen(request, timeout=5) as response:
                     info = json.loads(response.read().decode("utf-8"))
             except Exception:
                 info = {}

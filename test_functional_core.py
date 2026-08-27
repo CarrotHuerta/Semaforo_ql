@@ -1,4 +1,6 @@
 import json
+import http.client
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,7 @@ from functional_core import (
     sanitize_markdown,
     validate_password,
     validate_thresholds,
+    hash_password,
 )
 
 
@@ -183,6 +186,46 @@ class FunctionalCoreTests(unittest.TestCase):
                 for _ in range(5):
                     user, error, status = server.authenticate_request("remote", "incorrecta")
                 self.assertEqual((user, error, status), (None, "Usuario bloqueado", 423))
+
+    def test_server_http_login_token_and_hardware_access(self):
+        import server
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "server_http.sqlite3"
+            store = LocalStore(database_path)
+            password_hash = hash_password("ClaveSegura1@")
+            store.add_hashed_user("remote", password_hash)
+            store.close()
+
+            def open_store():
+                return LocalStore(database_path)
+
+            httpd = server.socketserver.ThreadingTCPServer(("127.0.0.1", 0), server.SimpleHandler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch("server.get_store", side_effect=open_store), patch(
+                    "server.load_config",
+                    return_value={"users": [{"username": "remote", "password_hash": password_hash}]},
+                ), patch("server.get_hardware_info", return_value={"cpu": "test"}):
+                    connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1])
+                    body = json.dumps({"username": "remote", "password": "ClaveSegura1@"})
+                    connection.request("POST", "/login", body, {"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    login_data = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.status, 200)
+                    self.assertTrue(login_data["token"])
+
+                    connection.request("GET", "/hardware")
+                    self.assertEqual(connection.getresponse().status, 401)
+                    connection.request("GET", "/hardware", headers={"Authorization": f"Bearer {login_data['token']}"})
+                    hardware_response = connection.getresponse()
+                    self.assertEqual((hardware_response.status, json.loads(hardware_response.read())["cpu"]), (200, "test"))
+                    connection.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
 
     def test_admin_can_view_and_unlock_accounts(self):
         with tempfile.TemporaryDirectory() as directory:

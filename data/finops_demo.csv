@@ -1,0 +1,8 @@
+metrica,valor_clp,porcentaje,servicio
+costo_actual,4820000,,
+presupuesto_mensual,7500000,,
+ahorro_estimado,1120000,,
+servicio,,48,GPU compute
+servicio,,22,Storage + snapshots
+servicio,,14,Networking
+servicio,,16,Servicios administrados

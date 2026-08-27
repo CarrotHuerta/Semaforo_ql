@@ -59,6 +59,9 @@ Estos componentes se consideran `[LISTO]` porque tienen implementacion en el cod
 - `[LISTO]` Divisas FinOps conectadas por HTTP GET con `requests` a Open ER API usando CLP como base, con 10 monedas extranjeras, conversión desde CLP, tasa inversa y fallback local.
 - `[LISTO]` Login del servidor alineado con SQLite/PBKDF2, bloqueo tras cinco fallos, roles y respuesta diferenciada para usuario bloqueado.
 - `[LISTO]` API HTTP del servidor con validación de `Content-Type`, límite de cuerpo, JSON controlado, códigos HTTP consistentes y servidor concurrente.
+- `[LISTO]` Acceso remoto unificado: login entrega token firmado con vencimiento y `/hardware` exige `Authorization: Bearer`.
+- `[LISTO]` Registros HTTP sin cuerpos ni credenciales; las respuestas de error exponen solo mensajes controlados.
+- `[LISTO]` Valores demostrativos de FinOps separados en `data/finops_demo.csv`; tarjetas, desglose y barra se calculan desde ese archivo.
 - `[LISTO]` Actualización de divisas en segundo plano con botón de reintento, indicador de estado y cache local, sin bloquear la interfaz.
 - `[LISTO]` Notificaciones OS opcionales mediante `plyer`, con preferencia persistida en `config.json` y respetada por las exportaciones completadas.
 - `[LISTO]` Exportación XLSX integrada en `export_handler` y disponible para informes Inicio, Ambiental y FinOps, con hojas de KPIs, detalles, logs y resumen.
@@ -82,7 +85,7 @@ Las deficiencias que permanecen son principalmente:
 
 - Integracion incompleta entre algunas vistas y la persistencia local.
 - Botones de sincronizacion, tarifas, notificaciones y algunas metricas que aun solo muestran mensajes.
-- Costo y Green Score de algunas vistas visuales aun usan valores demostrativos.
+- Algunas vistas ambientales y cloud todavía contienen datos visuales demostrativos.
 - Ausencia de APIs cloud, SNMP/Modbus, notificaciones OS y fallback de datos.
 - Ausencia de capacity planning, cuotas/disyuntores y exportacion XLSX.
 - Markdown sanitizado pero aun no renderizado en la interfaz.
@@ -91,7 +94,7 @@ Las deficiencias que permanecen son principalmente:
 
 - `main.py`: UI, datos estaticos, semaforo, exportacion y controles de configuracion.
 - `db.py`: conexion PostgreSQL y lecturas parciales; la operacion funcional actual usa `LocalStore` sobre SQLite.
-- `server.py`: servidor HTTP local con login SQLite/PBKDF2 y validaciones HTTP; `/hardware` continua siendo un endpoint de consulta sin sesion porque el cliente remoto actual no usa tokens.
+- `server.py`: servidor HTTP local con login SQLite/PBKDF2, tokens firmados para `/hardware` y validaciones HTTP.
 - `basededatossql`: esquema relacional amplio, pero sin capa de servicios que lo utilice completamente.
 - `export_handler.py`: exportacion PDF/JSON con worker Qt.
 - `export handler/eco.py`, `economia.py` e `inicio.py`: plantillas PDF y JSON.
