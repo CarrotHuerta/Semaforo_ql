@@ -1933,6 +1933,12 @@ class FinOpsView(QWidget):
         ahorro = self.card_ahorro.get_value() if hasattr(self, "card_ahorro") else "$1.120.000"
 
         currency_code = self.currency_combo.currentText().split(" - ", 1)[0]
+        currency_label = next(
+            (label for code, label in self.currency_options if code == currency_code),
+            currency_code,
+        )
+        currency_symbol = currency_label[currency_label.find("(") + 1:-1]
+        report_currency_unit = f"{currency_code} ({currency_symbol})"
 
         progress_val = self.budget_bar.value()
 
@@ -1949,9 +1955,9 @@ class FinOpsView(QWidget):
         data = {
             "exported_by": exported_by_text,
             "kpis": [
-                [15, 60, t("Costo actual"), self._sanitize_money_value(costo_actual, currency_code), currency_code, "cyan_500"],
-                [76.6, 60, t("Presupuesto"), self._sanitize_money_value(presupuesto, currency_code), currency_code, "gray_800"],
-                [138.3, 60, t("Ahorro"), self._sanitize_money_value(ahorro, currency_code), currency_code, "emerald_500"]
+                [15, 60, t("Costo actual"), self._sanitize_money_value(costo_actual, currency_code), report_currency_unit, "cyan_500"],
+                [76.6, 60, t("Presupuesto"), self._sanitize_money_value(presupuesto, currency_code), report_currency_unit, "gray_800"],
+                [138.3, 60, t("Ahorro"), self._sanitize_money_value(ahorro, currency_code), report_currency_unit, "emerald_500"]
             ],
             "chart_values": [48, 22, 14, 16],
             "chart_labels": [
