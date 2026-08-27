@@ -1905,11 +1905,9 @@ class FinOpsView(QWidget):
 
     def _sanitize_money_value(self, value, currency_code):
         text = (value or "").strip()
-        if currency_code == "USD":
-            return text.replace("U$D", "").replace("$", "").strip()
-        if currency_code == "EUR":
-            return text.replace("€", "").strip()
-        return text.replace("$", "").strip()
+        symbol_map = {code: label[label.find("(") + 1:-1] for code, label in self.currency_options}
+        symbol = symbol_map.get(currency_code, "")
+        return text.removeprefix(symbol).strip()
 
 
     def show_export_finops_menu(self):
@@ -1934,13 +1932,7 @@ class FinOpsView(QWidget):
         presupuesto = self.card_presupuesto.get_value() if hasattr(self, "card_presupuesto") else "$7.500.000"
         ahorro = self.card_ahorro.get_value() if hasattr(self, "card_ahorro") else "$1.120.000"
 
-        currency = self.currency_combo.currentText()
-        if "USD" in currency:
-            currency_code = "USD"
-        elif "EUR" in currency:
-            currency_code = "EUR"
-        else:
-            currency_code = "CLP"
+        currency_code = self.currency_combo.currentText().split(" - ", 1)[0]
 
         progress_val = self.budget_bar.value()
 
