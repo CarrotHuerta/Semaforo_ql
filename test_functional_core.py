@@ -165,6 +165,25 @@ class FunctionalCoreTests(unittest.TestCase):
             self.assertEqual((row["failed_attempts"], row["is_locked"]), (5, 1))
             store.close()
 
+    def test_server_authentication_uses_shared_store_and_lockout(self):
+        import server
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "server.sqlite3"
+            store = LocalStore(database_path)
+            store.add_user("remote", "ClaveSegura1@")
+            store.close()
+
+            def open_store():
+                return LocalStore(database_path)
+
+            with patch("server.get_store", side_effect=open_store):
+                user, error, status = server.authenticate_request("remote", "ClaveSegura1@")
+                self.assertEqual((user["username"], error, status), ("remote", None, 200))
+                for _ in range(5):
+                    user, error, status = server.authenticate_request("remote", "incorrecta")
+                self.assertEqual((user, error, status), (None, "Usuario bloqueado", 423))
+
     def test_admin_can_view_and_unlock_accounts(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "users.sqlite3")
