@@ -25,3 +25,8 @@ config.local.json
 build/
 dist/
 *.spec
+*.toc
+*.pyz
+
+# Runtime-generated local data
+exchange_rates.json

@@ -18,7 +18,7 @@ if not exist "%VENV_PY%" (
 )
 
 echo [2/4] Installing or updating dependencies...
-"%VENV_PY%" -m pip install --upgrade pip
+"%VENV_PY%" -m pip install --upgrade pip==25.2
 if errorlevel 1 exit /b %ERRORLEVEL%
 "%VENV_PY%" -m pip install -r "%ROOT%requirements.txt" pyinstaller
 if errorlevel 1 exit /b %ERRORLEVEL%

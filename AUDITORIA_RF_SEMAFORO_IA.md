@@ -65,6 +65,7 @@ Estos componentes se consideran `[LISTO]` porque tienen implementacion en el cod
 - `[LISTO]` Actualización de divisas en segundo plano con botón de reintento, indicador de estado y cache local, sin bloquear la interfaz.
 - `[LISTO]` Notificaciones OS opcionales mediante `plyer`, con preferencia persistida en `config.json` y respetada por las exportaciones completadas.
 - `[LISTO]` Exportación XLSX integrada en `export_handler` y disponible para informes Inicio, Ambiental y FinOps, con hojas de KPIs, detalles, logs y resumen.
+- `[LISTO]` Build Windows verificado con PyInstaller: `dist/SemaforoIA/SemaforoIA.exe` se genera con `_internal`, recursos de datos, imágenes, locales y export handler incluidos.
 
 Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: calculos visuales demostrativos en algunas vistas, sincronizacion real de factores ambientales y tarifas cloud, persistencia cifrada de API keys, graficos CPU/RAM/GPU, cuotas y disyuntores, SNMP/Modbus, Markdown renderizado y capacity planning.
 
