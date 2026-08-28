@@ -21,6 +21,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -44,7 +48,8 @@ import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
 from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, green_score, import_records, rightsizing, semaphore_level, sensor_reading, validate_thresholds
-from functional_core import convert_clp, fetch_exchange_rates
+from functional_core import convert_clp, fetch_exchange_rates, verify_security_answer
+from functional_core import hash_password, validate_password, ValidationError
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -71,6 +76,20 @@ def load_config():
                 "role": "Administrador",
                 "profile_photo": "img/nacha.png",
                 "password_hash": "pbkdf2_sha256$260000$c37fe72f5445644395a019b205ee555d$c710c08721d36a2a6d6320a44d2c090ff6d45a9b099bceb05b863807efa7258d",
+                "security_questions": [
+                    {
+                        "question": "Nombre de su mascota",
+                        "answer_hash": "pbkdf2_sha256$260000$3dc1d0a00915fd901ae969f80da3ab56$666a99eb6cde4e9ca34b4739274edf604aee0ce55a19107e50445e79168d0758",
+                    },
+                    {
+                        "question": "Nombre y Apellido",
+                        "answer_hash": "pbkdf2_sha256$260000$1fcc8297118b9ccbd8567b748e13569e$51d0dfe7d18137c7cd57cbc71e2c93d196b0f8a7af1f60e559ecd9119962fec7",
+                    },
+                    {
+                        "question": "Jefe del equipo",
+                        "answer_hash": "pbkdf2_sha256$260000$fbe1f62806d5e91b2463fab820e180fb$cb043f4ddf3a51cd73f8514a54c49f59e893f0f5315cbe2ea5ac90d58dc9035f",
+                    },
+                ],
             },
             {
                 "username": "maxine",
@@ -100,6 +119,16 @@ def load_config():
             username = entry.get("username", "").strip()
             if not username:
                 continue
+            security_questions = []
+            raw_questions = entry.get("security_questions")
+            if isinstance(raw_questions, list):
+                for question_entry in raw_questions:
+                    if not isinstance(question_entry, dict):
+                        continue
+                    question_text = str(question_entry.get("question", "")).strip()
+                    answer_hash = str(question_entry.get("answer_hash", "")).strip()
+                    if question_text and answer_hash:
+                        security_questions.append({"question": question_text, "answer_hash": answer_hash})
             users.append(
                 {
                     "username": username,
@@ -107,6 +136,7 @@ def load_config():
                     "role": entry.get("role", "Usuario").strip() or "Usuario",
                     "profile_photo": entry.get("profile_photo", "").strip(),
                     "password_hash": entry.get("password_hash", ""),
+                    "security_questions": security_questions,
                 }
             )
     else:
@@ -279,6 +309,15 @@ def find_user_profile(config, username):
     return None
 
 
+def save_users_to_config(users):
+    """Persist the full users list to config.json, preserving other settings."""
+    config_path = writable_path("config.json")
+    config = load_config()
+    config["users"] = users
+    with open(config_path, "w", encoding="utf-8") as handle:
+        json.dump(config, handle, ensure_ascii=True, indent=2)
+
+
 def get_default_user(config):
     default_user = config.get("default_user", "")
     profile = find_user_profile(config, default_user)
@@ -289,13 +328,29 @@ def get_default_user(config):
 
 
 def resolve_path(relative_path):
+    if not relative_path:
+        return ""
+    writable_candidate = os.path.normpath(writable_path(relative_path))
+    if os.path.isfile(writable_candidate):
+        return writable_candidate
     return os.path.normpath(resource_path(relative_path))
 
 
+PROFILE_PHOTO_SIZE = 400
 
 
-def make_round_pixmap(image_path, size):
-    pixmap = QPixmap(image_path)
+def save_profile_photo(username, pixmap):
+    """Save a cropped 400x400 PNG for the given user and return its config-relative path."""
+    safe_name = re.sub(r"[^a-z0-9_-]+", "_", normalize_username(username)).strip("_") or "usuario"
+    filename = f"user_{safe_name}.png"
+    target = writable_path("img", filename)
+    if not pixmap.save(target, "PNG"):
+        raise OSError(f"No se pudo guardar la foto de perfil en {target}.")
+    return f"img/{filename}"
+
+
+def make_round_pixmap(image_source, size):
+    pixmap = image_source if isinstance(image_source, QPixmap) else QPixmap(image_source)
     if pixmap.isNull():
         return None
 
@@ -2538,6 +2593,7 @@ class UserMenuView(QWidget):
     def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
         self.main_window = main_window
+        self.user_profile = user_profile or {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2555,7 +2611,7 @@ class UserMenuView(QWidget):
                 t("Perfil"),
                 [
                     (t("Editar perfil"), "menuButton", None),
-                    (t("Actualizar foto"), "menuButton", None),
+                    (t("Actualizar foto"), "menuButton", self.update_photo),
                     (t("Datos personales"), "menuButton", None),
                 ],
             ),
@@ -2600,6 +2656,44 @@ class UserMenuView(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
 
+    def update_photo(self):
+        username = self.user_profile.get("username", "")
+        if not username:
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self, t("Seleccionar foto de perfil"), "", "Imagenes (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
+        if not source:
+            return
+        crop_dialog = PhotoCropDialog(source, self)
+        if crop_dialog.exec() != QDialog.Accepted:
+            return
+        cropped = crop_dialog.cropped_pixmap()
+        if cropped is None:
+            return
+        try:
+            profile_photo = save_profile_photo(username, cropped)
+        except OSError as exc:
+            QMessageBox.critical(self, t("Actualizar foto"), str(exc))
+            return
+
+        config = load_config()
+        users = config.get("users", [])
+        for user in users:
+            if normalize_username(user.get("username", "")) == normalize_username(username):
+                user["profile_photo"] = profile_photo
+                break
+        try:
+            save_users_to_config(users)
+        except OSError as exc:
+            QMessageBox.critical(self, t("Actualizar foto"), str(exc))
+            return
+
+        self.user_profile["profile_photo"] = profile_photo
+        QMessageBox.information(
+            self, t("Actualizar foto"), t("Foto de perfil actualizada. Cierra sesión y vuelve a entrar para verla en toda la aplicación.")
+        )
+
 
 class AdminMenuView(QWidget):
     def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
@@ -2621,9 +2715,9 @@ class AdminMenuView(QWidget):
             MenuSection(
                 t("Usuarios"),
                 [
-                    (t("Crear usuario"), "menuButton", None),
+                    (t("Crear usuario"), "menuButton", self.create_user),
                     (t("Resetear contrasena"), "menuButton", None),
-                    (t("Desactivar usuario"), "menuButton", None),
+                    (t("Eliminar usuario"), "menuButton", self.delete_user),
                     (t("Editar roles"), "menuButton", None),
                     (t("Ver bloqueos de usuarios"), "menuButton", self.show_user_locks),
                 ],
@@ -2670,6 +2764,186 @@ class AdminMenuView(QWidget):
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
+
+    def _require_admin(self):
+        role = self.user_profile.get("role", "")
+        if str(role).lower() not in {"admin", "administrador"}:
+            QMessageBox.warning(self, t("Usuarios"), t("Solo un administrador puede gestionar usuarios."))
+            return False
+        return True
+
+    def create_user(self):
+        if not self._require_admin():
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Crear usuario"))
+        dialog.setMinimumWidth(360)
+        form_layout = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        username_input = QLineEdit()
+        display_name_input = QLineEdit()
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        role_combo = QComboBox()
+        role_combo.addItems([t("Usuario"), t("Administrador")])
+        form.addRow(t("Usuario"), username_input)
+        form.addRow(t("Nombre a mostrar"), display_name_input)
+        form.addRow(t("Contraseña"), password_input)
+        form.addRow(t("Rol"), role_combo)
+        form_layout.addLayout(form)
+
+        photo_row = QHBoxLayout()
+        photo_preview = QLabel()
+        photo_preview.setFixedSize(56, 56)
+        photo_preview.setStyleSheet("background-color: #222; border-radius: 28px;")
+        photo_preview.setAlignment(Qt.AlignCenter)
+        photo_button = QPushButton(t("Seleccionar foto"))
+        photo_button.setObjectName("secondaryButton")
+        photo_button.setCursor(Qt.PointingHandCursor)
+        selected_photo = {"pixmap": None}
+
+        def choose_photo():
+            source, _ = QFileDialog.getOpenFileName(
+                dialog, t("Seleccionar foto de perfil"), "", "Imagenes (*.png *.jpg *.jpeg *.bmp *.webp)"
+            )
+            if not source:
+                return
+            crop_dialog = PhotoCropDialog(source, dialog)
+            if crop_dialog.exec() != QDialog.Accepted:
+                return
+            cropped = crop_dialog.cropped_pixmap()
+            if cropped is None:
+                return
+            selected_photo["pixmap"] = cropped
+            photo_preview.setPixmap(make_round_pixmap(cropped, 56))
+
+        photo_button.clicked.connect(choose_photo)
+        photo_row.addWidget(photo_preview)
+        photo_row.addWidget(photo_button, 1)
+        form_layout.addLayout(photo_row)
+
+        error_label = make_label("", "loginError")
+        error_label.setVisible(False)
+        form_layout.addWidget(error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form_layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        username = username_input.text().strip()
+        display_name = display_name_input.text().strip() or username
+        password = password_input.text()
+        role = "Administrador" if role_combo.currentIndex() == 1 else "Usuario"
+
+        if not username:
+            QMessageBox.warning(self, t("Crear usuario"), t("Ingresa un usuario válido."))
+            return
+
+        config = load_config()
+        if find_user_profile(config, username):
+            QMessageBox.warning(self, t("Crear usuario"), t("Ya existe un usuario con ese nombre."))
+            return
+
+        try:
+            validate_password(password)
+        except ValidationError as exc:
+            QMessageBox.warning(self, t("Crear usuario"), str(exc))
+            return
+
+        profile_photo = ""
+        if selected_photo["pixmap"] is not None:
+            try:
+                profile_photo = save_profile_photo(username, selected_photo["pixmap"])
+            except OSError as exc:
+                QMessageBox.critical(self, t("Crear usuario"), str(exc))
+                return
+
+        new_user = {
+            "username": username,
+            "display_name": display_name,
+            "role": role,
+            "profile_photo": profile_photo,
+            "password_hash": hash_password(password),
+        }
+        users = config.get("users", [])
+        users.append(new_user)
+        try:
+            save_users_to_config(users)
+        except OSError as exc:
+            QMessageBox.critical(self, t("Crear usuario"), str(exc))
+            return
+
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+        finally:
+            if store is not None:
+                store.close()
+
+        QMessageBox.information(self, t("Crear usuario"), t("Usuario creado correctamente."))
+
+    def delete_user(self):
+        if not self._require_admin():
+            return
+
+        config = load_config()
+        users = config.get("users", [])
+        current_username = normalize_username(self.user_profile.get("username", ""))
+        deletable = [user for user in users if normalize_username(user.get("username", "")) != current_username]
+
+        if not deletable:
+            QMessageBox.information(self, t("Eliminar usuario"), t("No hay otros usuarios para eliminar."))
+            return
+
+        usernames = [user.get("username", "") for user in deletable]
+        selected, accepted = QInputDialog.getItem(
+            self, t("Eliminar usuario"), t("Selecciona el usuario a eliminar:"), usernames, 0, False
+        )
+        if not accepted:
+            return
+
+        target = find_user_profile(config, selected)
+        remaining_admins = [
+            user for user in users
+            if str(user.get("role", "")).lower() in {"admin", "administrador"}
+            and normalize_username(user.get("username", "")) != normalize_username(selected)
+        ]
+        if target and str(target.get("role", "")).lower() in {"admin", "administrador"} and not remaining_admins:
+            QMessageBox.warning(self, t("Eliminar usuario"), t("No puedes eliminar al único administrador restante."))
+            return
+
+        reply = QMessageBox.question(
+            self, t("Eliminar usuario"),
+            t("¿Seguro que deseas eliminar al usuario {username}? Esta acción no se puede deshacer.").format(username=selected),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        remaining_users = [user for user in users if normalize_username(user.get("username", "")) != normalize_username(selected)]
+        try:
+            save_users_to_config(remaining_users)
+        except OSError as exc:
+            QMessageBox.critical(self, t("Eliminar usuario"), str(exc))
+            return
+
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.delete_user(selected)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, t("Eliminar usuario"), str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+        QMessageBox.information(self, t("Eliminar usuario"), t("Usuario eliminado correctamente."))
 
     def show_user_locks(self):
         role = self.user_profile.get("role", "")
@@ -2808,6 +3082,180 @@ class LoginUserCard(QFrame):
         layout.addStretch()
 
 
+class ImageCropWidget(QLabel):
+    """Draggable/zoomable square viewport used to crop a profile photo."""
+
+    VIEW_SIZE = 320
+
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.VIEW_SIZE, self.VIEW_SIZE)
+        self.setCursor(Qt.OpenHandCursor)
+        self.original_pixmap = pixmap
+        self.zoom = 1.0
+        self.offset = QPointF(0, 0)
+        self._base_scale = 1.0
+        self._drag_start = None
+        self._recompute_base_scale()
+
+    def _recompute_base_scale(self):
+        width = self.original_pixmap.width()
+        height = self.original_pixmap.height()
+        if width <= 0 or height <= 0:
+            self._base_scale = 1.0
+            return
+        self._base_scale = max(self.VIEW_SIZE / width, self.VIEW_SIZE / height)
+        self._clamp_offset()
+
+    def _scaled_size(self):
+        scale = self._base_scale * self.zoom
+        return self.original_pixmap.width() * scale, self.original_pixmap.height() * scale
+
+    def _clamp_offset(self):
+        scaled_w, scaled_h = self._scaled_size()
+        min_x = min(0.0, self.VIEW_SIZE - scaled_w)
+        min_y = min(0.0, self.VIEW_SIZE - scaled_h)
+        x = min(0.0, max(min_x, self.offset.x()))
+        y = min(0.0, max(min_y, self.offset.y()))
+        self.offset = QPointF(x, y)
+
+    def set_zoom_percent(self, percent):
+        self.zoom = max(1.0, percent / 100.0)
+        self._clamp_offset()
+        self.update()
+
+    def mousePressEvent(self, event):
+        self._drag_start = event.position()
+        self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+        delta = event.position() - self._drag_start
+        self._drag_start = event.position()
+        self.offset = QPointF(self.offset.x() + delta.x(), self.offset.y() + delta.y())
+        self._clamp_offset()
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        self.setCursor(Qt.OpenHandCursor)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.fillRect(self.rect(), QColor("#141414"))
+        scaled_w, scaled_h = self._scaled_size()
+        scaled = self.original_pixmap.scaled(
+            int(scaled_w), int(scaled_h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+        painter.drawPixmap(int(self.offset.x()), int(self.offset.y()), scaled)
+        pen = QPen(QColor("#66bb22"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawRect(0, 0, self.VIEW_SIZE - 1, self.VIEW_SIZE - 1)
+        painter.end()
+
+    def result_pixmap(self, output_size=PROFILE_PHOTO_SIZE):
+        scaled_w, scaled_h = self._scaled_size()
+        scaled = self.original_pixmap.scaled(
+            int(scaled_w), int(scaled_h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+        canvas = QPixmap(self.VIEW_SIZE, self.VIEW_SIZE)
+        canvas.fill(Qt.black)
+        painter = QPainter(canvas)
+        painter.drawPixmap(int(self.offset.x()), int(self.offset.y()), scaled)
+        painter.end()
+        return canvas.scaled(output_size, output_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+
+class PhotoCropDialog(QDialog):
+    """CU: recorte uniforme de foto de perfil a 400x400 PNG."""
+
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("Ajustar foto de perfil"))
+
+        pixmap = QPixmap(image_path)
+        self.is_valid = not pixmap.isNull()
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            make_label(t("Arrastra la imagen para encuadrarla y usa el zoom para ajustarla."), "infoText")
+        )
+
+        if self.is_valid:
+            self.crop_widget = ImageCropWidget(pixmap)
+            layout.addWidget(self.crop_widget, 0, Qt.AlignHCenter)
+
+            zoom_row = QHBoxLayout()
+            zoom_row.addWidget(make_label(t("Zoom"), "infoText"))
+            self.zoom_slider = QSlider(Qt.Horizontal)
+            self.zoom_slider.setRange(100, 300)
+            self.zoom_slider.setValue(100)
+            self.zoom_slider.valueChanged.connect(self.crop_widget.set_zoom_percent)
+            zoom_row.addWidget(self.zoom_slider, 1)
+            layout.addLayout(zoom_row)
+        else:
+            self.crop_widget = None
+            layout.addWidget(make_label(t("No se pudo abrir la imagen seleccionada."), "loginError"))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def cropped_pixmap(self):
+        if not self.crop_widget:
+            return None
+        return self.crop_widget.result_pixmap(PROFILE_PHOTO_SIZE)
+
+
+class SecurityQuestionsDialog(QDialog):
+    """CU 55.x: recuperacion de acceso de administrador via preguntas de seguridad."""
+
+    def __init__(self, security_questions, parent=None):
+        super().__init__(parent)
+        self.security_questions = security_questions
+        self.answer_inputs = []
+
+        self.setWindowTitle(t("Recuperar acceso"))
+        self.setMinimumWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            make_label(
+                t("Responde tus preguntas de seguridad para desbloquear la cuenta de administrador."),
+                "infoText",
+            )
+        )
+
+        form = QFormLayout()
+        for entry in self.security_questions:
+            answer_input = QLineEdit()
+            answer_input.setObjectName("loginInput")
+            form.addRow(t(entry.get("question", "")), answer_input)
+            self.answer_inputs.append(answer_input)
+        layout.addLayout(form)
+
+        self.error_label = make_label("", "loginError")
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._handle_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _handle_accept(self):
+        for entry, answer_input in zip(self.security_questions, self.answer_inputs):
+            if not verify_security_answer(answer_input.text(), entry.get("answer_hash", "")):
+                self.error_label.setText(t("Una o más respuestas son incorrectas."))
+                self.error_label.setVisible(True)
+                return
+        self.accept()
+
+
 class LoginWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2909,6 +3357,15 @@ class LoginWindow(QMainWindow):
         self.login_button.clicked.connect(self.handle_login)
 
         right_layout.addWidget(self.login_button, 0, Qt.AlignLeft)
+
+        self.recover_button = QPushButton(t("Recuperar acceso con preguntas de seguridad"))
+        self.recover_button.setObjectName("secondaryButton")
+        self.recover_button.setCursor(Qt.PointingHandCursor)
+        self.recover_button.clicked.connect(self.handle_recover_access)
+        self.recover_button.setVisible(False)
+        right_layout.addWidget(self.recover_button, 0, Qt.AlignLeft)
+        self._locked_admin_username = None
+
         right_layout.addSpacing(10)
 
         users_label = make_label(t("Usuarios disponibles"), "loginHint")
@@ -2929,6 +3386,9 @@ class LoginWindow(QMainWindow):
         self.password_input.returnPressed.connect(self.handle_login)
 
     def handle_login(self):
+        self.recover_button.setVisible(False)
+        self._locked_admin_username = None
+
         if self.failed_attempts >= 5:
             self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
             return
@@ -2960,7 +3420,13 @@ class LoginWindow(QMainWindow):
                 self.failed_attempts += 1
                 if is_locked:
                     self.login_button.setEnabled(False)
-                    self._set_error(t("Usuario bloqueado"))
+                    is_admin = str(profile.get("role", "")).lower() in {"admin", "administrador"}
+                    if is_admin and profile.get("security_questions"):
+                        self._locked_admin_username = profile.get("username")
+                        self.recover_button.setVisible(True)
+                        self._set_error(t("Usuario bloqueado. Puedes recuperar el acceso respondiendo tus preguntas de seguridad."))
+                    else:
+                        self._set_error(t("Usuario bloqueado"))
                     return
                 if self.failed_attempts >= 5:
                     self.login_button.setEnabled(False)
@@ -3015,6 +3481,34 @@ class LoginWindow(QMainWindow):
     def _set_error(self, message):
         self.error_label.setText(message)
         self.error_label.setVisible(True)
+
+    def handle_recover_access(self):
+        username = self._locked_admin_username
+        profile = find_user_profile(self.config, username) if username else None
+        security_questions = profile.get("security_questions") if profile else None
+        if not profile or not security_questions:
+            self._set_error(t("No hay preguntas de seguridad configuradas para este usuario."))
+            return
+
+        dialog = SecurityQuestionsDialog(security_questions, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
+        try:
+            auth_store.unlock_user_via_security_questions(username)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, t("Recuperar acceso"), str(exc))
+            return
+        finally:
+            auth_store.close()
+
+        self.failed_attempts = 0
+        self.login_button.setEnabled(True)
+        self.recover_button.setVisible(False)
+        self._locked_admin_username = None
+        self.error_label.setVisible(False)
+        QMessageBox.information(self, t("Recuperar acceso"), t("Cuenta desbloqueada correctamente. Ya puedes iniciar sesión con tu contraseña."))
 
 
 class CatalogRow(QFrame):

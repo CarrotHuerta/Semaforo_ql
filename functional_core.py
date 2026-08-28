@@ -146,6 +146,32 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
+def _normalize_security_answer(answer: str) -> str:
+    """Case-insensitive, whitespace-insensitive normalization for security answers."""
+    return " ".join(str(answer).strip().casefold().split())
+
+
+def hash_security_answer(answer: str, iterations: int = 260_000) -> str:
+    normalized = _normalize_security_answer(answer)
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def verify_security_answer(answer: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations, salt_hex, digest_hex = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        normalized = _normalize_security_answer(answer)
+        expected = hashlib.pbkdf2_hmac(
+            "sha256", normalized.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations)
+        )
+        return hmac.compare_digest(expected.hex(), digest_hex)
+    except (ValueError, UnicodeEncodeError):
+        return False
+
+
 def validate_thresholds(green: float, yellow: float, red: float) -> tuple[float, float, float]:
     values = (float(green), float(yellow), float(red))
     if any(value < 0 or value > 100 for value in values):
@@ -417,6 +443,14 @@ class LocalStore:
             "SELECT id, username, role, failed_attempts, is_locked, force_password_change FROM users ORDER BY username"
         ).fetchall()
 
+    def delete_user(self, username: str) -> None:
+        cursor = self.connection.execute(
+            "DELETE FROM users WHERE username = ?", (username.strip(),)
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
     def is_user_locked(self, username: str) -> bool:
         row = self.connection.execute(
             "SELECT is_locked FROM users WHERE username = ?", (username.strip(),)
@@ -426,6 +460,15 @@ class LocalStore:
     def unlock_user(self, username: str, actor_role: str) -> None:
         if str(actor_role).lower() not in {"admin", "administrador"}:
             raise PermissionError("Solo un administrador puede desbloquear usuarios.")
+        cursor = self.connection.execute(
+            "UPDATE users SET failed_attempts = 0, is_locked = 0 WHERE username = ?", (username.strip(),)
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
+    def unlock_user_via_security_questions(self, username: str) -> None:
+        """Self-service unlock after answering the account's security questions correctly."""
         cursor = self.connection.execute(
             "UPDATE users SET failed_attempts = 0, is_locked = 0 WHERE username = ?", (username.strip(),)
         )
