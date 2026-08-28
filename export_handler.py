@@ -27,28 +27,137 @@ _active_exports = []
 
 
 def _create_xlsx_report(report_type, data, file_path):
-    """Write the report data to a workbook with KPI, detail, log and chart sheets."""
+    """Write a compact, styled workbook that mirrors the PDF report hierarchy."""
     from openpyxl import Workbook
+    from openpyxl.formatting.rule import ColorScaleRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    colors = {
+        "navy": "17324D",
+        "cyan": "06B6D4",
+        "cyan_light": "CFFAFE",
+        "green": "059669",
+        "green_light": "D1FAE5",
+        "amber": "D97706",
+        "amber_light": "FEF3C7",
+        "red": "DC2626",
+        "gray": "6B7280",
+        "gray_light": "F3F4F6",
+        "border": "D9E1E8",
+        "white": "FFFFFF",
+    }
+    thin_border = Border(bottom=Side(style="thin", color=colors["border"]))
+    header_fill = PatternFill("solid", fgColor=colors["navy"])
+    accent_fill = PatternFill("solid", fgColor=colors["cyan_light"])
+    row_fills = {
+        "cyan_500": PatternFill("solid", fgColor=colors["cyan_light"]),
+        "cyan_600": PatternFill("solid", fgColor=colors["cyan_light"]),
+        "emerald_500": PatternFill("solid", fgColor=colors["green_light"]),
+        "emerald_600": PatternFill("solid", fgColor=colors["green_light"]),
+        "amber_500": PatternFill("solid", fgColor=colors["amber_light"]),
+        "red_500": PatternFill("solid", fgColor="FEE2E2"),
+        "gray_800": PatternFill("solid", fgColor=colors["gray_light"]),
+        "gray_500": PatternFill("solid", fgColor=colors["gray_light"]),
+        "logo_orange": PatternFill("solid", fgColor="FFEDD5"),
+    }
+    row_fonts = {
+        "cyan_500": colors["cyan"],
+        "cyan_600": colors["cyan"],
+        "emerald_500": colors["green"],
+        "emerald_600": colors["green"],
+        "amber_500": colors["amber"],
+        "red_500": colors["red"],
+        "gray_800": colors["navy"],
+        "gray_500": colors["gray"],
+        "logo_orange": "C2410C",
+    }
+
+    def style_sheet(sheet, headers, rows, widths):
+        sheet.sheet_view.showGridLines = False
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = Font(name="Aptos", bold=True, color=colors["white"])
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        sheet.row_dimensions[1].height = 24
+        for row in rows:
+            sheet.append(list(row))
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for index, width in enumerate(widths, start=1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        for row in sheet.iter_rows(min_row=2):
+            if row:
+                row[0].font = Font(name="Aptos", color=colors["navy"])
+        return sheet
+
+    def style_data_rows(sheet, source_rows, color_index, emphasis_columns=None):
+        emphasis_columns = emphasis_columns or range(1, sheet.max_column + 1)
+        for row_number, source_row in enumerate(source_rows, start=2):
+            key = str(source_row[color_index]) if len(source_row) > color_index else ""
+            fill = row_fills.get(key)
+            font_color = row_fonts.get(key)
+            if fill:
+                for cell in sheet[row_number]:
+                    cell.fill = fill
+            if font_color:
+                for column in emphasis_columns:
+                    cell = sheet.cell(row_number, column)
+                    cell.font = Font(name="Aptos", bold=column in {1, 3, 4}, color=font_color)
 
     workbook = Workbook()
-    sheets = {
-        "kpis": data.get("kpis", []),
-        "details": data.get("details", []),
-        "logs": data.get("logs", []),
-    }
-    for index, (sheet_name, rows) in enumerate(sheets.items()):
-        sheet = workbook.active if index == 0 else workbook.create_sheet()
-        sheet.title = sheet_name.capitalize()
-        for row in rows:
-            sheet.append([str(value) for value in row])
-        sheet.freeze_panes = "A2"
-        for column in sheet.columns:
-            width = min(max(len(str(cell.value or "")) for cell in column) + 2, 48)
-            sheet.column_dimensions[column[0].column_letter].width = width
-    summary = workbook.create_sheet("Resumen")
-    summary.append(["Reporte", report_type])
-    summary.append(["Exportado por", data.get("exported_by", "")])
-    summary.append(["Progreso", data.get("progress", "")])
+    source_kpis = data.get("kpis", [])
+    kpi_rows = [[row[0], row[1], row[2], row[3], row[4]] for row in source_kpis]
+    kpis = style_sheet(workbook.active, ["Posición", "Ancho", "Indicador", "Valor", "Unidad"], kpi_rows, [12, 12, 28, 20, 16])
+    kpis.title = "KPIs"
+    style_data_rows(kpis, source_kpis, 5, emphasis_columns=(3, 4, 5))
+
+    source_details = data.get("details", [])
+    detail_rows = [[row[0], row[1]] for row in source_details]
+    details = style_sheet(workbook.create_sheet("Detalles"), ["Detalle", "Valor"], detail_rows, [32, 24])
+    style_data_rows(details, source_details, 2, emphasis_columns=(1, 2))
+    source_logs = data.get("logs", [])
+    log_rows = [[row[0]] for row in source_logs]
+    logs = style_sheet(workbook.create_sheet("Actividad"), ["Mensaje"], log_rows, [76])
+    style_data_rows(logs, source_logs, 1, emphasis_columns=(1,))
+
+    summary = workbook.create_sheet("Resumen", 0)
+    summary.sheet_view.showGridLines = False
+    summary.merge_cells("A1:D1")
+    summary["A1"] = "Semáforo IA"
+    summary["A1"].font = Font(name="Aptos Display", bold=True, size=20, color=colors["navy"])
+    summary["A1"].fill = header_fill
+    summary["A1"].alignment = Alignment(vertical="center")
+    summary.row_dimensions[1].height = 34
+    summary.append(["Resumen del informe", "Valor", "", ""])
+    summary.append(["Tipo de reporte", report_type, "", ""])
+    summary.append(["Exportado por", data.get("exported_by", ""), "", ""])
+    summary.append(["Progreso", data.get("progress", ""), "%", ""])
+    summary.append(["KPIs incluidos", len(data.get("kpis", [])), "", ""])
+    summary.append(["Detalles incluidos", len(data.get("details", [])), "", ""])
+    summary.append(["Registros de actividad", len(data.get("logs", [])), "", ""])
+    for cell in summary[2]:
+        cell.fill = header_fill
+        cell.font = Font(bold=True, color=colors["white"])
+    for row in range(3, summary.max_row + 1):
+        summary.cell(row, 1).font = Font(bold=True, color=colors["navy"])
+        summary.cell(row, 1).fill = accent_fill
+        for cell in summary[row]:
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+    summary["B5"].number_format = "0%"
+    summary["B5"] = float(data.get("progress", 0) or 0) / 100
+    summary.conditional_formatting.add("B5", ColorScaleRule(start_type="min", start_color="FEE2E2", mid_type="percentile", mid_value=50, mid_color="FEF3C7", end_type="max", end_color="D1FAE5"))
+    summary.freeze_panes = "A3"
+    summary.column_dimensions["A"].width = 30
+    summary.column_dimensions["B"].width = 32
+    summary.column_dimensions["C"].width = 14
+    summary.column_dimensions["D"].width = 4
     workbook.save(file_path)
 
 

@@ -77,19 +77,30 @@ class FunctionalCoreTests(unittest.TestCase):
             _create_xlsx_report(
                 "economia",
                 {
-                    "kpis": [["Costo", "100", "USD ($)"]],
-                    "details": [["GPU", "48%"]],
-                    "logs": [["OK"]],
+                    "kpis": [[15, 60, "Costo", "100", "USD ($)", "cyan_500"]],
+                    "details": [["GPU", "48%", "emerald_500"]],
+                    "logs": [["OK", "red_500"]],
                     "exported_by": "Test",
                     "progress": 64,
                 },
                 path,
             )
-            workbook = load_workbook(path, read_only=True)
-            self.assertEqual(set(workbook.sheetnames), {"Kpis", "Details", "Logs", "Resumen"})
-            self.assertEqual(workbook["Kpis"]["A1"].value, "Costo")
-            self.assertEqual(workbook["Resumen"]["B2"].value, "Test")
-            workbook.close()
+            workbook = load_workbook(path)
+            try:
+                self.assertEqual(set(workbook.sheetnames), {"KPIs", "Detalles", "Actividad", "Resumen"})
+                self.assertEqual(workbook["KPIs"]["A1"].value, "Posición")
+                self.assertEqual(workbook["KPIs"]["E2"].value, "USD ($)")
+                self.assertNotIn("Color", [cell.value for cell in workbook["KPIs"][1]])
+                self.assertNotIn("Color", [cell.value for cell in workbook["Detalles"][1]])
+                self.assertNotIn("Color", [cell.value for cell in workbook["Actividad"][1]])
+                self.assertEqual(workbook["Resumen"]["B4"].value, "Test")
+                self.assertEqual(workbook["KPIs"]["A1"].fill.fgColor.rgb[-6:], "17324D")
+                self.assertEqual(workbook["KPIs"]["D2"].fill.fgColor.rgb[-6:], "CFFAFE")
+                self.assertEqual(workbook["Detalles"]["A2"].fill.fgColor.rgb[-6:], "D1FAE5")
+                self.assertEqual(workbook["Actividad"]["A2"].fill.fgColor.rgb[-6:], "FEE2E2")
+                self.assertEqual(workbook["KPIs"].auto_filter.ref, "A1:E2")
+            finally:
+                workbook.close()
 
     def test_invalid_business_values(self):
         with self.assertRaises(ValidationError):
