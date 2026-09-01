@@ -30,3 +30,7 @@ dist/
 
 # Runtime-generated local data
 exchange_rates.json
+
+# Local encryption keys and secrets (RF34)
+secrets/
+*.key

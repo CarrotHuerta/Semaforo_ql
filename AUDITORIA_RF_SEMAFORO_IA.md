@@ -30,7 +30,8 @@ Se implementaron y verificaron con pruebas automatizadas las siguientes piezas f
 - Comparativa, rightsizing, historial, sensor y estados vacios con textos disponibles en espanol e ingles.
 - Panel administrativo para consultar intentos y bloqueos, con desbloqueo restringido al rol Administrador.
 - Login distingue `Usuario bloqueado` de contraseña incorrecta y traduce el mensaje a `User locked`.
-- Doce pruebas automatizadas en `test_functional_core.py`, todas exitosas.
+- API Key financiera cifrada localmente con `Fernet` antes de persistirla en `config.json`; nunca se guarda en texto plano y la llave de cifrado se excluye del repositorio.
+- Dieciocho pruebas automatizadas en `test_functional_core.py`, todas exitosas.
 
 Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas, SNMP/Modbus real, XLSX, Markdown renderizado, aplicacion persistente del hardware recomendado, capacity planning, notificaciones OS, cuotas y disyuntores. El estado se mantiene estricto hasta completar tambien esas excepciones.
 
@@ -531,15 +532,20 @@ Las deficiencias que permanecen son principalmente:
 
 #### RF34 - APIs Billing Cloud
 
-**Evaluacion:** [FALTA / CON ERRORES]
+**Evaluacion:** [PARCIAL]
+
+**Corregido:**
+
+- La API Key se cifra localmente con `Fernet` (`cryptography`) antes de persistirla en `config.json`; nunca se guarda en texto plano y la llave de cifrado vive fuera del repositorio (`secrets/financial_api.key`, ignorado por git).
+- El campo de entrada usa `QLineEdit.Password` y se limpia tras guardar; la interfaz solo muestra un valor enmascarado (`****ab12`).
+- Se valida el formato (16-128 caracteres alfanumericos) antes de cifrar y se rechaza guardar una llave vacia o corrupta.
+- Cubierto por `test_api_key_encryption_roundtrip_and_validation` en `test_functional_core.py`.
 
 **Falta o debe corregirse:**
 
-- Implementar cliente de sincronizacion de tarifarios.
-- Configurar timeout, errores de red y reintentos.
-- Guardar API keys cifradas, nunca en texto plano.
-- Usar campo de entrada tipo password.
-- Validar la llave mediante ping y rechazar llaves invalidas.
+- Implementar cliente real de sincronizacion de tarifarios contra una API de billing (AWS/Azure/GCP).
+- Configurar timeout, errores de red y reintentos para esa sincronizacion.
+- Validar la llave mediante un ping real al proveedor y rechazar llaves invalidas por respuesta HTTP.
 
 #### RF35 - Fuentes CO2 oficiales
 

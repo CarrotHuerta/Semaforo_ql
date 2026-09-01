@@ -26,6 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
 
 PASSWORD_PATTERN = re.compile(r"^(?=.*[A-Z])(?=.*\d)(?=.*[@_-])[\x21-\x7E]{8,}$")
@@ -286,6 +287,62 @@ def sanitize_markdown(markdown: str, max_chars: int = 5000) -> str:
     if not isinstance(markdown, str) or len(markdown) > max_chars:
         raise ValidationError(f"La descripcion no puede superar {max_chars} caracteres.")
     return escape(markdown, quote=False)
+
+
+class ApiKeyError(ValidationError):
+    """Raised when a financial/cloud billing API key is invalid or cannot be decrypted."""
+
+
+API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9/_+=-]{16,128}$")
+
+
+def validate_api_key_format(api_key: str) -> str:
+    """Reject empty, too short/long or malformed API keys before they are encrypted."""
+    if not isinstance(api_key, str) or not API_KEY_PATTERN.match(api_key.strip()):
+        raise ApiKeyError("La API Key debe tener entre 16 y 128 caracteres alfanumericos validos.")
+    return api_key.strip()
+
+
+def load_or_create_encryption_key(key_path: str | os.PathLike[str]) -> bytes:
+    """Load the local Fernet key used to encrypt secrets, creating it on first use."""
+    path = Path(key_path)
+    if path.exists():
+        return path.read_bytes()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = Fernet.generate_key()
+    path.write_bytes(key)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return key
+
+
+def encrypt_api_key(api_key: str, key_path: str | os.PathLike[str]) -> str:
+    """Encrypt an API key with a locally stored key; the plaintext is never persisted."""
+    validated = validate_api_key_format(api_key)
+    key = load_or_create_encryption_key(key_path)
+    token = Fernet(key).encrypt(validated.encode("utf-8"))
+    return token.decode("utf-8")
+
+
+def decrypt_api_key(token: str, key_path: str | os.PathLike[str]) -> str:
+    """Decrypt a previously stored API key token, raising ApiKeyError on failure."""
+    path = Path(key_path)
+    if not token or not path.exists():
+        raise ApiKeyError("No hay una API Key almacenada localmente.")
+    key = path.read_bytes()
+    try:
+        return Fernet(key).decrypt(token.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise ApiKeyError("La API Key almacenada esta corrupta o la llave local cambio.") from exc
+
+
+def mask_api_key(api_key: str) -> str:
+    """Return a masked preview (e.g. ****ab12) safe for on-screen display."""
+    if not api_key or len(api_key) < 4:
+        return "****"
+    return f"****{api_key[-4:]}"
 
 
 def rightsizing(current_tdp: float, candidates: Iterable[dict[str, Any]]) -> dict[str, Any] | None:

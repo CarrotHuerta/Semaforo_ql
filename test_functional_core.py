@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import i18n
 
 from functional_core import (
+    ApiKeyError,
     Execution,
     LocalStore,
     ValidationError,
@@ -19,6 +20,8 @@ from functional_core import (
     calculate_water,
     compare_models,
     convert_clp,
+    decrypt_api_key,
+    encrypt_api_key,
     estimate_cloud,
     export_records,
     fetch_exchange_rates,
@@ -26,9 +29,11 @@ from functional_core import (
     green_score,
     import_records,
     forecast_budget,
+    mask_api_key,
     rightsizing,
     semaphore_level,
     sanitize_markdown,
+    validate_api_key_format,
     validate_password,
     validate_thresholds,
     hash_password,
@@ -127,6 +132,18 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(sanitize_markdown("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;")
         with self.assertRaises(ValidationError):
             sanitize_markdown("x" * 4, max_chars=3)
+
+    def test_api_key_encryption_roundtrip_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            key_path = Path(tmp_dir) / "secrets" / "financial_api.key"
+            token = encrypt_api_key("ABCDEFGHIJKLMNOP1234", key_path)
+            self.assertNotIn("ABCDEFGHIJKLMNOP1234", token)
+            self.assertEqual(decrypt_api_key(token, key_path), "ABCDEFGHIJKLMNOP1234")
+            self.assertEqual(mask_api_key("ABCDEFGHIJKLMNOP1234"), "****1234")
+            with self.assertRaises(ApiKeyError):
+                validate_api_key_format("short")
+            with self.assertRaises(ApiKeyError):
+                decrypt_api_key("not-a-real-token", key_path)
 
     def test_rightsizing_and_budget_forecast(self):
         recommendation = rightsizing(200, [

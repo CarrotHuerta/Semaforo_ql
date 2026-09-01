@@ -50,6 +50,7 @@ from app_paths import resource_path, writable_path
 from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, green_score, import_records, rightsizing, semaphore_level, sensor_reading, validate_thresholds
 from functional_core import convert_clp, fetch_exchange_rates, verify_security_answer
 from functional_core import hash_password, validate_password, ValidationError
+from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -2506,17 +2507,62 @@ class SettingsView(QWidget):
         fin_row = QHBoxLayout()
         fin_row.setSpacing(10)
 
+        api_key_path = writable_path("secrets", "financial_api.key")
+        stored_token = load_config().get("financial_api_key_encrypted", "")
+
         api_key_input = QLineEdit()
-        api_key_input.setPlaceholderText(t("API Key Financiera (ej. AWS/Azure)"))
         api_key_input.setEchoMode(QLineEdit.Password)
         api_key_input.setFixedWidth(250)
+        if stored_token:
+            try:
+                api_key_input.setPlaceholderText(mask_api_key(decrypt_api_key(stored_token, api_key_path)))
+            except ApiKeyError:
+                api_key_input.setPlaceholderText(t("API Key almacenada no legible"))
+        else:
+            api_key_input.setPlaceholderText(t("API Key Financiera (ej. AWS/Azure)"))
+
+        save_key_btn = QPushButton(t("Guardar API Key"))
+        save_key_btn.setObjectName("secondaryButton")
+
+        def save_api_key():
+            raw_key = api_key_input.text().strip()
+            if not raw_key:
+                QMessageBox.warning(self, t("API Key"), t("Ingrese una API Key antes de guardar."))
+                return
+            try:
+                token = encrypt_api_key(raw_key, api_key_path)
+            except ApiKeyError as exc:
+                QMessageBox.warning(self, t("API Key"), str(exc))
+                return
+            config_path = writable_path("config.json")
+            try:
+                config = load_config()
+                config["financial_api_key_encrypted"] = token
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except OSError as exc:
+                QMessageBox.critical(self, t("API Key"), str(exc))
+                return
+            api_key_input.clear()
+            api_key_input.setPlaceholderText(mask_api_key(raw_key))
+            QMessageBox.information(self, t("API Key"), t("API Key cifrada y guardada localmente."))
+
+        save_key_btn.clicked.connect(save_api_key)
 
         sync_tarifas_btn = QPushButton(t("Sincronizar Tarifas"))
         sync_tarifas_btn.setObjectName("secondaryButton")
-        sync_tarifas_btn.clicked.connect(lambda: QMessageBox.information(self, t("Tarifas"), t("Registros tarifarios locales sobrescritos con precios vigentes de mercado.")))
+
+        def sync_tarifas():
+            if not load_config().get("financial_api_key_encrypted", ""):
+                QMessageBox.warning(self, t("Tarifas"), t("Configure y guarde una API Key valida antes de sincronizar."))
+                return
+            QMessageBox.information(self, t("Tarifas"), t("Registros tarifarios locales sobrescritos con precios vigentes de mercado."))
+
+        sync_tarifas_btn.clicked.connect(sync_tarifas)
 
         fin_row.addWidget(make_label(t("API Key:"), "infoText"))
         fin_row.addWidget(api_key_input)
+        fin_row.addWidget(save_key_btn)
         fin_row.addWidget(sync_tarifas_btn)
         fin_row.addStretch()
 
