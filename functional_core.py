@@ -345,11 +345,44 @@ def mask_api_key(api_key: str) -> str:
     return f"****{api_key[-4:]}"
 
 
-def rightsizing(current_tdp: float, candidates: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+CPU_TIER_LABELS = {0: "Entrada", 1: "Basico", 2: "Medio", 3: "Alto", 4: "Extremo"}
+
+# Ordered from highest to lowest so specific tokens (e.g. "m3 max") win over
+# the more generic pattern of the tier below (e.g. plain "m3").
+CPU_TIER_PATTERNS = (
+    (4, re.compile(r"\bi9\b|ryzen\s*9|ultra\s*9|threadripper|\bxeon\b|\bm\d+\s*(max|ultra)\b", re.IGNORECASE)),
+    (3, re.compile(r"\bi7\b|ryzen\s*7|ultra\s*7|\bm\d+\s*pro\b", re.IGNORECASE)),
+    (2, re.compile(r"\bi5\b|ryzen\s*5|ultra\s*5|fx-8|\bm\d+\b", re.IGNORECASE)),
+    (1, re.compile(r"\bi3\b|ryzen\s*3|fx-6|pentium\s*gold", re.IGNORECASE)),
+    (0, re.compile(r"\batom\b|\bceleron\b|\bpentium\b|\bathlon\b", re.IGNORECASE)),
+)
+
+
+def classify_cpu_tier(model_name: str) -> int:
+    """Classify a CPU model name into a rough performance tier (0=entrada .. 4=extremo)."""
+    text = str(model_name or "")
+    for tier, pattern in CPU_TIER_PATTERNS:
+        if pattern.search(text):
+            return tier
+    return 2
+
+
+def rightsizing(
+    current_tdp: float,
+    candidates: Iterable[dict[str, Any]],
+    current_performance: float | None = None,
+    min_performance_ratio: float = 1.0,
+) -> dict[str, Any] | None:
     if current_tdp <= 0:
         raise ValidationError("El TDP actual debe ser positivo.")
     valid = [candidate for candidate in candidates if float(candidate.get("tdp_watts", 0)) > 0]
     better = [candidate for candidate in valid if float(candidate["tdp_watts"]) < current_tdp]
+    if current_performance is not None:
+        threshold = current_performance * min_performance_ratio
+        better = [
+            candidate for candidate in better
+            if candidate.get("performance_score") is None or candidate["performance_score"] >= threshold
+        ]
     if not better:
         return None
     best = min(better, key=lambda candidate: float(candidate["tdp_watts"]))

@@ -14,6 +14,7 @@ from functional_core import (
     LocalStore,
     ValidationError,
     calculate_carbon,
+    classify_cpu_tier,
     calculate_cost,
     calculate_energy,
     calculate_execution,
@@ -155,6 +156,20 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(forecast_budget(500, 15, 800, 30), 1000.0)
         with self.assertRaises(ValidationError):
             forecast_budget(500, 0, 800, 30)
+
+    def test_cpu_tier_classification_and_rightsizing_filter(self):
+        self.assertEqual(classify_cpu_tier("Atom C2750"), 0)
+        self.assertEqual(classify_cpu_tier("Core i5-10300H"), 2)
+        self.assertEqual(classify_cpu_tier("Ryzen 7 5800X"), 3)
+        self.assertEqual(classify_cpu_tier("Core i9-14900K"), 4)
+
+        current_tier = classify_cpu_tier("Core i5-10300H")
+        candidates = [
+            {"name": "Atom C2750", "tdp_watts": 20, "performance_score": classify_cpu_tier("Atom C2750")},
+            {"name": "Core i5 Efficient", "tdp_watts": 30, "performance_score": classify_cpu_tier("Core i5-9400F")},
+        ]
+        recommendation = rightsizing(45, candidates, current_performance=current_tier)
+        self.assertEqual(recommendation["candidate"]["name"], "Core i5 Efficient")
 
     def test_new_ui_strings_are_bilingual(self):
         translations = {

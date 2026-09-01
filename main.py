@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+from difflib import SequenceMatcher
 from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QFileDialog,
@@ -48,6 +50,7 @@ import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
 from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, green_score, import_records, rightsizing, semaphore_level, sensor_reading, validate_thresholds
+from functional_core import classify_cpu_tier
 from functional_core import convert_clp, fetch_exchange_rates, verify_security_answer
 from functional_core import hash_password, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
@@ -3628,17 +3631,28 @@ class HardwareLookupThread(QThread):
 
 
 class HardwareCatalogView(QWidget):
+    COMPONENT_TYPES = ("GPU", "CPU", "RAM")
+
     def __init__(self, on_assign=None, parent=None, profile=None):
         super().__init__(parent)
         self.on_assign = on_assign
         self.profile = profile or {}
 
         self._hardware_loaded = False
+        self.detected_info = {}
+        self.selected_by_type = {component_type: None for component_type in self.COMPONENT_TYPES}
         self.hardware_rows = load_csv_rows("hardware.csv")
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(120)
         self._filter_timer.timeout.connect(self._apply_hardware_filters)
+
+        # Column layout per component type: (extra_headers, extractor(row) -> (col1, col2))
+        self.column_specs = {
+            "GPU": (["TFLOPS", "VRAM"], lambda row: (row.get("FP16_FP32_TFLOPS", "--") or "--", row.get("VRAM_GB", "--") or "--")),
+            "CPU": ([t("Núcleos/Hilos"), t("Frecuencia")], lambda row: (row.get("Nucleos_Hilos", "--") or "--", row.get("Frecuencia_MHz", "--") or "--")),
+            "RAM": ([t("Capacidad"), t("Frecuencia")], lambda row: (row.get("Capacidad_GB", "--") or "--", row.get("Frecuencia_MHz", "--") or "--")),
+        }
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3676,6 +3690,10 @@ class HardwareCatalogView(QWidget):
         self.filter_combo.setFixedHeight(42)
         self.filter_combo.setMinimumWidth(220)
 
+        self.autoselect_btn = QPushButton(t("Autoseleccionar detectado"))
+        self.autoselect_btn.setObjectName("secondaryButton")
+        self.autoselect_btn.clicked.connect(self._auto_select_detected)
+
         self.rightsize_btn = QPushButton(t("Sugerir hardware eficiente"))
         self.rightsize_btn.setObjectName("secondaryButton")
         self.rightsize_btn.setEnabled(False)
@@ -3683,36 +3701,23 @@ class HardwareCatalogView(QWidget):
 
         search_row.addWidget(self.search_input, 3)
         search_row.addWidget(self.filter_combo, 1)
+        search_row.addWidget(self.autoselect_btn)
         search_row.addWidget(self.rightsize_btn)
 
-        header = QFrame()
-        header.setObjectName("catalogHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(18, 10, 18, 10)
-        header_layout.setSpacing(10)
+        self.hardware_tabs = QTabWidget()
+        self.hardware_tabs.setObjectName("hardwareTabs")
+        self.rows_layout_by_type = {}
+        for component_type in self.COMPONENT_TYPES:
+            tab = self._build_component_tab(component_type)
+            self.hardware_tabs.addTab(tab, t(component_type))
+        self.hardware_tabs.currentChanged.connect(self._on_tab_changed)
 
-        header_layout.addWidget(make_label(t("Componente"), "catalogHeaderLabel"), 3)
-        header_layout.addWidget(make_label(t("Tipo"), "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
-        header_layout.addWidget(make_label("TFLOPS", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
-        header_layout.addWidget(make_label("VRAM", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
-        header_layout.addWidget(make_label("TDP", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
-        header_layout.addWidget(make_label("", "catalogHeaderLabel"), 1)
-
-        self.rows_container = QWidget()
-        self.rows_layout = QVBoxLayout(self.rows_container)
-        self.rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.rows_layout.setSpacing(0)
-
-        self.rows_scroll = QScrollArea()
-        self.rows_scroll.setObjectName("catalogScroll")
-        self.rows_scroll.setWidgetResizable(True)
-        self.rows_scroll.setFrameShape(QFrame.NoFrame)
-        self.rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.rows_scroll.setWidget(self.rows_container)
+        self.selection_summary = make_label(self._format_selection_summary(), "infoText")
+        self.selection_summary.setObjectName("hardwareSelectionSummary")
 
         panel_layout.addLayout(search_row)
-        panel_layout.addWidget(header)
-        panel_layout.addWidget(self.rows_scroll)
+        panel_layout.addWidget(self.selection_summary)
+        panel_layout.addWidget(self.hardware_tabs)
 
         layout.addWidget(title)
         layout.addWidget(make_separator("separator"))
@@ -3725,6 +3730,60 @@ class HardwareCatalogView(QWidget):
         self.search_input.textChanged.connect(self._schedule_hardware_filter)
         self.filter_combo.currentTextChanged.connect(self._schedule_hardware_filter)
         self._apply_hardware_filters()
+
+    def _build_component_tab(self, component_type):
+        extra_headers, _ = self.column_specs[component_type]
+
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 12, 0, 0)
+        tab_layout.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("catalogHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 10, 18, 10)
+        header_layout.setSpacing(10)
+
+        header_layout.addWidget(make_label(t("Componente"), "catalogHeaderLabel"), 3)
+        header_layout.addWidget(make_label(t("Tipo"), "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
+        header_layout.addWidget(make_label(extra_headers[0], "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
+        header_layout.addWidget(make_label(extra_headers[1], "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
+        header_layout.addWidget(make_label("TDP", "catalogHeaderLabel", alignment=Qt.AlignCenter), 1)
+        header_layout.addWidget(make_label("", "catalogHeaderLabel"), 1)
+
+        rows_container = QWidget()
+        rows_layout = QVBoxLayout(rows_container)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(0)
+        self.rows_layout_by_type[component_type] = rows_layout
+
+        rows_scroll = QScrollArea()
+        rows_scroll.setObjectName("catalogScroll")
+        rows_scroll.setWidgetResizable(True)
+        rows_scroll.setFrameShape(QFrame.NoFrame)
+        rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rows_scroll.setWidget(rows_container)
+
+        tab_layout.addWidget(header)
+        tab_layout.addWidget(rows_scroll)
+        return tab
+
+    def _current_component_type(self):
+        index = self.hardware_tabs.currentIndex()
+        if 0 <= index < len(self.COMPONENT_TYPES):
+            return self.COMPONENT_TYPES[index]
+        return "GPU"
+
+    def _on_tab_changed(self, index):
+        self._apply_hardware_filters()
+        component_type = self._current_component_type()
+        selected = self.selected_by_type.get(component_type)
+        tdp_value = parse_number(selected.get("TDP_Max_Watts", "")) if selected else None
+        self.rightsize_btn.setEnabled(tdp_value is not None)
+
+    def _rows_of_type(self, component_type):
+        return [row for row in (self.hardware_rows or []) if (row.get("Tipo_Componente") or "GPU").strip().upper() == component_type]
 
     def _schedule_hardware_filter(self):
         self._filter_timer.stop()
@@ -3742,6 +3801,7 @@ class HardwareCatalogView(QWidget):
         self._hw_thread.start()
 
     def _on_hardware_loaded(self, info):
+        self.detected_info = info or {}
         values = [
             info.get("cpu", t("No detectado")),
             info.get("gpu", t("No detectado")),
@@ -3751,7 +3811,8 @@ class HardwareCatalogView(QWidget):
         self.hardware_panel.set_values(values)
 
     def _apply_hardware_filters(self):
-        rows = list(self.hardware_rows or [])
+        component_type = self._current_component_type()
+        rows = self._rows_of_type(component_type)
         query = self.search_input.text().strip().lower()
         max_tdp = self._parse_tdp_filter(self.filter_combo.currentText())
 
@@ -3768,30 +3829,33 @@ class HardwareCatalogView(QWidget):
                 continue
             filtered.append(row)
 
-        self._render_hardware_rows(filtered)
+        self._render_hardware_rows(filtered, component_type)
 
-    def _render_hardware_rows(self, rows):
-        self._clear_layout(self.rows_layout)
+    def _render_hardware_rows(self, rows, component_type):
+        rows_layout = self.rows_layout_by_type.get(component_type)
+        if rows_layout is None:
+            return
+        _, extractor = self.column_specs[component_type]
+        self._clear_layout(rows_layout)
         if not rows:
-            self.rows_layout.addWidget(CatalogRow(t("Sin resultados"), "--", "--", "--", "--"))
+            rows_layout.addWidget(CatalogRow(t("Sin resultados"), "--", "--", "--", "--"))
             return
 
         for row in rows:
             component = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
             comp_type = row.get("Categoria", "--") or "--"
-            tflops = row.get("FP16_FP32_TFLOPS", "--") or "--"
-            vram = row.get("VRAM_GB", "--") or "--"
+            col1, col2 = extractor(row)
             tdp = row.get("TDP_Max_Watts", "--") or "--"
             if tdp != "--" and not str(tdp).strip().lower().endswith("w"):
                 tdp = f"{tdp}W"
             if not component:
                 component = t("Hardware")
-            self.rows_layout.addWidget(
+            rows_layout.addWidget(
                 CatalogRow(
                     component,
                     comp_type,
-                    tflops,
-                    vram,
+                    col1,
+                    col2,
                     tdp,
                     on_assign=self._handle_assign,
                     payload=row,
@@ -3805,27 +3869,130 @@ class HardwareCatalogView(QWidget):
             return None
         return parse_number(text)
 
+    def _format_selection_summary(self):
+        labels = {"GPU": t("GPU"), "CPU": t("CPU"), "RAM": t("RAM")}
+        parts = []
+        for component_type in self.COMPONENT_TYPES:
+            row = self.selected_by_type.get(component_type)
+            if row:
+                name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip() or t("Hardware")
+            else:
+                name = "--"
+            parts.append(f"{labels[component_type]}: {name}")
+        return t("Seleccionado: {summary}").format(summary="   |   ".join(parts))
+
+    def _aggregate_selection(self):
+        parts = []
+        total_tdp = 0.0
+        any_tdp = False
+        for component_type in self.COMPONENT_TYPES:
+            row = self.selected_by_type.get(component_type)
+            if not row:
+                continue
+            name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
+            if name:
+                parts.append(f"{component_type}: {name}")
+            tdp_value = parse_number(row.get("TDP_Max_Watts", ""))
+            if tdp_value is not None:
+                total_tdp += tdp_value
+                any_tdp = True
+        return " | ".join(parts), (total_tdp if any_tdp else None)
+
     def _handle_assign(self, row):
-        if not self.on_assign or not row:
+        if not row:
             return
+        component_type = (row.get("Tipo_Componente") or self._current_component_type()).strip().upper()
+        if component_type not in self.selected_by_type:
+            component_type = "GPU"
+        self.selected_by_type[component_type] = row
+        self.selection_summary.setText(self._format_selection_summary())
+
         name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
         tdp_value = parse_number(row.get("TDP_Max_Watts", ""))
-        self.selected_hardware_row = row
         self.rightsize_btn.setEnabled(tdp_value is not None)
         self.rightsize_result.setText(t("Hardware seleccionado: {name}").format(name=name))
-        self.on_assign(hardware=name, hardware_tdp=tdp_value)
+
+        if not self.on_assign:
+            return
+        combined_name, combined_tdp = self._aggregate_selection()
+        self.on_assign(hardware=combined_name, hardware_tdp=combined_tdp)
+
+    _HW_TRADEMARK_PATTERN = re.compile(r"\((?:r|tm|c)\)", re.IGNORECASE)
+    _HW_NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
+    _HW_MATCH_THRESHOLD = 0.55
+
+    @classmethod
+    def _normalize_hw_text(cls, text):
+        """Strip (R)/(TM)/punctuation noise so detected strings compare cleanly with catalog names."""
+        normalized = str(text or "").lower()
+        normalized = cls._HW_TRADEMARK_PATTERN.sub(" ", normalized)
+        normalized = cls._HW_NON_ALNUM_PATTERN.sub(" ", normalized)
+        return " ".join(normalized.split())
+
+    @classmethod
+    def _hw_match_score(cls, model_text, detected_text):
+        model_norm = cls._normalize_hw_text(model_text)
+        detected_norm = cls._normalize_hw_text(detected_text)
+        if not model_norm or not detected_norm:
+            return 0.0
+        model_tokens = set(model_norm.split())
+        detected_tokens = set(detected_norm.split())
+        token_overlap = len(model_tokens & detected_tokens) / len(model_tokens)
+        fuzzy_ratio = SequenceMatcher(None, model_norm, detected_norm).ratio()
+        return max(token_overlap, fuzzy_ratio)
+
+    def _find_matching_row(self, component_type, detected_value):
+        rows = self._rows_of_type(component_type)
+        needle = (detected_value or "").strip()
+        if not needle:
+            return None
+        if component_type == "RAM":
+            detected_capacity = parse_number(needle)
+            best, best_diff = None, None
+            for row in rows:
+                capacity = parse_number(row.get("Capacidad_GB", ""))
+                if capacity is None or detected_capacity is None:
+                    continue
+                diff = abs(capacity - detected_capacity)
+                if best_diff is None or diff < best_diff:
+                    best, best_diff = row, diff
+            return best
+        best_row, best_score = None, 0.0
+        for row in rows:
+            score = self._hw_match_score(row.get("Modelo"), needle)
+            if score > best_score:
+                best_row, best_score = row, score
+        return best_row if best_score >= self._HW_MATCH_THRESHOLD else None
+
+    def _auto_select_detected(self):
+        component_type = self._current_component_type()
+        key_map = {"GPU": "gpu", "CPU": "cpu", "RAM": "ram"}
+        detected_value = (self.detected_info or {}).get(key_map.get(component_type, ""), "")
+        if not detected_value or detected_value == t("No detectado"):
+            self.rightsize_result.setText(t("No hay hardware local detectado todavía para {tipo}.").format(tipo=component_type))
+            return
+        match = self._find_matching_row(component_type, detected_value)
+        if not match:
+            self.rightsize_result.setText(t("No se encontró una coincidencia en el catálogo para: {valor}").format(valor=detected_value))
+            return
+        self._handle_assign(match)
 
     def _suggest_rightsize(self):
-        selected = getattr(self, "selected_hardware_row", {})
+        component_type = self._current_component_type()
+        selected = self.selected_by_type.get(component_type) or {}
         current_tdp = parse_number(selected.get("TDP_Max_Watts", ""))
-        candidates = [
-            {"name": f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip(),
-             "tdp_watts": parse_number(row.get("TDP_Max_Watts", ""))}
-            for row in self.hardware_rows
-            if parse_number(row.get("TDP_Max_Watts", "")) is not None
-        ]
+        current_tier = classify_cpu_tier(selected.get("Modelo", "")) if component_type == "CPU" else None
+        candidates = []
+        for row in self._rows_of_type(component_type):
+            tdp = parse_number(row.get("TDP_Max_Watts", ""))
+            if tdp is None:
+                continue
+            candidate = {"name": f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip(), "tdp_watts": tdp}
+            if component_type == "CPU":
+                candidate["performance_score"] = classify_cpu_tier(row.get("Modelo", ""))
+            candidates.append(candidate)
         try:
-            recommendation = rightsizing(current_tdp, candidates)
+            recommendation = rightsizing(current_tdp, candidates, current_performance=current_tier)
         except (TypeError, ValueError) as exc:
             self.rightsize_result.setText(t("No se pudo calcular la recomendación: {error}").format(error=exc))
             return
