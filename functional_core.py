@@ -626,17 +626,58 @@ class LocalStore:
         ).fetchone()
         return {key: round(float(row[key]), 6) for key in ("cost", "carbon", "kwh", "water")}
 
-    def list_history(self, model_id: int | None = None) -> list[sqlite3.Row]:
-        if model_id is None:
+    def list_projects(self, include_inactive: bool = False) -> list[sqlite3.Row]:
+        if include_inactive:
+            return self.connection.execute("SELECT * FROM projects ORDER BY name").fetchall()
+        return self.connection.execute(
+            "SELECT * FROM projects WHERE is_active = 1 ORDER BY name"
+        ).fetchall()
+
+    def list_models(self, project_id: int | None = None) -> list[sqlite3.Row]:
+        if project_id is None:
+            return self.connection.execute(
+                "SELECT * FROM models WHERE is_active = 1 ORDER BY name"
+            ).fetchall()
+        return self.connection.execute(
+            "SELECT * FROM models WHERE project_id = ? AND is_active = 1 ORDER BY name",
+            (project_id,),
+        ).fetchall()
+
+    def global_totals(self) -> dict[str, Any]:
+        """Overview across every active project, for admin-only use."""
+        overall = self.connection.execute(
+            """SELECT COALESCE(SUM(e.cost), 0) AS cost, COALESCE(SUM(e.carbon), 0) AS carbon,
+                      COALESCE(SUM(e.kwh), 0) AS kwh, COALESCE(SUM(e.water), 0) AS water
+                 FROM executions e JOIN models m ON m.id = e.model_id
+                WHERE m.is_active = 1"""
+        ).fetchone()
+        by_project = []
+        for project in self.list_projects():
+            totals = self.project_totals(project["id"])
+            by_project.append({"id": project["id"], "name": project["name"], **totals})
+        return {
+            "totals": {key: round(float(overall[key]), 6) for key in ("cost", "carbon", "kwh", "water")},
+            "by_project": by_project,
+        }
+
+    def list_history(self, model_id: int | None = None, project_id: int | None = None) -> list[sqlite3.Row]:
+        if model_id is not None:
             return self.connection.execute(
                 """SELECT e.*, m.name AS model_name FROM executions e
-                   JOIN models m ON m.id = e.model_id ORDER BY e.timestamp DESC"""
+                   JOIN models m ON m.id = e.model_id
+                  WHERE e.model_id = ? ORDER BY e.timestamp DESC""",
+                (model_id,),
+            ).fetchall()
+        if project_id is not None:
+            return self.connection.execute(
+                """SELECT e.*, m.name AS model_name FROM executions e
+                   JOIN models m ON m.id = e.model_id
+                  WHERE m.project_id = ? ORDER BY e.timestamp DESC""",
+                (project_id,),
             ).fetchall()
         return self.connection.execute(
             """SELECT e.*, m.name AS model_name FROM executions e
-               JOIN models m ON m.id = e.model_id
-              WHERE e.model_id = ? ORDER BY e.timestamp DESC""",
-            (model_id,),
+               JOIN models m ON m.id = e.model_id ORDER BY e.timestamp DESC"""
         ).fetchall()
 
     def backup(self, destination: str | os.PathLike[str]) -> None:

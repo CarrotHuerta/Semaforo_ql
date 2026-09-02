@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QStackedWidget,
     QTabWidget,
+    QCheckBox,
     QVBoxLayout,
     QWidget,
     QFileDialog,
@@ -318,6 +319,15 @@ def save_users_to_config(users):
     config_path = writable_path("config.json")
     config = load_config()
     config["users"] = users
+    with open(config_path, "w", encoding="utf-8") as handle:
+        json.dump(config, handle, ensure_ascii=True, indent=2)
+
+
+def save_current_project_id(project_id):
+    """Persist the active project selection to config.json, preserving other settings."""
+    config_path = writable_path("config.json")
+    config = load_config()
+    config["current_project_id"] = project_id
     with open(config_path, "w", encoding="utf-8") as handle:
         json.dump(config, handle, ensure_ascii=True, indent=2)
 
@@ -2263,6 +2273,283 @@ class HistoryView(QWidget):
         list_panel = ListPanel(t("Últimas ejecuciones"), items)
 
         layout.addWidget(list_panel)
+
+
+class ProjectsView(QWidget):
+    """Administracion de proyectos: separa historial/exportacion por proyecto activo.
+
+    Solo los usuarios con rol admin pueden activar la vista global (todos los proyectos).
+    """
+
+    def __init__(self, profile=None, parent=None):
+        super().__init__(parent)
+        self.profile = profile or {}
+        self.is_admin = str(self.profile.get("role", "")).lower() in {"admin", "administrador"}
+        self.global_view = False
+        self.global_checkbox = None
+        self.projects = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(18)
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(make_label(t("Proyectos"), "pageTitle"), 1)
+
+        self.export_btn = QPushButton(t("Exportar"))
+        self.export_btn.setObjectName("secondaryButton")
+        self.export_btn.setCursor(Qt.PointingHandCursor)
+        self.export_btn.clicked.connect(self._show_export_menu)
+        header_row.addWidget(self.export_btn)
+
+        layout.addLayout(header_row)
+        layout.addWidget(make_separator("separator"))
+
+        selector_row = QHBoxLayout()
+        selector_row.setSpacing(12)
+
+        selector_row.addWidget(make_label(t("Proyecto activo"), "cloudLabel"))
+
+        self.project_combo = QComboBox()
+        self.project_combo.setObjectName("projectCombo")
+        self.project_combo.currentIndexChanged.connect(self._handle_project_change)
+        selector_row.addWidget(self.project_combo, 1)
+
+        new_btn = QPushButton(t("Nuevo proyecto"))
+        new_btn.setObjectName("secondaryButton")
+        new_btn.setCursor(Qt.PointingHandCursor)
+        new_btn.clicked.connect(self._create_project)
+        selector_row.addWidget(new_btn)
+
+        self.archive_btn = QPushButton(t("Archivar"))
+        self.archive_btn.setObjectName("dangerButton")
+        self.archive_btn.setCursor(Qt.PointingHandCursor)
+        self.archive_btn.clicked.connect(self._archive_project)
+        selector_row.addWidget(self.archive_btn)
+
+        layout.addLayout(selector_row)
+
+        if self.is_admin:
+            self.global_checkbox = QCheckBox(t("Vista global (todos los proyectos) — solo admin"))
+            self.global_checkbox.setCursor(Qt.PointingHandCursor)
+            self.global_checkbox.stateChanged.connect(self._toggle_global)
+            layout.addWidget(self.global_checkbox)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(18)
+        self.cost_card = InfoCard(t("Costo Total"), "--")
+        self.carbon_card = InfoCard(t("Carbono Total"), "--")
+        self.kwh_card = InfoCard(t("Energía Total"), "--")
+        self.water_card = InfoCard(t("Agua Total"), "--")
+        for card in (self.cost_card, self.carbon_card, self.kwh_card, self.water_card):
+            cards.addWidget(card)
+        layout.addLayout(cards)
+
+        self.history_container = QVBoxLayout()
+        layout.addLayout(self.history_container)
+        layout.addStretch()
+
+        self._load_projects()
+
+    @staticmethod
+    def _open_store():
+        return bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+
+    def _load_projects(self):
+        store = None
+        try:
+            store = self._open_store()
+            self.projects = store.list_projects()
+        except (OSError, ValueError):
+            self.projects = []
+        finally:
+            if store is not None:
+                store.close()
+
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        for project in self.projects:
+            self.project_combo.addItem(project["name"], project["id"])
+
+        saved_id = load_config().get("current_project_id")
+        index = 0
+        for i in range(self.project_combo.count()):
+            if self.project_combo.itemData(i) == saved_id:
+                index = i
+                break
+        if self.project_combo.count():
+            self.project_combo.setCurrentIndex(index)
+        self.project_combo.blockSignals(False)
+
+        self._refresh()
+
+    def _handle_project_change(self, _index=None):
+        project_id = self.project_combo.currentData()
+        if project_id is not None:
+            save_current_project_id(project_id)
+        self._refresh()
+
+    def _create_project(self):
+        name, ok = QInputDialog.getText(self, t("Nuevo proyecto"), t("Nombre del proyecto"))
+        if not ok or not name.strip():
+            return
+        store = None
+        try:
+            store = self._open_store()
+            store.add_project(name)
+        except ValidationError as exc:
+            QMessageBox.warning(self, t("Nuevo proyecto"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self._load_projects()
+
+    def _archive_project(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None:
+            return
+        confirm = QMessageBox.question(
+            self, t("Archivar proyecto"),
+            t("¿Archivar el proyecto seleccionado? Quedará de solo lectura."),
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        store = None
+        try:
+            store = self._open_store()
+            store.archive_project(project_id)
+        except ValidationError as exc:
+            QMessageBox.warning(self, t("Archivar proyecto"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self._load_projects()
+
+    def _toggle_global(self, _state=None):
+        self.global_view = bool(self.global_checkbox and self.global_checkbox.isChecked())
+        self.project_combo.setEnabled(not self.global_view)
+        self.archive_btn.setEnabled(not self.global_view)
+        self._refresh()
+
+    def _clear_history(self):
+        while self.history_container.count():
+            item = self.history_container.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh(self):
+        self._clear_history()
+        project_id = self.project_combo.currentData()
+
+        store = None
+        try:
+            store = self._open_store()
+            if self.is_admin and self.global_view:
+                overview = store.global_totals()
+                totals = overview["totals"]
+                history_items = [
+                    f"{row['name']} — {row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
+                    for row in overview["by_project"]
+                ] or [t("No hay proyectos registrados.")]
+                title = t("Totales por proyecto")
+            elif project_id is not None:
+                totals = store.project_totals(project_id)
+                history_rows = store.list_history(project_id=project_id)
+                history_items = [
+                    f"{row['timestamp']} — {row['model_name']} — {row['semaphore']} — "
+                    f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
+                    for row in history_rows
+                ] or [t("No hay ejecuciones registradas para este proyecto.")]
+                title = t("Historial del proyecto")
+            else:
+                totals = {"cost": 0.0, "carbon": 0.0, "kwh": 0.0, "water": 0.0}
+                history_items = [t("Crea o selecciona un proyecto para ver su historial.")]
+                title = t("Historial del proyecto")
+        except (OSError, ValueError):
+            totals = {"cost": 0.0, "carbon": 0.0, "kwh": 0.0, "water": 0.0}
+            history_items = [t("No hay ejecuciones registradas.")]
+            title = t("Historial del proyecto")
+        finally:
+            if store is not None:
+                store.close()
+
+        self.cost_card.set_value(f"{totals['cost']:.2f}")
+        self.carbon_card.set_value(f"{totals['carbon']:.2f}")
+        self.kwh_card.set_value(f"{totals['kwh']:.2f}")
+        self.water_card.set_value(f"{totals['water']:.2f}")
+
+        self.history_container.addWidget(ListPanel(title, history_items))
+
+    def _show_export_menu(self):
+        menu = QMenu(self)
+        export_pdf_action = menu.addAction("PDF")
+        export_json_action = menu.addAction("JSON")
+        export_xlsx_action = menu.addAction("XLSX")
+
+        chosen_action = menu.exec(self.export_btn.mapToGlobal(self.export_btn.rect().bottomLeft()))
+        if chosen_action == export_pdf_action:
+            self._export_report("pdf")
+        elif chosen_action == export_json_action:
+            self._export_report("json")
+        elif chosen_action == export_xlsx_action:
+            self._export_report("xlsx")
+
+    def _export_report(self, export_format="pdf"):
+        import export_handler
+
+        display_name = self.profile.get("display_name", t("Usuario Activo"))
+        role = self.profile.get("role", "")
+        exported_by_text = f"{display_name} ({role})" if role else display_name
+
+        store = None
+        try:
+            store = self._open_store()
+            if self.is_admin and self.global_view:
+                overview = store.global_totals()
+                totals = overview["totals"]
+                details = [
+                    [row["name"], f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f} USD", "gray_800"]
+                    for row in overview["by_project"]
+                ] or [[t("Sin proyectos"), "-", "gray_500"]]
+                scope_label = t("Overview global (todos los proyectos)")
+            else:
+                project_id = self.project_combo.currentData()
+                if project_id is None:
+                    QMessageBox.warning(self, t("Exportar"), t("Selecciona un proyecto primero."))
+                    return
+                totals = store.project_totals(project_id)
+                history_rows = store.list_history(project_id=project_id)[:20]
+                details = [
+                    [row["timestamp"], f"{row['model_name']} — {row['semaphore']}", "gray_800"]
+                    for row in history_rows
+                ] or [[t("Sin ejecuciones"), "-", "gray_500"]]
+                scope_label = self.project_combo.currentText()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, t("Exportar"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+
+        data = {
+            "exported_by": exported_by_text,
+            "chart_values": [round(totals["carbon"], 1), round(totals["cost"], 1)],
+            "chart_labels": [t("Carbono (gCO2eq)"), t("Costo (USD)")],
+            "kpis": [
+                [15, 60, t("Carbono Total"), f"{totals['carbon']:.2f}", "gCO2eq", "emerald_500"],
+                [75, 60, t("Costo Total"), f"{totals['cost']:.2f}", "USD", "cyan_500"],
+            ],
+            "details": details,
+            "logs": [[t("Proyecto: {scope}").format(scope=scope_label), "gray_500"]],
+            "progress": 0,
+        }
+        export_handler.generate_and_save_report(
+            self, "proyecto", data, export_format=export_format,
+            lang=i18n.get_language(), trigger_widget=self.export_btn,
+        )
 
 
 class SettingsView(QWidget):
@@ -4396,6 +4683,12 @@ class DashboardWindow(QMainWindow):
 
         self._add_nav_item(sidebar, t("Inicio"), make_home_icon(), self.home_view)
         self._add_nav_item(sidebar, t("Modelos"), make_grid_icon(), self.models_view)
+        self._add_nav_item(
+            sidebar,
+            t("Proyectos"),
+            make_text_icon("P", 18, "#66bb22"),
+            ProjectsView(profile=user_profile),
+        )
         self._add_nav_item(
             sidebar,
             t("Impacto Ambiental"),

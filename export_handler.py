@@ -195,6 +195,7 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
         "eco": f"informe_semaforo_ia{ext}",
         "economia": f"informe_economia_semaforo_ia{ext}",
         "inicio": f"informe_inicio_semaforo_ia{ext}",
+        "proyecto": f"informe_proyecto_semaforo_ia{ext}",
     }
     default_name = default_names.get(report_type, f"informe_semaforo_ia{ext}")
 
@@ -229,8 +230,8 @@ def _apply_report_data(report_type, data, file_path, export_format, lang):
     if _EXPORT_IMPORT_ERROR is not None:
         raise RuntimeError(f"No se pudieron cargar los módulos de exportación: {_EXPORT_IMPORT_ERROR}") from _EXPORT_IMPORT_ERROR
 
-    if report_type == 'eco':
-        # Update eco module data
+    if report_type in ('eco', 'proyecto'):
+        # Update eco module data ('proyecto' reuses the same generic KPI/details/logs template)
         if "kpis" in data:
             eco.REPORT["kpis"] = data["kpis"]
         if "details" in data:
