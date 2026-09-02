@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from difflib import SequenceMatcher
 from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
@@ -55,6 +56,7 @@ from functional_core import classify_cpu_tier
 from functional_core import convert_clp, fetch_exchange_rates, verify_security_answer
 from functional_core import hash_password, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
+from functional_core import calculate_energy, Execution, utc_iso
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -1045,6 +1047,12 @@ class HomeView(QWidget):
         self.export_home_btn.clicked.connect(self.show_export_home_menu)
         header_layout.addWidget(self.export_home_btn)
 
+        self.register_execution_btn = QPushButton(t("Registrar Ejecución"))
+        self.register_execution_btn.setObjectName("secondaryButton")
+        self.register_execution_btn.setCursor(Qt.PointingHandCursor)
+        self.register_execution_btn.clicked.connect(self._register_execution)
+        header_layout.addWidget(self.register_execution_btn)
+
         layout.addLayout(header_layout)
         layout.addWidget(make_separator("separator"))
 
@@ -1163,6 +1171,84 @@ class HomeView(QWidget):
                 card.update_description(full_text)
             else:
                 card.update_description(card.default_description)
+
+    def _register_execution(self):
+        """Persiste el calculo real actual (LocalStore + MLflow); no hay valores inventados."""
+        if not self.main_window:
+            return
+        state = self.main_window.selection_state
+        provider = state.get("provider")
+        region = state.get("region")
+        model = state.get("model")
+        hardware = state.get("hardware")
+        tdp = state.get("hardware_tdp")
+        score = self.main_window.current_score
+        semaphore_value = self.main_window.current_semaphore_level
+
+        if not (provider and region and model and hardware) or score is None or semaphore_value is None:
+            QMessageBox.warning(
+                self, t("Registrar Ejecución"),
+                t("Completa proveedor, región, modelo y hardware antes de registrar."),
+            )
+            return
+
+        config = load_config()
+        project_id = config.get("current_project_id")
+        if project_id is None:
+            QMessageBox.warning(
+                self, t("Registrar Ejecución"),
+                t("Selecciona un proyecto activo en la vista Proyectos primero."),
+            )
+            return
+
+        kwh = calculate_energy(tdp, 1.0, 1.0)
+        cost = 0.0
+        water = 0.0
+        duration_ms = 3600000
+
+        store = None
+        try:
+            store = bootstrap_store(config, writable_path("semaforo.sqlite3"))
+            project_row = store.connection.execute(
+                "SELECT name FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if project_row is None:
+                QMessageBox.warning(self, t("Registrar Ejecución"), t("El proyecto activo ya no existe."))
+                return
+            project_name = project_row["name"]
+
+            model_row = next((m for m in store.list_models(project_id) if m["name"] == model), None)
+            model_id = model_row["id"] if model_row else store.add_model(project_id, model)
+
+            store.add_execution(Execution(
+                model_id=model_id, timestamp=utc_iso(), cost=cost, carbon=score,
+                kwh=kwh, water=water, duration_ms=duration_ms, semaphore=semaphore_value,
+            ))
+        except (OSError, ValidationError) as exc:
+            QMessageBox.critical(self, t("Registrar Ejecución"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+
+        import mlflow_integration
+        try:
+            run_id = mlflow_integration.log_execution_run(
+                config, project_name=project_name, model_name=model, hardware=hardware,
+                provider=provider, region=region, cost=cost, carbon=score, kwh=kwh,
+                water=water, duration_ms=duration_ms, semaphore=semaphore_value,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self, t("Registrar Ejecución"),
+                t("Ejecución guardada localmente, pero no se pudo registrar en MLflow:\n{error}").format(error=str(exc)),
+            )
+            return
+
+        QMessageBox.information(
+            self, t("Registrar Ejecución"),
+            t("Ejecución registrada localmente y en MLflow (run {run_id}).").format(run_id=run_id),
+        )
 
     def show_export_home_menu(self):
         menu = QMenu(self)
@@ -2445,6 +2531,7 @@ class ProjectsView(QWidget):
         project_id = self.project_combo.currentData()
 
         store = None
+        project_name = None
         try:
             store = self._open_store()
             if self.is_admin and self.global_view:
@@ -2464,6 +2551,10 @@ class ProjectsView(QWidget):
                     for row in history_rows
                 ] or [t("No hay ejecuciones registradas para este proyecto.")]
                 title = t("Historial del proyecto")
+                project_row = store.connection.execute(
+                    "SELECT name FROM projects WHERE id = ?", (project_id,)
+                ).fetchone()
+                project_name = project_row["name"] if project_row else None
             else:
                 totals = {"cost": 0.0, "carbon": 0.0, "kwh": 0.0, "water": 0.0}
                 history_items = [t("Crea o selecciona un proyecto para ver su historial.")]
@@ -2482,6 +2573,25 @@ class ProjectsView(QWidget):
         self.water_card.set_value(f"{totals['water']:.2f}")
 
         self.history_container.addWidget(ListPanel(title, history_items))
+
+        if project_name and not (self.is_admin and self.global_view):
+            self.history_container.addWidget(ListPanel(t("Runs en MLflow"), self._mlflow_run_items(project_name)))
+
+    def _mlflow_run_items(self, project_name):
+        import mlflow_integration
+        try:
+            runs = mlflow_integration.list_runs(load_config(), project_name)
+        except mlflow_integration.MlflowConfigError:
+            return [t("MLflow no esta configurado (ver Ajustes).")]
+        except Exception as exc:
+            return [t("No se pudo consultar MLflow: {error}").format(error=str(exc))]
+        if not runs:
+            return [t("Sin runs registrados en MLflow para este proyecto todavia.")]
+        return [
+            f"{run.info.run_id[:8]} — {run.data.params.get('model', '?')} — "
+            f"{run.data.metrics.get('carbon_gco2eq', 0):.2f} gCO2eq"
+            for run in runs
+        ]
 
     def _show_export_menu(self):
         menu = QMenu(self)
@@ -2856,8 +2966,83 @@ class SettingsView(QWidget):
         fin_row.addWidget(sync_tarifas_btn)
         fin_row.addStretch()
 
+        mlflow_row = QHBoxLayout()
+        mlflow_row.setSpacing(10)
+
+        mlflow_token_key_path = writable_path("secrets", "mlflow_token.key")
+        mlflow_config = load_config()
+
+        uri_input = QLineEdit()
+        uri_input.setFixedWidth(220)
+        uri_input.setPlaceholderText("http://127.0.0.1:5000")
+        uri_input.setText(mlflow_config.get("mlflow_tracking_uri", ""))
+
+        token_input = QLineEdit()
+        token_input.setEchoMode(QLineEdit.Password)
+        token_input.setFixedWidth(180)
+        stored_mlflow_token = mlflow_config.get("mlflow_token_encrypted", "")
+        if stored_mlflow_token:
+            try:
+                token_input.setPlaceholderText(mask_api_key(decrypt_api_key(stored_mlflow_token, mlflow_token_key_path)))
+            except ApiKeyError:
+                token_input.setPlaceholderText(t("Token almacenado no legible"))
+        else:
+            token_input.setPlaceholderText(t("Token de acceso (opcional)"))
+
+        save_mlflow_btn = QPushButton(t("Guardar MLflow"))
+        save_mlflow_btn.setObjectName("secondaryButton")
+
+        def save_mlflow_config():
+            uri = uri_input.text().strip()
+            if not uri:
+                QMessageBox.warning(self, t("MLflow"), t("Ingrese la Tracking URI del servidor MLflow."))
+                return
+            raw_token = token_input.text().strip()
+            config_path = writable_path("config.json")
+            try:
+                config = load_config()
+                config["mlflow_tracking_uri"] = uri
+                if raw_token:
+                    config["mlflow_token_encrypted"] = encrypt_api_key(raw_token, mlflow_token_key_path)
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except ApiKeyError as exc:
+                QMessageBox.warning(self, t("MLflow"), str(exc))
+                return
+            except OSError as exc:
+                QMessageBox.critical(self, t("MLflow"), str(exc))
+                return
+            if raw_token:
+                token_input.clear()
+                token_input.setPlaceholderText(mask_api_key(raw_token))
+            QMessageBox.information(self, t("MLflow"), t("Configuración de MLflow guardada localmente."))
+
+        save_mlflow_btn.clicked.connect(save_mlflow_config)
+
+        test_mlflow_btn = QPushButton(t("Probar conexión"))
+        test_mlflow_btn.setObjectName("secondaryButton")
+
+        def test_mlflow_connection():
+            import mlflow_integration
+            try:
+                mlflow_integration.test_connection(load_config())
+            except Exception as exc:
+                QMessageBox.critical(self, t("MLflow"), t("No se pudo conectar al servidor MLflow:\n{error}").format(error=str(exc)))
+                return
+            QMessageBox.information(self, t("MLflow"), t("Conexión con el servidor MLflow exitosa."))
+
+        test_mlflow_btn.clicked.connect(test_mlflow_connection)
+
+        mlflow_row.addWidget(make_label(t("MLflow Tracking URI:"), "infoText"))
+        mlflow_row.addWidget(uri_input)
+        mlflow_row.addWidget(token_input)
+        mlflow_row.addWidget(save_mlflow_btn)
+        mlflow_row.addWidget(test_mlflow_btn)
+        mlflow_row.addStretch()
+
         thresh_fin_layout.addLayout(thresh_row)
         thresh_fin_layout.addLayout(fin_row)
+        thresh_fin_layout.addLayout(mlflow_row)
         layout.addLayout(thresh_fin_layout)
 
 class AccountHeaderCard(QFrame):
@@ -5496,12 +5681,47 @@ def apply_stylesheet(app):
     )
 
 
+def _bootstrap_mlflow_autostart():
+    """Arranca (o detecta) un MLflow Tracking Server local en un hilo aparte, sin bloquear la UI.
+
+    Si ya hay un servidor real accesible (local o el configurado por el usuario), no hace
+    nada mas que confirmarlo; si no hay ninguno, levanta uno local y guarda su URI real en
+    config.json apenas responde, para que el resto de la app lo use sin configuracion manual.
+    """
+    def save_uri(uri):
+        config_path = writable_path("config.json")
+        try:
+            config = load_config()
+            if config.get("mlflow_tracking_uri") != uri:
+                config["mlflow_tracking_uri"] = uri
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+        except OSError:
+            pass
+
+    def worker():
+        import mlflow_integration
+        try:
+            mlflow_integration.start_local_server_if_needed(load_config(), save_config_callback=save_uri)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _shutdown_mlflow_autostart():
+    import mlflow_integration
+    mlflow_integration.stop_local_server()
+
+
 def main():
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
     apply_stylesheet(app)
 
     i18n.load_saved_language()
+    _bootstrap_mlflow_autostart()
+    app.aboutToQuit.connect(_shutdown_mlflow_autostart)
 
     window = LoginWindow()
     window.show()

@@ -7,7 +7,7 @@
   "users": [
     {
       "username": "nacha",
-      "display_name": "Ignacia Huerta",
+      "display_name": "Nacha",
       "role": "Administrador",
       "profile_photo": "img/nacha.png",
       "password_hash": "pbkdf2_sha256$260000$c37fe72f5445644395a019b205ee555d$c710c08721d36a2a6d6320a44d2c090ff6d45a9b099bceb05b863807efa7258d",
@@ -28,11 +28,12 @@
     },
     {
       "username": "maxine",
-      "display_name": "Maxine Lastra",
+      "display_name": "Maxine",
       "role": "Usuario",
       "profile_photo": "img/maxine.jpg",
       "password_hash": "pbkdf2_sha256$260000$ac95afa719aaacd1f7c819b68936f308$74ba6a1be746a1322728cc890b406a339a0bf6560e0b200a46d8e2f6b5296d93",
       "security_questions": []
-    },
-  ]
+    }
+  ],
+  "mlflow_tracking_uri": "http://127.0.0.1:5000"
 }

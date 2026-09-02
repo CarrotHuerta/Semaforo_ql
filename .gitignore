@@ -34,3 +34,6 @@ exchange_rates.json
 # Local encryption keys and secrets (RF34)
 secrets/
 *.key
+
+# Local MLflow tracking server data (sqlite backend + artifacts)
+mlflow_data/
