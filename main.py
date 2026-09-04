@@ -963,7 +963,7 @@ class InfoCard(QFrame):
 
 
 class ListPanel(QFrame):
-    def __init__(self, title, items, parent=None):
+    def __init__(self, title, items, separator_spacing=0, parent=None):
         super().__init__(parent)
         self.setObjectName("listPanel")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -980,7 +980,11 @@ class ListPanel(QFrame):
             item_label.setWordWrap(True)
             layout.addWidget(item_label)
             if index < len(items) - 1:
+                if separator_spacing:
+                    layout.addSpacing(separator_spacing)
                 layout.addWidget(make_separator("listLine"))
+                if separator_spacing:
+                    layout.addSpacing(separator_spacing)
 
 
 class KpiCard(QFrame):
@@ -2848,7 +2852,8 @@ class ProjectsView(QWidget):
 
     @staticmethod
     def _scrollable_list_panel(title, items, object_name):
-        panel = ListPanel(title, items)
+        panel = ListPanel(title, items, separator_spacing=6)
+        panel.setObjectName("projectListPanel")
         panel.ensurePolished()
         panel.setMinimumHeight(panel.sizeHint().height())
 
@@ -5873,21 +5878,35 @@ def apply_stylesheet(app):
         "  border: 1px solid #2c2c2c;"
         "  border-radius: 12px;"
         "}"
-        "QScrollArea#catalogScroll, QScrollArea#projectHistoryListScroll, QScrollArea#mlflowRunsListScroll {"
+        "QScrollArea#catalogScroll {"
         "  background: transparent;"
         "  border: none;"
         "}"
-        "QScrollArea#catalogScroll QWidget, QScrollArea#projectHistoryListScroll QWidget, QScrollArea#mlflowRunsListScroll QWidget {"
+        "QScrollArea#catalogScroll QWidget {"
         "  background: transparent;"
+        "}"
+        "QScrollArea#projectHistoryListScroll, QScrollArea#mlflowRunsListScroll {"
+        "  background: #141414;"
+        "  border: 1px solid #f2f2f2;"
+        "  border-radius: 18px;"
+        "}"
+        "QScrollArea#projectHistoryListScroll QWidget, QScrollArea#mlflowRunsListScroll QWidget, QFrame#projectListPanel {"
+        "  background: transparent;"
+        "  border: none;"
+        "  border-radius: 0px;"
+        "}"
+        "QFrame#projectListPanel QFrame#listLine {"
+        "  background-color: #454545;"
         "}"
         "QScrollArea#projectHistoryListScroll QScrollBar:vertical, QScrollArea#mlflowRunsListScroll QScrollBar:vertical {"
         "  background: transparent;"
-        "  width: 8px;"
-        "  margin: 8px 4px 8px 0;"
+        "  width: 14px;"
+        "  margin: 6px 3px 6px 0;"
         "}"
         "QScrollArea#projectHistoryListScroll QScrollBar::handle:vertical, QScrollArea#mlflowRunsListScroll QScrollBar::handle:vertical {"
         "  background: #4a4a4a;"
         "  border-radius: 4px;"
+        "  margin: 0 1px;"
         "  min-height: 28px;"
         "}"
         "QScrollArea#projectHistoryListScroll QScrollBar::handle:vertical:hover, QScrollArea#mlflowRunsListScroll QScrollBar::handle:vertical:hover {"
