@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
+    QAbstractScrollArea,
     QApplication,
     QButtonGroup,
     QComboBox,
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QInputDialog,
+    QLayout,
 )
 
 from hardware_info import get_hardware_info
@@ -2702,9 +2704,25 @@ class ProjectsView(QWidget):
             cards.addWidget(card)
         layout.addLayout(cards)
 
-        self.history_container = QVBoxLayout()
-        layout.addLayout(self.history_container)
-        layout.addStretch()
+        self.history_content = QWidget()
+        self.history_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.history_container = QVBoxLayout(self.history_content)
+        self.history_container.setContentsMargins(0, 0, 0, 0)
+        self.history_container.setSpacing(12)
+        self.history_container.setSizeConstraint(QLayout.SetMinimumSize)
+        self.history_container.addStretch()
+
+        self.history_scroll = QScrollArea()
+        self.history_scroll.setObjectName("projectsHistoryScroll")
+        self.history_scroll.setWidgetResizable(True)
+        self.history_scroll.setFrameShape(QFrame.NoFrame)
+        self.history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.history_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.history_scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+        self.history_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.history_scroll.setMinimumHeight(160)
+        self.history_scroll.setWidget(self.history_content)
+        layout.addWidget(self.history_scroll, 1)
 
         self._load_projects()
 
@@ -2836,11 +2854,16 @@ class ProjectsView(QWidget):
         self._refresh()
 
     def _clear_history(self):
-        while self.history_container.count():
+        self.history_content.setMinimumHeight(0)
+        while self.history_container.count() > 1:
             item = self.history_container.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _update_history_scroll_extent(self):
+        self.history_container.activate()
+        self.history_content.setMinimumHeight(self.history_container.sizeHint().height())
 
     def _refresh(self, include_mlflow=True):
         self._clear_history()
@@ -2888,14 +2911,18 @@ class ProjectsView(QWidget):
         self.kwh_card.set_value(f"{totals['kwh']:.2f}")
         self.water_card.set_value(f"{totals['water']:.2f}")
 
-        self.history_container.addWidget(ListPanel(title, history_items))
+        self.history_container.insertWidget(0, ListPanel(title, history_items))
 
         if project_name and not (self.is_admin and self.global_view):
             if include_mlflow:
                 self._mlflow_items_by_project[project_name] = self._mlflow_run_items(project_name)
             mlflow_items = self._mlflow_items_by_project.get(project_name)
             if mlflow_items is not None:
-                self.history_container.addWidget(ListPanel(t("Runs en MLflow"), mlflow_items))
+                self.history_container.insertWidget(
+                    self.history_container.count() - 1,
+                    ListPanel(t("Runs en MLflow"), mlflow_items),
+                )
+            self._update_history_scroll_extent()
         self.refresh_status_label.setText(
             t("Actualizado: {time}").format(time=QDateTime.currentDateTime().toString("HH:mm:ss"))
         )
