@@ -1,3 +1,4 @@
+import csv
 import json
 import http.client
 import threading
@@ -19,6 +20,8 @@ from functional_core import (
     calculate_energy,
     calculate_execution,
     calculate_water,
+    budget_percentage,
+    component_percentages,
     compare_models,
     convert_clp,
     decrypt_api_key,
@@ -34,6 +37,7 @@ from functional_core import (
     rightsizing,
     semaphore_level,
     sanitize_markdown,
+    render_markdown,
     validate_api_key_format,
     validate_password,
     validate_thresholds,
@@ -133,6 +137,20 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(sanitize_markdown("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;")
         with self.assertRaises(ValidationError):
             sanitize_markdown("x" * 4, max_chars=3)
+
+    def test_safe_markdown_and_component_percentages(self):
+        html = render_markdown("# Titulo\n\n- **CPU**\n- [Sitio](https://example.com)\n<script>alert(1)</script>")
+        self.assertIn("<h1>Titulo</h1>", html)
+        self.assertIn("<strong>CPU</strong>", html)
+        self.assertIn('href="https://example.com"', html)
+        self.assertNotIn("<script>", html)
+        percentages = component_percentages({"CPU": 1, "GPU": 2, "RAM": 1})
+        self.assertEqual(sum(percentages.values()), 100.0)
+        self.assertEqual(percentages["GPU"], 50.0)
+        self.assertEqual(budget_percentage(125, 100), 100)
+        self.assertIsNone(budget_percentage(125, 0))
+        with self.assertRaises(ValidationError):
+            budget_percentage(-1, 100)
 
     def test_api_key_encryption_roundtrip_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -357,6 +375,15 @@ class FunctionalCoreTests(unittest.TestCase):
             store = LocalStore(Path(directory) / "history.sqlite3")
             self.assertEqual(store.list_history(), [])
             store.close()
+
+    def test_hardware_catalog_has_real_ram_options(self):
+        catalog_path = Path(__file__).parent / "data" / "hardware.csv"
+        with catalog_path.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        ram_rows = [row for row in rows if row["Tipo_Componente"] == "RAM"]
+        self.assertGreaterEqual(len(ram_rows), 5)
+        self.assertTrue(all(row["Capacidad_GB"] for row in ram_rows))
+        self.assertFalse(any("prueba" in row["Modelo"].lower() for row in rows))
 
 
 if __name__ == "__main__":

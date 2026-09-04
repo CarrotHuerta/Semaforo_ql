@@ -10,6 +10,7 @@ import threading
 from html import escape as html_escape
 from difflib import SequenceMatcher
 from PySide6.QtCore import QDateTime, QDir, QEvent, QLockFile, QObject, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QSequentialAnimationGroup
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -22,6 +23,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QAbstractScrollArea,
     QApplication,
     QButtonGroup,
@@ -44,6 +46,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QCheckBox,
     QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
     QFileDialog,
@@ -55,9 +58,9 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
-from functional_core import bootstrap_store, calculate_carbon, compare_models, export_records, green_score, import_records, rightsizing, semaphore_level, sensor_reading, validate_thresholds
+from functional_core import bootstrap_store, budget_percentage, calculate_carbon, compare_models, component_percentages, export_records, green_score, import_records, render_markdown, rightsizing, semaphore_level, sensor_reading, validate_thresholds
 from functional_core import classify_cpu_tier
-from functional_core import convert_clp, fetch_exchange_rates, verify_security_answer
+from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_security_answer
 from functional_core import hash_password, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
 from functional_core import calculate_energy, Execution, utc_iso
@@ -80,6 +83,7 @@ def load_config():
         "server_port": 6767,
         "language": "es",
         "notifications_os": True,
+        "theme": "dark",
         "users": [
             {
                 "username": "nacha",
@@ -193,7 +197,7 @@ def load_csv_rows(filename):
         return []
     try:
         import csv
-        with open(data_path, "r", encoding="utf-8", newline="") as handle:
+        with open(data_path, "r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             rows = []
             for row in reader:
@@ -214,7 +218,7 @@ def load_model_records():
         try:
             records.extend(import_records(model_file))
         except (OSError, ValueError):
-            pass
+            records = records
     merged = {}
     for row in records:
         if not isinstance(row, dict) or row.get("is_active", True) is False:
@@ -403,6 +407,26 @@ def make_separator(object_name="separator"):
     line.setObjectName(object_name)
     line.setFixedHeight(1)
     return line
+
+
+def tint_pixmap(pixmap, color):
+    tinted = QPixmap(pixmap.size())
+    tinted.fill(Qt.transparent)
+    painter = QPainter(tinted)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    painter.fillRect(tinted.rect(), QColor(color))
+    painter.end()
+    return tinted
+
+
+def is_green_pixmap(pixmap):
+    for x in range(pixmap.width()):
+        for y in range(pixmap.height()):
+            pixel = QColor(pixmap.toImage().pixel(x, y))
+            if pixel.alpha() and pixel.green() > pixel.red() * 1.25 and pixel.green() > pixel.blue() * 1.1:
+                return True
+    return False
 
 
 def format_energy_value(kwh):
@@ -1273,8 +1297,9 @@ class HomeView(QWidget):
         alert_layout.setContentsMargins(14, 10, 14, 10)
         alert_layout.setSpacing(14)
 
-        alert_text = make_label(t("¡Alerta Crítica! Límite de emisiones proyectado al 95%."), "infoTitle")
-        alert_layout.addWidget(alert_text, 1)
+        self.alert_text = make_label("", "infoTitle")
+        self.alert_text.setWordWrap(True)
+        alert_layout.addWidget(self.alert_text, 1)
 
         snooze_btn = QPushButton(t("Silenciar Advertencia por Tiempo Limitado"))
         snooze_btn.setObjectName("secondaryButton")
@@ -1283,26 +1308,17 @@ class HomeView(QWidget):
         close_btn = QPushButton(t("Cerrar"))
         close_btn.setObjectName("secondaryButton")
         close_btn.setCursor(Qt.PointingHandCursor)
+        self.alert_close_btn = close_btn
+        self.alert_snooze_btn = snooze_btn
+        self._alert_snoozed = False
         close_btn.clicked.connect(lambda: self.alert_bar.setVisible(False))
-
-        def toggle_alert():
-            is_visible = alert_text.isVisible()
-            alert_text.setVisible(not is_visible)
-            close_btn.setVisible(not is_visible)
-
-            if is_visible:
-                snooze_btn.setText(t("Mostrar Advertencia"))
-                alert_layout.setContentsMargins(14, 4, 14, 4)
-            else:
-                snooze_btn.setText(t("Silenciar Advertencia por Tiempo Limitado"))
-                alert_layout.setContentsMargins(14, 10, 14, 10)
-
-        snooze_btn.clicked.connect(toggle_alert)
+        snooze_btn.clicked.connect(self._snooze_alert)
 
         alert_layout.addWidget(snooze_btn)
         alert_layout.addWidget(close_btn)
 
         layout.addWidget(self.alert_bar)
+        self.alert_bar.setVisible(False)
 
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(18)
@@ -1349,6 +1365,17 @@ class HomeView(QWidget):
         layout.addWidget(info_bar)
 
     def set_semaforo_level(self, level, score=None, green_score_value=None):
+        if level is None or score is None:
+            self.alert_bar.setVisible(False)
+            self._alert_snoozed = False
+        else:
+            alert_level = t("Advertencia amarilla") if level == "moderado" else t("Alerta crítica") if level == "alto" else ""
+            if alert_level:
+                self.alert_text.setText(t("{level}: impacto de carbono {score:.1f} gCO2eq.").format(level=alert_level, score=score))
+                self.alert_bar.setProperty("level", level)
+                self.alert_bar.setStyleSheet("background-color: #b60f0f; border-radius: 8px;" if level == "alto" else "background-color: #8c7600; border-radius: 8px;")
+                if not self._alert_snoozed:
+                    self.alert_bar.setVisible(True)
         for key, card in self.status_cards.items():
             card.set_selected(level == key)
             if level == key and score is not None:
@@ -1379,6 +1406,18 @@ class HomeView(QWidget):
                 card.update_description(full_text)
             else:
                 card.update_description(card.default_description)
+
+    def _snooze_alert(self):
+        self._alert_snoozed = True
+        self.alert_bar.setVisible(False)
+        self.alert_snooze_btn.setText(t("Mostrar Advertencia"))
+        QTimer.singleShot(120000, self._restore_alert)
+
+    def _restore_alert(self):
+        self._alert_snoozed = False
+        if self.main_window and self.main_window.current_semaphore_level in {"Amarillo", "Rojo"}:
+            self.alert_bar.setVisible(True)
+        self.alert_snooze_btn.setText(t("Silenciar Advertencia por Tiempo Limitado"))
 
     def _save_execution_locally(self, *, project_id, model, cost, carbon, kwh, water, duration_ms, semaphore):
         """Persiste la ejecucion en LocalStore y devuelve el nombre real del proyecto."""
@@ -1424,8 +1463,9 @@ class HomeView(QWidget):
         model = state.get("model")
         hardware = state.get("hardware")
         tdp = state.get("hardware_tdp")
-        score = self.main_window.current_score
-        semaphore_value = self.main_window.current_semaphore_level
+        evaluation = getattr(self.main_window, "current_evaluation", None)
+        score = evaluation.get("carbon") if evaluation else None
+        semaphore_value = evaluation.get("semaphore") if evaluation else None
 
         if not (provider and region and model and hardware) or score is None or semaphore_value is None:
             QMessageBox.warning(
@@ -1442,14 +1482,15 @@ class HomeView(QWidget):
             )
             return
 
-        kwh = calculate_energy(tdp, 1.0, 1.0)
-        cost = 0.0
-        water = 0.0
-        duration_ms = 3600000
+        cost = evaluation["cost"]
+        carbon = evaluation["carbon"]
+        kwh = evaluation["kwh"]
+        water = evaluation["water"]
+        duration_ms = evaluation["duration_ms"]
 
         try:
             project_name = self._save_execution_locally(
-                project_id=project_id, model=model, cost=cost, carbon=score,
+                project_id=project_id, model=model, cost=cost, carbon=carbon,
                 kwh=kwh, water=water, duration_ms=duration_ms, semaphore=semaphore_value,
             )
             self.main_window.refresh_projects_view()
@@ -1460,7 +1501,7 @@ class HomeView(QWidget):
         try:
             run_id = self._log_execution_to_mlflow(
                 project_name=project_name, model=model, hardware=hardware, provider=provider,
-                region=region, cost=cost, carbon=score, kwh=kwh, water=water,
+                region=region, cost=cost, carbon=carbon, kwh=kwh, water=water,
                 duration_ms=duration_ms, semaphore=semaphore_value,
             )
         except Exception as exc:
@@ -2143,12 +2184,7 @@ class ModelsView(QWidget):
                     line = f"{line} ({maker})"
                 items.append(line)
         else:
-            items = [
-                "Llama 3 70B — Producción (GPU)",
-                "Mistral Large — Validación (CPU)",
-                "Gemma 27B — Sandbox (GPU)",
-                "Phi-4 Mini — Batch (CPU)",
-            ]
+            items = [t("No hay modelos disponibles en el catálogo.")]
         list_panel = ListPanel(t("Modelos recientes"), items)
 
         selector_panel = QFrame()
@@ -2171,9 +2207,16 @@ class ModelsView(QWidget):
                     self.model_map[name] = row
                     self.model_combo.addItem(name)
         else:
-            self.model_combo.addItems(["Llama 3 70B", "Mistral Large", "Gemma 27B", "Phi-4 Mini"])
+            self.model_combo.addItem(t("Sin modelos disponibles"))
+            self.model_combo.setEnabled(False)
 
         selector_layout.addWidget(self._build_selector(t("Modelo"), self.model_combo), 1)
+
+        self.description_view = QTextBrowser()
+        self.description_view.setObjectName("modelDescription")
+        self.description_view.setOpenExternalLinks(True)
+        self.description_view.setMaximumHeight(130)
+        self.description_view.setPlaceholderText(t("Sin descripción disponible."))
 
         self.model_combo.currentTextChanged.connect(self._handle_model_change)
         if self.model_combo.count():
@@ -2201,6 +2244,7 @@ class ModelsView(QWidget):
 
         layout.addLayout(cards)
         layout.addWidget(selector_panel)
+        layout.addWidget(self.description_view)
         layout.addWidget(list_panel)
 
     def _handle_soft_delete(self):
@@ -2262,9 +2306,14 @@ class ModelsView(QWidget):
         return wrapper
 
     def _handle_model_change(self, model_name):
-        if not self.on_selection:
+        if model_name == t("Sin modelos disponibles"):
+            self.description_view.clear()
             return
         row = self.model_map.get(model_name, {})
+        description = row.get("description_markdown") or row.get("Descripcion") or row.get("Descripción") or ""
+        self.description_view.setHtml(render_markdown(description) if description else "")
+        if not self.on_selection:
+            return
         energy = parse_number(row.get("Consumo_Energetico_Base") or row.get("energy"))
         self.on_selection(model=model_name, model_energy=energy)
 
@@ -2276,18 +2325,13 @@ class FinOpsView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(14)
 
         self.active_project_label = make_label(t("Proyecto activo: {name}").format(name=t("No seleccionado")), "infoText")
-        title_block = QVBoxLayout()
-        title_block.setSpacing(2)
-        title_block.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
-        title_block.addWidget(self.active_project_label)
-        layout.addLayout(title_block)
 
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
-        header_row.addStretch()
+        header_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"), 1)
 
         self.currency_combo = ChevronComboBox()
         self.currency_options = [
@@ -2314,15 +2358,6 @@ class FinOpsView(QWidget):
         self.export_finops_btn.clicked.connect(self.show_export_finops_menu)
         header_row.addWidget(self.export_finops_btn)
 
-        layout.addLayout(header_row)
-
-        cards = QHBoxLayout()
-        cards.setSpacing(12)
-        self.finops_metrics, self.finops_services = load_finops_demo()
-        self.card_actual = InfoCard(t("Costo actual"), "$0.00")
-        self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$0.00")
-        self.card_ahorro = InfoCard(t("Ahorro estimado"), "$0.00")
-
         self.exchange_rates = {"CLP": 1.0}
         self.exchange_status = make_label(t("Cargando tasas de cambio..."), "infoText")
         self.exchange_rate_label = make_label("", "infoText")
@@ -2334,14 +2369,28 @@ class FinOpsView(QWidget):
         self.base_presupuesto_clp = 0.0
         self.base_ahorro_clp = 0.0
 
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(12)
+        status_row.setAlignment(Qt.AlignTop)
+        status_row.addWidget(self.active_project_label, 1)
+        status_row.addWidget(self.exchange_status)
+        status_row.addWidget(self.exchange_rate_label)
+        layout.addLayout(header_row)
+        layout.addWidget(make_separator("separator"))
+        layout.addLayout(status_row)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self.finops_metrics, self.finops_services = load_finops_demo()
+        self.card_actual = PerformanceCard(t("Costo actual"), "$0.00")
+        self.card_presupuesto = PerformanceCard(t("Presupuesto mensual"), "$0.00")
+        self.card_ahorro = PerformanceCard(t("Ahorro estimado"), "$0.00")
+        for card in (self.card_actual, self.card_presupuesto, self.card_ahorro):
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
         cards.addWidget(self.card_ahorro, 1)
-        exchange_row = QHBoxLayout()
-        exchange_row.setSpacing(8)
-        exchange_row.addWidget(self.exchange_status)
-        exchange_row.addWidget(self.exchange_rate_label)
-        exchange_row.addStretch()
 
         project_metrics = self.main_window.get_active_project_metrics() if self.main_window else None
         summary_rows = [
@@ -2362,21 +2411,19 @@ class FinOpsView(QWidget):
         budget_panel = QFrame()
         budget_panel.setObjectName("detailsPanel")
         budget_layout = QVBoxLayout(budget_panel)
-        budget_layout.setContentsMargins(14, 10, 14, 10)
+        budget_layout.setContentsMargins(14, 6, 14, 6)
         budget_layout.addWidget(make_label(t("% Presupuesto Límite Utilizado"), "kpiTitle"))
         self.budget_bar = QProgressBar()
         self.budget_bar.setRange(0, 100)
-        budget_percent = 0
-        self.budget_bar.setValue(max(0, min(100, budget_percent)))
+        self.budget_bar.setValue(0)
         self.budget_bar.setTextVisible(True)
         self.budget_bar.setObjectName("standardProgressBar")
         self.budget_bar.setFixedHeight(12)
         budget_layout.addWidget(self.budget_bar)
 
-        layout.addLayout(cards)
+        layout.addLayout(cards, 1)
         layout.addWidget(budget_panel)
         layout.addWidget(self.project_summary_panel)
-        layout.addLayout(exchange_row)
         self.refresh_project_data()
         self._update_currency(self.currency_combo.currentText())
         self._refresh_exchange_rates()
@@ -2443,9 +2490,16 @@ class FinOpsView(QWidget):
             t("Proyecto activo: {name}").format(name=metrics["project_name"])
         )
         self.base_cost_actual_usd = metrics["cost"]
-        self.base_presupuesto_clp = 0.0
+        config = load_config()
+        user_budget = config.get("budget_usd")
+        if user_budget is None:
+            username = str(config.get("default_user", "")).strip().lower()
+            user_budget = next((user.get("budget_usd") for user in config.get("users", []) if str(user.get("username", "")).lower() == username), None)
+        self.base_presupuesto_clp = float(user_budget or 0.0)
         self.base_ahorro_clp = 0.0
-        self.budget_bar.setValue(0)
+        percentage = budget_percentage(float(metrics["cost"]), self.base_presupuesto_clp)
+        self.budget_bar.setValue(percentage or 0)
+        self.budget_bar.setFormat(t("Sin límite configurado") if percentage is None else f"{percentage}%")
         self.project_summary_panel.set_values([
             str(metrics["count"]),
             format_energy_value(metrics["kwh"]),
@@ -2605,12 +2659,7 @@ class CloudView(QWidget):
         self.region_combo.currentTextChanged.connect(self._sync_cards)
         self._update_regions(self.provider_combo.currentText())
 
-        items = [
-            t("GPU Instances: 6 activas"),
-            t("Storage: 82 TB en uso"),
-            t("Networking: 1.2 TB transferidos"),
-            t("Backups: Última copia hace 3 horas"),
-        ]
+        items = [t("Servicios cloud disponibles cuando exista una integración configurada.")]
         list_panel = ListPanel(t("Servicios activos"), items)
 
         layout.addLayout(cards)
@@ -3161,7 +3210,6 @@ class SettingsView(QWidget):
         from PySide6.QtWidgets import QCheckBox
         notif_cb = QCheckBox(t("Generar Avisos al OS"))
         notif_cb.setChecked(bool(load_config().get("notifications_os", True)))
-        notif_cb.setStyleSheet("color: white;")
         def save_notification_setting(state):
             try:
                 config_path = writable_path("config.json")
@@ -3178,6 +3226,27 @@ class SettingsView(QWidget):
 
         sys_row.addWidget(backup_btn)
         sys_row.addWidget(notif_cb)
+
+        theme_cb = QCheckBox(t("Modo claro"))
+        theme_cb.setObjectName("themeToggle")
+        theme_cb.setChecked(load_config().get("theme", "dark") == "light")
+
+        def save_theme_setting(state):
+            theme = "light" if state else "dark"
+            try:
+                config_path = writable_path("config.json")
+                config = load_config()
+                config["theme"] = theme
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Tema"), str(exc))
+                return
+            if self.main_window:
+                self.main_window.set_theme(theme)
+
+        theme_cb.stateChanged.connect(save_theme_setting)
+        sys_row.addWidget(theme_cb)
         sys_row.addStretch()
 
         system_layout.addLayout(sys_row)
@@ -3194,11 +3263,45 @@ class SettingsView(QWidget):
         env_btn_row.setSpacing(10)
         sync_env_btn = QPushButton(t("Sincronizar Factores Oficiales"))
         sync_env_btn.setObjectName("secondaryButton")
-        sync_env_btn.clicked.connect(lambda: QMessageBox.information(self, t("Sincronización"), t("Factores de emisión actualizados desde fuente meteorológica oficial.")))
+
+        def sync_environment_factors():
+            config = load_config()
+            source_url = str(config.get("carbon_factors_url", "")).strip()
+            if not source_url:
+                QMessageBox.warning(self, t("Sincronización"), t("Configure una URL de factores ambientales antes de sincronizar."))
+                return
+            fallback_path = writable_path("carbon_factors.json")
+            try:
+                data = fetch_json_with_fallback(source_url, fallback_path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, t("Sincronización"), t("No se pudieron actualizar los factores: {error}").format(error=exc))
+                return
+            if not isinstance(data, (dict, list)):
+                QMessageBox.critical(self, t("Sincronización"), t("La fuente ambiental devolvió un formato inválido."))
+                return
+            QMessageBox.information(self, t("Sincronización"), t("Factores ambientales sincronizados y guardados localmente."))
+
+        sync_env_btn.clicked.connect(sync_environment_factors)
 
         revert_env_btn = QPushButton(t("Restablecer a fecha pasada"))
         revert_env_btn.setObjectName("secondaryButton")
-        revert_env_btn.clicked.connect(lambda: QMessageBox.information(self, t("Reversión"), t("Diccionario ambiental restablecido a datos del año pasado.")))
+
+        def restore_environment_factors():
+            fallback_path = writable_path("carbon_factors.json")
+            if not os.path.isfile(fallback_path):
+                QMessageBox.warning(self, t("Reversión"), t("No existe un respaldo ambiental local para restaurar."))
+                return
+            try:
+                with open(fallback_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if not isinstance(data, (dict, list)):
+                    raise ValueError(t("El respaldo ambiental no tiene un formato válido."))
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                QMessageBox.critical(self, t("Reversión"), t("No se pudo restaurar el respaldo: {error}").format(error=exc))
+                return
+            QMessageBox.information(self, t("Reversión"), t("Respaldo ambiental local restaurado correctamente."))
+
+        revert_env_btn.clicked.connect(restore_environment_factors)
 
         ping_hw_btn = QPushButton(t("Probar Enlace Sensor On-Premise"))
         ping_hw_btn.setObjectName("secondaryButton")
@@ -4756,8 +4859,32 @@ class HardwareCatalogView(QWidget):
         self.selection_summary = make_label(self._format_selection_summary(), "infoText")
         self.selection_summary.setObjectName("hardwareSelectionSummary")
 
+        self.breakdown_checks = {}
+        self.breakdown_bars = {}
+        breakdown_panel = QFrame()
+        breakdown_panel.setObjectName("detailsPanel")
+        breakdown_layout = QVBoxLayout(breakdown_panel)
+        breakdown_layout.setContentsMargins(14, 10, 14, 10)
+        breakdown_layout.addWidget(make_label(t("Desglose de componentes"), "kpiTitle"))
+        for component_type in self.COMPONENT_TYPES:
+            row_layout = QHBoxLayout()
+            check = QCheckBox(t(component_type))
+            check.setChecked(True)
+            check.stateChanged.connect(self._refresh_breakdown)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setFormat("0%")
+            bar.setTextVisible(True)
+            bar.setFixedHeight(14)
+            self.breakdown_checks[component_type] = check
+            self.breakdown_bars[component_type] = bar
+            row_layout.addWidget(check)
+            row_layout.addWidget(bar, 1)
+            breakdown_layout.addLayout(row_layout)
+
         panel_layout.addLayout(search_row)
         panel_layout.addWidget(self.selection_summary)
+        panel_layout.addWidget(breakdown_panel)
         panel_layout.addWidget(self.hardware_tabs)
 
         layout.addWidget(title)
@@ -4771,6 +4898,7 @@ class HardwareCatalogView(QWidget):
         self.search_input.textChanged.connect(self._schedule_hardware_filter)
         self.filter_combo.currentTextChanged.connect(self._schedule_hardware_filter)
         self._apply_hardware_filters()
+        self._refresh_breakdown()
 
     def _build_component_tab(self, component_type):
         extra_headers, _ = self.column_specs[component_type]
@@ -4922,6 +5050,21 @@ class HardwareCatalogView(QWidget):
             parts.append(f"{labels[component_type]}: {name}")
         return t("Seleccionado: {summary}").format(summary="   |   ".join(parts))
 
+    def _refresh_breakdown(self):
+        values = {}
+        for component_type, row in self.selected_by_type.items():
+            values[component_type] = parse_number(row.get("TDP_Max_Watts", "")) if row else 0.0
+        visible = {
+            component_type: value
+            for component_type, value in values.items()
+            if self.breakdown_checks.get(component_type) and self.breakdown_checks[component_type].isChecked()
+        }
+        percentages = component_percentages(visible)
+        for component_type, bar in self.breakdown_bars.items():
+            value = percentages.get(component_type, 0.0) if component_type in visible else 0.0
+            bar.setValue(round(value))
+            bar.setFormat(f"{value:.1f}%")
+
     def _aggregate_selection(self):
         parts = []
         total_tdp = 0.0
@@ -4947,6 +5090,7 @@ class HardwareCatalogView(QWidget):
             component_type = "GPU"
         self.selected_by_type[component_type] = row
         self.selection_summary.setText(self._format_selection_summary())
+        self._refresh_breakdown()
 
         name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
         tdp_value = parse_number(row.get("TDP_Max_Watts", ""))
@@ -5116,6 +5260,7 @@ class Sidebar(QFrame):
         self.on_logout = on_logout
         self.is_collapsed = False
         self.nav_buttons = []
+        self.nav_icons = []
 
         self.anim_group = QParallelAnimationGroup()
         self.anim_min = QPropertyAnimation(self, b"minimumWidth")
@@ -5135,7 +5280,8 @@ class Sidebar(QFrame):
 
         self.toggle_button = QPushButton()
         self.toggle_button.setObjectName("hamburgerButton")
-        self.toggle_button.setIcon(QIcon(make_hamburger_icon(18)))
+        self.hamburger_icon = make_hamburger_icon(18)
+        self.toggle_button.setIcon(QIcon(self.hamburger_icon))
         self.toggle_button.setIconSize(QSize(18, 18))
         self.toggle_button.setFixedSize(32, 32)
         self.toggle_button.setCursor(Qt.PointingHandCursor)
@@ -5172,8 +5318,20 @@ class Sidebar(QFrame):
         self.nav_layout.addWidget(button)
         label_key = i18n.key_for(text)
         self.nav_buttons.append((button, label_key))
+        self.nav_icons.append((button, icon_pixmap))
         self._apply_nav_button_state(button, label_key)
         return button
+
+    def set_theme(self, theme):
+        icon_color = "#405040" if theme == "light" else None
+        self.toggle_button.setIcon(
+            QIcon(tint_pixmap(self.hamburger_icon, icon_color)) if icon_color else QIcon(self.hamburger_icon)
+        )
+        for button, pixmap in self.nav_icons:
+            if icon_color and not is_green_pixmap(pixmap):
+                button.setIcon(QIcon(tint_pixmap(pixmap, icon_color)))
+            else:
+                button.setIcon(QIcon(pixmap))
 
     def _build_user_card(self):
         card = QFrame()
@@ -5444,6 +5602,7 @@ class DashboardWindow(QMainWindow):
         self.current_score = None
         self.current_green_score = None
         self.current_semaphore_level = None
+        self.current_evaluation = None
         self.current_lang = i18n.load_saved_language()
 
         self.home_view = HomeView(main_window=self)
@@ -5502,6 +5661,32 @@ class DashboardWindow(QMainWindow):
         self.projects_view.request_refresh()
         self.environmental_view.refresh_project_data()
         self.finops_view.refresh_project_data()
+
+    def set_theme(self, theme):
+        theme = "light" if theme == "light" else "dark"
+        content = self.centralWidget()
+        effect = QGraphicsOpacityEffect(content)
+        content.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(90)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.72)
+
+        def apply_theme():
+            apply_stylesheet(QApplication.instance(), theme)
+            self.sidebar.set_theme(theme)
+            restore = QPropertyAnimation(effect, b"opacity", self)
+            restore.setDuration(90)
+            restore.setStartValue(0.72)
+            restore.setEndValue(1.0)
+            restore.finished.connect(lambda: content.setGraphicsEffect(None))
+            self._theme_animation = QSequentialAnimationGroup(self)
+            self._theme_animation.addAnimation(restore)
+            self._theme_animation.start()
+
+        animation.finished.connect(apply_theme)
+        self._theme_animation = animation
+        animation.start()
 
     def get_active_project_metrics(self):
         project_id = load_config().get("current_project_id")
@@ -5703,12 +5888,14 @@ class DashboardWindow(QMainWindow):
             self.current_score = None
             self.current_green_score = None
             self.current_semaphore_level = None
+            self.current_evaluation = None
             return
         if intensity is None or tdp is None:
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
             self.current_green_score = None
             self.current_semaphore_level = None
+            self.current_evaluation = None
             return
 
         try:
@@ -5729,16 +5916,25 @@ class DashboardWindow(QMainWindow):
             self.current_score = None
             self.current_green_score = None
             self.current_semaphore_level = None
+            self.current_evaluation = None
             return
         self.current_score = score
         self.current_green_score = green_score_value
         self.current_semaphore_level = level
+        self.current_evaluation = {
+            "cost": 0.0,
+            "carbon": score,
+            "kwh": calculate_energy(tdp, 1.0, 1.0),
+            "water": 0.0,
+            "duration_ms": 3_600_000,
+            "semaphore": level,
+        }
         status_level = {"Verde": "bajo", "Amarillo": "moderado", "Rojo": "alto"}[level]
         self.home_view.set_semaforo_level(status_level, score, green_score_value)
 
 
-def apply_stylesheet(app):
-    app.setStyleSheet(
+def apply_stylesheet(app, theme="dark"):
+    stylesheet = (
         "QWidget {"
         "  background-color: #0b0b0b;"
         "  color: #f4f4f4;"
@@ -6350,6 +6546,32 @@ def apply_stylesheet(app):
         "  color: #ffffff;"
         "}"
     )
+    if theme == "light":
+        stylesheet += (
+            "QWidget { background-color: #f4f6f2; color: #182019; }"
+            "QFrame#contentFrame { background-color: #f4f6f2; }"
+            "QFrame#sidebar { background-color: #e7ece4; border-right: 1px solid #cbd4c7; }"
+            "QLineEdit, QLineEdit#searchInput, QComboBox#filterCombo, QComboBox#cloudSelect { background-color: #ffffff; color: #182019; border-color: #9eaa9a; }"
+            "QComboBox QAbstractItemView { background-color: #ffffff; color: #182019; border: 1px solid #9eaa9a; }"
+            "QPushButton#navButton { color: #263326; }"
+            "QPushButton#navButton:hover, QPushButton#navButton:checked { background-color: #d2e2c9; color: #182019; }"
+            "QPushButton#secondaryButton, QPushButton#primaryButton, QPushButton#assignButton { color: #263326; border-color: #7d8c79; background-color: #ffffff; }"
+            "QPushButton#secondaryButton:hover, QPushButton#primaryButton:hover, QPushButton#assignButton:hover { background-color: #e4eee0; border-color: #52634f; color: #182019; }"
+            "QFrame#performanceCard, QFrame#detailsPanel, QFrame#hardwarePanel, QFrame#statusCard, QFrame#infoBar, QFrame#infoCard, QFrame#listPanel, QFrame#cloudPanel { background-color: #ffffff; border-color: #9eaa9a; }"
+            "QFrame#metricCard, QFrame#summaryPanel, QFrame#summaryCard, QFrame#kpiCard, QFrame#activityPanel, QFrame#catalogPanel { background-color: #ffffff; border-color: #9eaa9a; }"
+            "QFrame#detailModal, QFrame#statusNote, QFrame#projectListFrame, QFrame#projectListPanel { background-color: #ffffff; border-color: #9eaa9a; }"
+            "QLabel#infoText, QLabel#detailLabel, QLabel#activityItem, QLabel#summaryLabel, QLabel#metricTitle, QLabel#cloudLabel, QLabel#statusNoteText, QLabel#listItem { color: #405040; }"
+            "QLabel#infoCardTitle, QLabel#performanceTitle, QLabel#kpiTitle, QLabel#catalogHeaderLabel, QLabel#catalogCell { color: #405040; }"
+            "QLabel#detailsTitle, QLabel#detailValue, QLabel#statusTitle, QLabel#listTitle, QLabel#modalTitle, QLabel#modalBody, QLabel#modalBullet, QLabel#infoCardValue, QLabel#performanceValue, QLabel#kpiValue, QLabel#pageTitle, QLabel#titleLabel, QLabel#brandTitle { color: #182019; }"
+            "QLabel#metricPercent, QLabel#summaryValue { color: #182019; }"
+            "QWidget:disabled, QAbstractButton:disabled { color: #718071; }"
+            "QCheckBox { color: #263326; }"
+            "QFrame#separator, QFrame#contentLine, QFrame#detailLine, QFrame#listLine, QFrame#statusDivider { background-color: #cbd4c7; }"
+            "QCheckBox#themeToggle { color: #263326; }"
+            "QCheckBox#themeToggle::indicator { width: 36px; height: 20px; border-radius: 10px; background-color: #aab5a7; border: 1px solid #7d8c79; }"
+            "QCheckBox#themeToggle::indicator:checked { background-color: #4eb541; border-color: #398d36; }"
+        )
+    app.setStyleSheet(stylesheet)
 
 
 def _bootstrap_mlflow_autostart():
@@ -6411,7 +6633,7 @@ def main():
         QMessageBox.information(None, t("Semáforo IA"), t("Semáforo IA ya está abierto."))
         return
     app.setFont(QFont("Segoe UI", 10))
-    apply_stylesheet(app)
+    apply_stylesheet(app, load_config().get("theme", "dark"))
 
     i18n.load_saved_language()
     _bootstrap_mlflow_autostart()

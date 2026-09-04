@@ -1,8 +1,10 @@
 # Auditoria funcional y tecnica de Semaforo IA
 
-**Fecha:** 2026-08-24  
+**Fecha de revision:** 2026-09-04
 **Alcance:** RF01-RF70 y sus casos de uso y excepciones.  
 **Criterio:** Un requisito solo se considera listo cuando estan implementados sus casos de uso, persistencia, validaciones y excepciones. Un campo SQL o un boton que solo muestra un mensaje no cuenta como implementacion.
+
+> **Lectura vigente:** esta revision separa componentes implementados de bloques RF completos. Un bloque puede seguir en `[PARCIAL]` aunque varias de sus piezas ya esten listas. La matriz y las prioridades de esta seccion prevalecen sobre los estados heredados de la evaluacion detallada.
 
 ## Actualizacion posterior a correcciones
 
@@ -31,9 +33,9 @@ Se implementaron y verificaron con pruebas automatizadas las siguientes piezas f
 - Panel administrativo para consultar intentos y bloqueos, con desbloqueo restringido al rol Administrador.
 - Login distingue `Usuario bloqueado` de contraseña incorrecta y traduce el mensaje a `User locked`.
 - API Key financiera cifrada localmente con `Fernet` antes de persistirla en `config.json`; nunca se guarda en texto plano y la llave de cifrado se excluye del repositorio.
-- Dieciocho pruebas automatizadas en `test_functional_core.py`, todas exitosas.
+- 21 pruebas automatizadas en `test_functional_core.py` y 2 pruebas Qt en `test_ui.py`, todas exitosas en la ultima validacion.
 
-Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas, SNMP/Modbus real, XLSX, Markdown renderizado, aplicacion persistente del hardware recomendado, capacity planning, notificaciones OS, cuotas y disyuntores. El estado se mantiene estricto hasta completar tambien esas excepciones.
+Estas correcciones no permiten marcar un bloque completo como `[LISTO]` porque los bloques restantes aun incluyen funcionalidades no implementadas, como APIs externas de billing y factores ambientales, SNMP/Modbus real, aplicacion persistente del hardware recomendado, capacity planning, cuotas y disyuntores. XLSX, notificaciones OS, cifrado local de API keys, Markdown seguro en la UI, desglose CPU/GPU/RAM, alertas con snooze y presupuesto FinOps ya tienen implementacion y pruebas basicas.
 
 ### Estado verificado de componentes
 
@@ -68,7 +70,39 @@ Estos componentes se consideran `[LISTO]` porque tienen implementacion en el cod
 - `[LISTO]` Exportación XLSX integrada en `export_handler` y disponible para informes Inicio, Ambiental y FinOps, con hojas de KPIs, detalles, logs y resumen.
 - `[LISTO]` Build Windows verificado con PyInstaller: `dist/SemaforoIA/SemaforoIA.exe` se genera con `_internal`, recursos de datos, imágenes, locales y export handler incluidos.
 
-Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: calculos visuales demostrativos en algunas vistas, sincronizacion real de factores ambientales y tarifas cloud, persistencia cifrada de API keys, graficos CPU/RAM/GPU, cuotas y disyuntores, SNMP/Modbus, Markdown renderizado y capacity planning.
+Componentes que siguen `[PARCIAL]` o `[PENDIENTE]`: sincronizacion real de factores ambientales y tarifas cloud, cuotas y disyuntores, SNMP/Modbus, capacity planning, restauracion de backups, graficas historicas y cierre integral de errores de exportacion.
+
+### Estado vigente por bloque RF
+
+La siguiente matriz evita confundir una funcion del nucleo con el cierre de todos los casos de uso del bloque:
+
+| Bloque | Estado | Evidencia o brecha principal |
+|---|---|---|
+| RF01-RF02 | `[PARCIAL]` | Motor y exportacion existen; falta cerrar todos los flujos de datos reales, errores y persistencia exigidos por el bloque. |
+| RF03-RF12 | `[PARCIAL]` | Semaforo, metricas, comparativa, historial y rightsizing tienen piezas listas; faltan alertas/modal, graficos completos, cancelacion real y acciones contextuales en todas las vistas. |
+| RF13-RF15 | `[PARCIAL]` | Importacion/exportacion, CRUD local, borrados y backup estan implementados; falta completar restauracion, restricciones y pruebas de errores de disco. |
+| RF16-RF18 | `[PARCIAL]` | Sensor simulado, estimacion cloud y saneamiento estan listos; falta sensor real y renderizado Markdown seguro en la UI. |
+| RF19-RF23 | `[PARCIAL]` | Umbrales, calculos y pronostico tienen cobertura; faltan regiones cloud completas, cuotas aplicadas y disyuntor con pase administrativo. |
+| RF24-RF27 | `[PARCIAL]` | Comparativa y catalogo con sugerencia funcionan; falta grafico dinamico por componentes y CRUD completo de hardware custom/templates. |
+| RF28-RF29 | `[PARCIAL]` | PDF/XLSX/JSON, historial y exportacion alineada estan disponibles; falta grafica evolutiva, modo headless y pruebas de archivos bloqueados. |
+| RF30-RF32 | `[PARCIAL]` | Rightsizing, forecast y matriz de shifting existen en el nucleo; falta integrar todas las acciones, snooze y visualizaciones en la UI. |
+| RF33 | `[PARCIAL]` | CRUD de proyectos y reasignacion transaccional estan implementados; falta cerrar validaciones y flujos macro. |
+| RF34-RF36 | `[PARCIAL]` | API key cifrada, divisas y fallback local estan listos; faltan billing cloud real, factores oficiales y SNMP/Modbus. |
+| RF37 | `[LISTO]` para notificacion opcional | `plyer`, preferencia persistida y respeto en exportaciones estan implementados; falta prueba en Windows con globos bloqueados. |
+| RF38-RF44 | `[PENDIENTE]` | Quotas, disyuntores, capacity planning, recambio y override administrativo no estan cerrados como flujo integral. |
+| RF45-RF46 | `[PARCIAL]` | Validaciones y Green Score estan listos; falta flujo guiado de recuperacion, N/A y evidencia de errores operativos. |
+| RF47-RF54 | `[PARCIAL]` | PUE, energia verde, carbono, diesel, agua, WUE, WSI e inmersion estan en el motor; faltan matrices completas, flujometro, ROI y controles de compatibilidad. |
+| RF55-RF56 | `[LISTO]` en autenticacion local | PBKDF2, politica, bloqueo y desbloqueo por admin estan implementados; falta feedback UI completo y pruebas de corrupcion de la base. |
+| RF57-RF65 | `[PARCIAL]` | Proyectos archivados, reasignacion, barras base y persistencia existen; faltan consolidado ESG, certificados, cuotas macro, medallas y templates persistentes. |
+| RF66-RF70 | `[PARCIAL]` | Exportaciones, historial, textos de UI y anti-colision tienen piezas listas; falta modo consola/headless, desglose completo y cierre de todas las excepciones visuales. |
+
+### Validacion de esta revision
+
+- `test_functional_core.py`: 22 pruebas exitosas en el entorno virtual `.venv`, despues de instalar la dependencia ya declarada `cryptography`.
+- `test_ui.py`: 2 pruebas Qt exitosas en modo `offscreen`, cubriendo alerta/snooze y recalculo del desglose CPU/GPU/RAM. Total verificado en esta revision: 23 pruebas.
+- Qt muestra una advertencia no bloqueante sobre el directorio de fuentes ausente en el entorno virtual. El arranque, la compilacion y las pruebas funcionan; el build Windows debe verificar que las fuentes requeridas se incluyan en la distribucion.
+- El repositorio tiene cambios locales en `main.py`, `config.json`, `export_handler.py` y `semaforo.sqlite3`. Esta auditoria no los revierte; la prueba final debe ejecutarse sobre ese estado exacto.
+- La cifra anterior de "dieciocho pruebas" queda reemplazada por 24 pruebas verificadas en esta revision.
 
 ## 1. Resumen ejecutivo
 

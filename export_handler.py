@@ -15,13 +15,11 @@ try:
     import eco
     import economia
     import inicio
-    import proyecto
     _EXPORT_IMPORT_ERROR = None
 except Exception as exc:
     eco = None
     economia = None
     inicio = None
-    proyecto = None
     _EXPORT_IMPORT_ERROR = exc
 
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
@@ -226,14 +224,28 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 def _apply_report_data(report_type, data, file_path, export_format, lang):
     """Actualiza el modulo de reporte y genera el PDF/JSON. Pensada para correr en un hilo aparte."""
     if report_type == "proyecto":
-        if export_format == "xlsx":
-            proyecto.create_xlsx_report(file_path, data)
-            return
-        if export_format in {"pdf", "both"}:
-            proyecto.create_pdf_report(file_path, data, lang=lang)
-        if export_format in {"json", "both"}:
-            proyecto.export_json_report(file_path, data)
-        return
+        scope = data.get("scope", {})
+        totals = data.get("totals", {})
+        project_name = scope.get("project_name", "Todos los proyectos")
+        data = {
+            "exported_by": data.get("exported_by", ""),
+            "chart_values": [max(float(totals.get("carbon", 0)), 0.001), max(float(totals.get("kwh", 0)), 0.001)],
+            "chart_labels": ["Carbono del proyecto", "Energia del proyecto"],
+            "kpis": [
+                [15, 60, "Costo total", f"{float(totals.get('cost', 0)):.2f}", "USD", "cyan_500"],
+                [75, 60, "Carbono total", f"{float(totals.get('carbon', 0)):.2f}", "gCO2eq", "emerald_500"],
+                [135, 60, "Energia total", f"{float(totals.get('kwh', 0)):.2f}", "kWh", "emerald_500"],
+                [195, 60, "Ejecuciones", str(totals.get("execution_count", 0)), "eventos", "cyan_500"],
+            ],
+            "details": [
+                ["Proyecto activo", project_name, "emerald_600"],
+                ["Ejecuciones registradas", str(totals.get("execution_count", 0)), "gray_800"],
+                ["Agua total", f"{float(totals.get('water', 0)):.2f} L", "gray_800"],
+            ],
+            "logs": [[f"Proyecto exportado: {project_name}", "gray_500"]],
+            "progress": 0,
+        }
+        report_type = "eco"
 
     if export_format == "xlsx":
         _create_xlsx_report(report_type, data, file_path)

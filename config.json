@@ -4,6 +4,7 @@
   "server_port": 6767,
   "language": "es",
   "notifications_os": true,
+  "theme": "dark",
   "users": [
     {
       "username": "nacha",

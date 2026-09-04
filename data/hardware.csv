@@ -25,8 +25,11 @@ HW_A003,AMD,RX 7900 XTX,Consumidor,RDNA 3 (2022),24,960,355,122.8 (FP16),~0.65,~
 HW_A004,AMD,RX 6800 XT,Consumidor,RDNA 2 (2020),16,512,300,41.5 (FP16),~0.35,~75 kg,GPU,,,
 HW_A005,AMD,RX 5700 XT,Consumidor,RDNA 1 (2019),8,448,225,19.5 (FP16),~0.18,~65 kg,GPU,,,
 HW_A006,AMD,RX 580 (8GB),Consumidor,Polaris (2017),8,256,185,6.2 (FP32),~0.05,~60 kg,GPU,,,
-HW_C001,Generico,CPU de prueba (reemplazar),Prueba,N/D (2026),,,65,,,~40 kg,CPU,8/16,3600-5000,
-HW_R001,Generico,RAM de prueba (reemplazar),Prueba,N/D (2026),,,5,,,~5 kg,RAM,,6000,32
+HW_R002,Kingston,Fury Beast DDR4-3200,Consumidor,DDR4 (2020),,,,,,~6 kg,RAM,,3200,16
+HW_R003,Kingston,Fury Beast DDR5-5200,Consumidor,DDR5 (2021),,,,,,~7 kg,RAM,,5200,32
+HW_R004,Corsair,Vengeance DDR5-6000,Consumidor,DDR5 (2021),,,,,,~7 kg,RAM,,6000,32
+HW_R005,G.Skill,Trident Z5 DDR5-6400,Consumidor,DDR5 (2021),,,,,,~8 kg,RAM,,6400,64
+HW_R006,Crucial,Pro DDR5-5600,Consumidor,DDR5 (2021),,,,,,~8 kg,RAM,,5600,128
 HW_IC001,Intel,Core i5-2500K,Consumidor,Sandy Bridge (2011),,,95,,,~35 kg,CPU,4 / 4,3300-3700,
 HW_IC002,Intel,Core i7-2600K,Consumidor,Sandy Bridge (2011),,,95,,,~35 kg,CPU,4 / 8,3400-3800,
 HW_IC003,Intel,Core i3-2120,Consumidor,Sandy Bridge (2011),,,65,,,~28 kg,CPU,2 / 4,3300,

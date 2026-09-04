@@ -289,6 +289,69 @@ def sanitize_markdown(markdown: str, max_chars: int = 5000) -> str:
     return escape(markdown, quote=False)
 
 
+def render_markdown(markdown: str, max_chars: int = 5000) -> str:
+    """Render a small safe Markdown subset suitable for a Qt rich-text widget."""
+    source = sanitize_markdown(markdown, max_chars=max_chars)
+    rendered = []
+    in_list = False
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if in_list:
+                rendered.append("</ul>")
+                in_list = False
+            continue
+        heading = re.match(r"^(#{1,3})\s+(.+)$", line)
+        bullet = re.match(r"^(?:[-*])\s+(.+)$", line)
+        if bullet:
+            if not in_list:
+                rendered.append("<ul>")
+                in_list = True
+            rendered.append(f"<li>{_render_inline_markdown(bullet.group(1))}</li>")
+        else:
+            if in_list:
+                rendered.append("</ul>")
+                in_list = False
+            if heading:
+                level = len(heading.group(1))
+                rendered.append(f"<h{level}>{_render_inline_markdown(heading.group(2))}</h{level}>")
+            else:
+                rendered.append(f"<p>{_render_inline_markdown(line)}</p>")
+    if in_list:
+        rendered.append("</ul>")
+    return "".join(rendered)
+
+
+def _render_inline_markdown(value: str) -> str:
+    value = re.sub(r"\[([^]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2">\1</a>', value)
+    value = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", value)
+    value = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", value)
+    value = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", value)
+    return value
+
+
+def component_percentages(components: dict[str, float]) -> dict[str, float]:
+    """Normalize positive CPU/GPU/RAM values to percentages that sum to 100."""
+    allowed = ("CPU", "GPU", "RAM")
+    values = {name: max(0.0, float(components.get(name, 0.0))) for name in allowed}
+    total = sum(values.values())
+    if total <= 0:
+        return {name: 0.0 for name in allowed}
+    percentages = {name: round(value / total * 100, 2) for name, value in values.items()}
+    largest = max(allowed, key=lambda name: percentages[name])
+    percentages[largest] = round(percentages[largest] + 100 - sum(percentages.values()), 2)
+    return percentages
+
+
+def budget_percentage(spent: float, limit: float) -> int | None:
+    """Return a capped budget percentage, or None when no finite limit exists."""
+    if spent < 0 or limit < 0:
+        raise ValidationError("El gasto y el limite no pueden ser negativos.")
+    if limit == 0:
+        return None
+    return max(0, min(100, round(spent / limit * 100)))
+
+
 class ApiKeyError(ValidationError):
     """Raised when a financial/cloud billing API key is invalid or cannot be decrypted."""
 
