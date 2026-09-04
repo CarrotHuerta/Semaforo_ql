@@ -1,2 +1,11 @@
 PySide6
 psycopg2-binary
+matplotlib
+fpdf2
+requests
+openpyxl
+plyer
+cryptography
+mlflow
+pymodbus
+pysnmp

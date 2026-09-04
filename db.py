@@ -1,6 +1,8 @@
+import csv
+import os
+
 import psycopg2
 import psycopg2.extras
-import os
 
 DB_CONFIG = {
     "dbname": os.environ.get("DB_NAME", "greenops"),
@@ -10,22 +12,37 @@ DB_CONFIG = {
     "port": os.environ.get("DB_PORT", "5432")
 }
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _csv_fallback_rows(table_name):
+    csv_map = {
+        "hardware_csv": "hardware.csv",
+        "intensidad_carbono_csv": "intensidad_carbono.csv",
+        "modelos_ia_csv": "modelos_ia.csv",
+    }
+    path = os.path.join(_BASE_DIR, "data", csv_map.get(table_name, ""))
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            return list(reader)
+    except (OSError, csv.Error):
+        return []
+
+
 def get_connection():
     return psycopg2.connect(**DB_CONFIG)
+
 
 def load_db_rows(table_name):
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # The user's application logic previously relied entirely on CSVs.
-                # To minimize breakages for the presentation while genuinely
-                # adopting the SQL database schema provided, we will map the
-                # actual schema tables back to the exact format expected by the frontend.
-
                 cleaned_rows = []
 
                 if table_name == "hardware_csv":
-                    # Maps to componente_hardware
                     cursor.execute("SELECT * FROM componente_hardware")
                     rows = cursor.fetchall()
                     for r in rows:
@@ -73,6 +90,6 @@ def load_db_rows(table_name):
                         })
 
                 return cleaned_rows
-    except Exception as e:
-        print(f"Database error loading {table_name}: {e}")
-        return []
+    except Exception as exc:
+        print(f"Database error loading {table_name}: {exc}")
+        return _csv_fallback_rows(table_name)

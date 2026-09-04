@@ -2,20 +2,40 @@
   "default_user": "nacha",
   "server_ip": "127.0.0.1",
   "server_port": 6767,
+  "language": "es",
+  "notifications_os": true,
+  "theme": "light",
   "users": [
     {
       "username": "nacha",
       "display_name": "Nacha",
       "role": "Administrador",
       "profile_photo": "img/nacha.png",
-      "password": "654321"
+      "password_hash": "pbkdf2_sha256$260000$c37fe72f5445644395a019b205ee555d$c710c08721d36a2a6d6320a44d2c090ff6d45a9b099bceb05b863807efa7258d",
+      "security_questions": [
+        {
+          "question": "Nombre de su mascota",
+          "answer_hash": "pbkdf2_sha256$260000$3dc1d0a00915fd901ae969f80da3ab56$666a99eb6cde4e9ca34b4739274edf604aee0ce55a19107e50445e79168d0758"
+        },
+        {
+          "question": "Nombre y Apellido",
+          "answer_hash": "pbkdf2_sha256$260000$1fcc8297118b9ccbd8567b748e13569e$51d0dfe7d18137c7cd57cbc71e2c93d196b0f8a7af1f60e559ecd9119962fec7"
+        },
+        {
+          "question": "Jefe del equipo",
+          "answer_hash": "pbkdf2_sha256$260000$fbe1f62806d5e91b2463fab820e180fb$cb043f4ddf3a51cd73f8514a54c49f59e893f0f5315cbe2ea5ac90d58dc9035f"
+        }
+      ]
     },
     {
       "username": "maxine",
       "display_name": "Maxine",
       "role": "Usuario",
       "profile_photo": "img/maxine.jpg",
-      "password": "123456"
+      "password_hash": "pbkdf2_sha256$260000$ac95afa719aaacd1f7c819b68936f308$74ba6a1be746a1322728cc890b406a339a0bf6560e0b200a46d8e2f6b5296d93",
+      "security_questions": []
     }
-  ]
+  ],
+  "mlflow_tracking_uri": "http://127.0.0.1:5000",
+  "current_project_id": 1
 }

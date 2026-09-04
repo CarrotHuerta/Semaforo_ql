@@ -1,10 +1,16 @@
-# 🚦Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
+# Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
+
+## Acceso de demostracion
+
+Las credenciales se almacenan como hashes PBKDF2 en `config.json`. Para el usuario
+`nacha`, la clave vigente es `SemaforoIA1@`; para `maxine`, es `SemaforoIA2@`.
+La clave antigua `654321` ya no es valida porque no cumple la politica minima de seguridad.
 
 Este documento es la especificación técnica maestra (Technical Design Document) para el desarrollo del sistema Semáforo IA. Contiene el desglose a nivel de código, base de datos y algoritmos de los 70 Requerimientos Funcionales (RF) y 57 Casos de Uso estipulados en la documentación oficial.
 
 Si vas a desarrollar en Python, debes seguir esta estructura paso a paso.
 
-## 🗄️1. Estructura de la Base de Datos (Diccionario de Datos)
+## 1. Estructura de la Base de Datos (Diccionario de Datos)
 
 El sistema requiere una persistencia relacional local (SQLite es ideal) estricta. Estas son las tablas y campos obligatorios que debes programar:
 
@@ -51,7 +57,7 @@ Nota: Todas las fechas deben guardarse estrictamente en ISO 8601 `YYYY-MM-DD HH:
 * `kwh_total`, `co2_total`, `agua_total`, `costo_total`, `green_score`: Floats.
 * `estado_semaforo`: Enum ( `Verde`, `Amarillo`, `Rojo` ).
 
-## 🧮2. Algoritmos y Motor Matemático Detallado
+## 2. Algoritmos y Motor Matemático Detallado
 
 Debes programar estas funciones en tu backend Python exactamente con estas lógicas:
 
@@ -103,7 +109,7 @@ Debe ser un número del 1 al 100.
 3. `Green_Score`: `100 - Promedio(%, %)`
 4. Si `Score > 85 = "A+"`, `> 70 = "B"`, `< 50 = "C"` (RF46.2 Visual).
 
-## 🧠3. Algoritmos Heurísticos (Los "Consultores Inteligentes")
+## 3. Algoritmos Heurísticos (Los "Consultores Inteligentes")
 
 Estas son las funciones de Python más complejas que debes construir corriendo en segundo plano:
 
@@ -120,7 +126,7 @@ Estas son las funciones de Python más complejas que debes construir corriendo e
    * `Proyeccion_fin_de_mes = 33.3 * 30 = $1000`.
    * Si `1000 > 800`: Disparar alerta roja inmediata e inyectar log en el historial de eventos (RF62.2).
 
-## 🖥️4. Lógicas Estrictas de Interfaz de Usuario (UI/UX)
+## 4. Lógicas Estrictas de Interfaz de Usuario (UI/UX)
 
 Si usas Streamlit o React (o PySide6 en este caso), debes programar estos comportamientos exactos:
 
@@ -201,7 +207,27 @@ Aquí se enumeran las tareas pendientes (lo que falta hacer) en la base de códi
 
 ---
 
-## 🚀 Pipeline de Finalización del Código (Hoja de Ruta de Implementación)
+##  Pipeline de Finalización del Código (Hoja de Ruta de Implementación)
+
+## Crear ejecutable para Windows
+
+Para crear una versión que pueda ejecutarse en un PC sin Python instalado, abre
+`build_exe.bat` desde este directorio. El script crea o reutiliza `.venv`, instala
+las dependencias y PyInstaller, y genera una distribución en:
+
+`dist\SemaforoIA\SemaforoIA.exe`
+
+El script verifica que cree la subcarpeta `_internal` y que incluya la DLL de
+Python antes de terminar. Hay que copiar la carpeta completa `dist\SemaforoIA`, no solamente el `.exe`,
+porque contiene las librerías y recursos de la aplicación. `config.json` queda
+junto al ejecutable para que la configuración pueda modificarse en el PC destino.
+
+Si aparece `Failed to load Python DLL`, elimina la copia anterior y vuelve a
+copiar la carpeta completa manteniendo la subcarpeta `_internal`. El ejecutable
+debe iniciarse desde `dist\SemaforoIA\SemaforoIA.exe`; no debe separarse de esa
+carpeta. Si el error continúa, instala en el PC destino el paquete oficial
+`Microsoft Visual C++ Redistributable 2015-2022` de 64 bits y verifica que el
+antivirus no haya puesto archivos de `_internal` en cuarentena.
 
 Cómo se planea continuar haciendo el código y terminar el proyecto:
 
