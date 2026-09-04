@@ -703,18 +703,8 @@ class MetricCard(QFrame):
         progress.setRange(0, 100)
         progress.setValue(progress_value)
         progress.setTextVisible(False)
+        progress.setObjectName("standardProgressBar")
         progress.setFixedHeight(12)
-        progress.setStyleSheet(
-            "QProgressBar {"
-            "  border: none;"
-            "  background: #2a2a2a;"
-            "  border-radius: 6px;"
-            "}"
-            "QProgressBar::chunk {"
-            f"  background-color: {progress_color};"
-            "  border-radius: 6px;"
-            "}"
-        )
 
         main_layout.addWidget(title_label)
         main_layout.addLayout(top_row)
@@ -1773,18 +1763,8 @@ class EnvironmentalPerformanceView(QWidget):
         self.eco_bar.setRange(0, 100)
         self.eco_bar.setValue(0)
         self.eco_bar.setTextVisible(True)
-        self.eco_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #2a2a2a;
-                border-radius: 5px;
-                text-align: center;
-                background-color: #141414;
-            }
-            QProgressBar::chunk {
-                background-color: #4eb541;
-                border-radius: 5px;
-            }
-        """)
+        self.eco_bar.setObjectName("standardProgressBar")
+        self.eco_bar.setFixedHeight(12)
         eco_panel_layout.addWidget(self.eco_bar)
 
         eco_limit_layout.addWidget(eco_panel, 1)
@@ -2296,12 +2276,15 @@ class FinOpsView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
-        layout.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
         self.active_project_label = make_label(t("Proyecto activo: {name}").format(name=t("No seleccionado")), "infoText")
-        layout.addWidget(self.active_project_label)
-        layout.addWidget(make_separator("separator"))
+        title_row = QHBoxLayout()
+        title_row.setSpacing(16)
+        title_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
+        title_row.addWidget(self.active_project_label)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
@@ -2333,7 +2316,6 @@ class FinOpsView(QWidget):
         header_row.addWidget(self.export_finops_btn)
 
         layout.addLayout(header_row)
-        layout.addWidget(make_separator("separator"))
 
         cards = QHBoxLayout()
         cards.setSpacing(18)
@@ -2358,7 +2340,6 @@ class FinOpsView(QWidget):
         exchange_row.setSpacing(12)
         exchange_row.addWidget(self.exchange_status, 1)
         exchange_row.addWidget(self.exchange_rate_label, 2)
-        layout.addLayout(exchange_row)
 
         project_metrics = self.main_window.get_active_project_metrics() if self.main_window else None
         items = []
@@ -2384,11 +2365,14 @@ class FinOpsView(QWidget):
         budget_percent = 0
         self.budget_bar.setValue(max(0, min(100, budget_percent)))
         self.budget_bar.setTextVisible(True)
+        self.budget_bar.setObjectName("standardProgressBar")
+        self.budget_bar.setFixedHeight(12)
         budget_layout.addWidget(self.budget_bar)
 
         layout.addLayout(cards)
         layout.addWidget(budget_panel)
         layout.addWidget(self.project_summary_panel)
+        layout.addLayout(exchange_row)
         self.refresh_project_data()
         self._update_currency(self.currency_combo.currentText())
         self._refresh_exchange_rates()
@@ -6006,6 +5990,16 @@ def apply_stylesheet(app):
         "  background-color: #1b1b1b;"
         "  border: 1px solid #2c2c2c;"
         "  border-radius: 12px;"
+        "}"
+        "QProgressBar#standardProgressBar {"
+        "  border: none;"
+        "  background: #2a2a2a;"
+        "  border-radius: 6px;"
+        "  text-align: center;"
+        "}"
+        "QProgressBar#standardProgressBar::chunk {"
+        "  background: #4eb541;"
+        "  border-radius: 6px;"
         "}"
         "QScrollArea#catalogScroll {"
         "  background: transparent;"
