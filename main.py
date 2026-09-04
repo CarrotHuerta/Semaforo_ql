@@ -1191,9 +1191,9 @@ class OllamaChatWindow(QDialog):
         result = self.home_view._register_ollama_metrics(
             self.model, self.hardware, self.provider, self.region, self.tdp, self.intensity, metrics,
         )
-        status_text = t("Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {kwh:.6f} kWh").format(
+        status_text = t("Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {energy}").format(
             count=metrics.get("eval_count", 0), tps=metrics.get("tokens_per_second", 0),
-            ms=metrics.get("total_duration_ms", 0), kwh=result["kwh"],
+            ms=metrics.get("total_duration_ms", 0), energy=format_energy_value(result["kwh"]),
         )
         if result["registered"]:
             status_text += " · " + t("registrado en el proyecto activo")
@@ -2898,7 +2898,8 @@ class ProjectsView(QWidget):
                 overview = store.global_totals()
                 totals = overview["totals"]
                 history_items = [
-                    f"{row['name']} — {row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
+                    f"{row['name']} — {row['carbon']:.2f} gCO2eq — "
+                    f"{format_energy_value(row['kwh'])} — {row['cost']:.2f} USD"
                     for row in overview["by_project"]
                 ] or [t("No hay proyectos registrados.")]
                 title = t("Totales por proyecto")
@@ -2907,7 +2908,8 @@ class ProjectsView(QWidget):
                 history_rows = store.list_history(project_id=project_id)
                 history_items = [
                     f"{row['timestamp']} — {row['model_name']} — {row['semaphore']} — "
-                    f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
+                    f"{row['carbon']:.2f} gCO2eq — {format_energy_value(row['kwh'])} — "
+                    f"{row['cost']:.2f} USD"
                     for row in history_rows
                 ] or [t("No hay ejecuciones registradas para este proyecto.")]
                 title = t("Historial del proyecto")

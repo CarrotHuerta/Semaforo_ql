@@ -35,7 +35,7 @@
   "Escribe un mensaje...": {"es": "Escribe un mensaje...", "en": "Write a message..."},
   "Enviar": {"es": "Enviar", "en": "Send"},
   "Esperando respuesta del modelo...": {"es": "Esperando respuesta del modelo...", "en": "Waiting for the model response..."},
-  "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {kwh:.6f} kWh": {"es": "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {kwh:.6f} kWh", "en": "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {kwh:.6f} kWh"},
+  "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {energy}": {"es": "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {energy}", "en": "Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {energy}"},
   "registrado en el proyecto activo": {"es": "registrado en el proyecto activo", "en": "registered in the active project"},
   "no se pudo registrar: {error}": {"es": "no se pudo registrar: {error}", "en": "could not register: {error}"},
   "sin región/proveedor: no se estimó carbono": {"es": "sin región/proveedor: no se estimó carbono", "en": "no region/provider: carbon was not estimated"},
