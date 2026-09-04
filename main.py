@@ -2279,12 +2279,11 @@ class FinOpsView(QWidget):
         layout.setSpacing(8)
 
         self.active_project_label = make_label(t("Proyecto activo: {name}").format(name=t("No seleccionado")), "infoText")
-        title_row = QHBoxLayout()
-        title_row.setSpacing(16)
-        title_row.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
-        title_row.addWidget(self.active_project_label)
-        title_row.addStretch()
-        layout.addLayout(title_row)
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        title_block.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
+        title_block.addWidget(self.active_project_label)
+        layout.addLayout(title_block)
 
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
@@ -2318,7 +2317,7 @@ class FinOpsView(QWidget):
         layout.addLayout(header_row)
 
         cards = QHBoxLayout()
-        cards.setSpacing(18)
+        cards.setSpacing(12)
         self.finops_metrics, self.finops_services = load_finops_demo()
         self.card_actual = InfoCard(t("Costo actual"), "$0.00")
         self.card_presupuesto = InfoCard(t("Presupuesto mensual"), "$0.00")
@@ -2327,6 +2326,8 @@ class FinOpsView(QWidget):
         self.exchange_rates = {"CLP": 1.0}
         self.exchange_status = make_label(t("Cargando tasas de cambio..."), "infoText")
         self.exchange_rate_label = make_label("", "infoText")
+        self.exchange_status.setWordWrap(False)
+        self.exchange_rate_label.setWordWrap(False)
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
         self.base_cost_actual_usd = 0.0
@@ -2337,21 +2338,24 @@ class FinOpsView(QWidget):
         cards.addWidget(self.card_presupuesto, 1)
         cards.addWidget(self.card_ahorro, 1)
         exchange_row = QHBoxLayout()
-        exchange_row.setSpacing(12)
-        exchange_row.addWidget(self.exchange_status, 1)
-        exchange_row.addWidget(self.exchange_rate_label, 2)
+        exchange_row.setSpacing(8)
+        exchange_row.addWidget(self.exchange_status)
+        exchange_row.addWidget(self.exchange_rate_label)
+        exchange_row.addStretch()
 
         project_metrics = self.main_window.get_active_project_metrics() if self.main_window else None
-        items = []
+        summary_rows = [
+            (t("Ejecuciones registradas"), "0"),
+            (t("Energía acumulada"), "0 Wh"),
+            (t("Carbono acumulado"), "0.00 gCO2eq"),
+        ]
         if project_metrics:
-            items = [
-                f"{t('Ejecuciones registradas')}: {project_metrics['count']}",
-                f"{t('Energía acumulada')}: {format_energy_value(project_metrics['kwh'])}",
-                f"{t('Carbono acumulado')}: {project_metrics['carbon']:.4f} gCO2eq",
+            summary_rows = [
+                (t("Ejecuciones registradas"), str(project_metrics["count"])),
+                (t("Energía acumulada"), format_energy_value(project_metrics["kwh"])),
+                (t("Carbono acumulado"), f"{project_metrics['carbon']:.2f} gCO2eq"),
             ]
-        if not items:
-            items = [t("No hay proyecto activo para mostrar métricas.")]
-        self.project_summary_panel = ListPanel(t("Resumen del proyecto"), items)
+        self.project_summary_panel = DetailsPanel(t("Resumen del proyecto"), summary_rows)
 
         # Budget bar CU 62.1, 62.2
         from PySide6.QtWidgets import QProgressBar
@@ -2426,7 +2430,7 @@ class FinOpsView(QWidget):
         self.card_presupuesto.set_value(t("No definido") if not self.base_presupuesto_clp else f"{symbol} {presupuesto:,.2f}")
         self.card_ahorro.set_value(t("No calculado") if not self.base_ahorro_clp else f"{symbol} {ahorro:,.2f}")
         self.exchange_rate_label.setText(
-            t("1 CLP = {rate:.8f} {currency} | 1 {currency} = {inverse:.8f} CLP").format(
+            t("1 CLP = {rate:.4f} {currency} | 1 {currency} = {inverse:.4f} CLP").format(
                 rate=self.exchange_rates[currency_code], currency=currency_code, inverse=inverse
             )
         )
@@ -2442,10 +2446,10 @@ class FinOpsView(QWidget):
         self.base_presupuesto_clp = 0.0
         self.base_ahorro_clp = 0.0
         self.budget_bar.setValue(0)
-        self.project_summary_panel.set_items([
-            f"{t('Ejecuciones registradas')}: {metrics['count']}",
-            f"{t('Energía acumulada')}: {format_energy_value(metrics['kwh'])}",
-            f"{t('Carbono acumulado')}: {metrics['carbon']:.4f} gCO2eq",
+        self.project_summary_panel.set_values([
+            str(metrics["count"]),
+            format_energy_value(metrics["kwh"]),
+            f"{metrics['carbon']:.2f} gCO2eq",
         ])
         self._update_currency(self.currency_combo.currentText())
 
