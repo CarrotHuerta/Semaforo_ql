@@ -405,6 +405,13 @@ def make_separator(object_name="separator"):
     return line
 
 
+def format_energy_value(kwh):
+    """Use Wh for sub-kWh values so short executions remain readable."""
+    if abs(kwh) < 1:
+        return f"{kwh * 1000:.2f} Wh"
+    return f"{kwh:.2f} kWh"
+
+
 def make_line_icon(size, color, draw_fn):
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
@@ -2922,7 +2929,7 @@ class ProjectsView(QWidget):
 
         self.cost_card.set_value(f"{totals['cost']:.2f} USD")
         self.carbon_card.set_value(f"{totals['carbon']:.2f} gCO2eq")
-        self.kwh_card.set_value(f"{totals['kwh']:.2f} kWh")
+        self.kwh_card.set_value(format_energy_value(totals["kwh"]))
         self.water_card.set_value(f"{totals['water']:.2f} L")
 
         self.history_container.addWidget(
