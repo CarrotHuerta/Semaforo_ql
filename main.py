@@ -963,7 +963,7 @@ class InfoCard(QFrame):
 
 
 class ListPanel(QFrame):
-    def __init__(self, title, items, separator_spacing=0, parent=None):
+    def __init__(self, title, items, separator_spacing=0, show_title=True, parent=None):
         super().__init__(parent)
         self.setObjectName("listPanel")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -972,8 +972,9 @@ class ListPanel(QFrame):
         layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(10)
 
-        layout.addWidget(make_label(title, "listTitle"))
-        layout.addSpacing(4)
+        if show_title:
+            layout.addWidget(make_label(title, "listTitle"))
+            layout.addSpacing(4)
 
         for index, item in enumerate(items):
             item_label = make_label(item, "listItem")
@@ -2852,10 +2853,18 @@ class ProjectsView(QWidget):
 
     @staticmethod
     def _scrollable_list_panel(title, items, object_name):
-        panel = ListPanel(title, items, separator_spacing=6)
+        panel = ListPanel(title, items, separator_spacing=6, show_title=False)
         panel.setObjectName("projectListPanel")
         panel.ensurePolished()
         panel.setMinimumHeight(panel.sizeHint().height())
+
+        container = QFrame()
+        container.setObjectName("projectListFrame")
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(22, 20, 22, 20)
+        container_layout.setSpacing(4)
+        container_layout.addWidget(make_label(title, "listTitle"))
 
         scroll = QScrollArea()
         scroll.setObjectName(object_name)
@@ -2867,7 +2876,8 @@ class ProjectsView(QWidget):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll.setMinimumHeight(110)
         scroll.setWidget(panel)
-        return scroll
+        container_layout.addWidget(scroll)
+        return container
 
     def _refresh(self, include_mlflow=True):
         self._clear_history()
@@ -5885,10 +5895,14 @@ def apply_stylesheet(app):
         "QScrollArea#catalogScroll QWidget {"
         "  background: transparent;"
         "}"
-        "QScrollArea#projectHistoryListScroll, QScrollArea#mlflowRunsListScroll {"
+        "QFrame#projectListFrame {"
         "  background: #141414;"
         "  border: 1px solid #f2f2f2;"
         "  border-radius: 18px;"
+        "}"
+        "QScrollArea#projectHistoryListScroll, QScrollArea#mlflowRunsListScroll {"
+        "  background: transparent;"
+        "  border: none;"
         "}"
         "QScrollArea#projectHistoryListScroll QWidget, QScrollArea#mlflowRunsListScroll QWidget, QFrame#projectListPanel {"
         "  background: transparent;"
