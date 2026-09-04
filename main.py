@@ -756,6 +756,13 @@ class PerformanceCard(QFrame):
         value_label.setObjectName("performanceValue")
         value_label.setWordWrap(True)
         layout.addWidget(value_label)
+        self.value_label = value_label
+
+    def set_value(self, value):
+        self.value_label.setText(str(value))
+
+    def get_value(self):
+        return self.value_label.text()
 
 
 class ChevronComboBox(QComboBox):
