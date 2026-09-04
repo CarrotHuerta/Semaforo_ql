@@ -4,6 +4,7 @@ import http.client
 import threading
 import tempfile
 import unittest
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -11,6 +12,7 @@ import i18n
 
 from functional_core import (
     ApiKeyError,
+    CircuitBreakerError,
     Execution,
     LocalStore,
     ValidationError,
@@ -21,6 +23,7 @@ from functional_core import (
     calculate_execution,
     calculate_water,
     budget_percentage,
+    capacity_plan,
     component_percentages,
     compare_models,
     convert_clp,
@@ -33,6 +36,7 @@ from functional_core import (
     green_score,
     import_records,
     forecast_budget,
+    predict_limit_breach,
     mask_api_key,
     rightsizing,
     semaphore_level,
@@ -174,6 +178,38 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(forecast_budget(500, 15, 800, 30), 1000.0)
         with self.assertRaises(ValidationError):
             forecast_budget(500, 0, 800, 30)
+
+    def test_governance_circuit_override_and_capacity_plan(self):
+        now = datetime(2026, 9, 4, tzinfo=timezone.utc)
+        breach = predict_limit_breach(
+            [{"timestamp": "2026-09-01T00:00:00+00:00", "cost": 30}], 100, "cost", now,
+        )
+        self.assertEqual(breach.date(), date(2026, 9, 11))
+        plan = capacity_plan(4000, 300, [
+            {"name": "Viable", "tdp_watts": 150, "acquisition_cost": 200},
+            {"name": "Caro", "tdp_watts": 100, "acquisition_cost": 10000},
+        ], energy_price_per_kwh=0.25, pue=1.2, grid_factor=400)
+        self.assertEqual(plan["candidate"]["name"], "Viable")
+        self.assertLessEqual(plan["payback_years"], 3)
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "governance.sqlite3")
+            project = store.add_project("Gobernado")
+            model = store.add_model(project, "Modelo")
+            store.add_user("admin", "ClaveSegura1@", "Administrador")
+            store.set_project_quotas(project, 10, 100)
+            execution = Execution(model, "2026-09-04 12:00:00", 11, 50, 1, 1, 10, "Rojo")
+            with self.assertRaises(CircuitBreakerError):
+                store.add_execution(execution)
+            with self.assertRaises(PermissionError):
+                store.create_admin_override(project, "admin", "incorrecta", "Emergencia")
+            token = store.create_admin_override(project, "admin", "ClaveSegura1@", "Emergencia")
+            store.add_execution(execution, token)
+            with self.assertRaises(CircuitBreakerError):
+                store.add_execution(execution, token)
+            actions = [row["action"] for row in store.connection.execute("SELECT action FROM audit_log")]
+            self.assertEqual(actions, ["override_denied", "override_granted", "override_used"])
+            store.close()
 
     def test_cpu_tier_classification_and_rightsizing_filter(self):
         self.assertEqual(classify_cpu_tier("Atom C2750"), 0)

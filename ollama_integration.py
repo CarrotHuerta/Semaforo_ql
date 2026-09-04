@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +22,10 @@ _local_server_process = None
 
 class OllamaError(RuntimeError):
     """Raised for any real failure talking to Ollama (unreachable, model missing, etc.)."""
+
+
+class OllamaCancelledError(OllamaError):
+    pass
 
 
 def is_reachable(uri: str = DEFAULT_OLLAMA_URI, timeout: float = 1.5) -> bool:
@@ -96,7 +101,7 @@ def list_local_models(uri: str = DEFAULT_OLLAMA_URI) -> list:
     return [item.get("name", "") for item in data.get("models", [])]
 
 
-def ensure_model_available(uri: str, model: str, progress_callback=None) -> None:
+def ensure_model_available(uri: str, model: str, progress_callback=None, cancel_event: threading.Event | None = None) -> None:
     """Descarga el modelo via un pull real (streaming) si todavia no esta local."""
     existing = list_local_models(uri)
     if any(name == model or name.startswith(f"{model}:") for name in existing):
@@ -109,6 +114,9 @@ def ensure_model_available(uri: str, model: str, progress_callback=None) -> None
     try:
         with urllib.request.urlopen(request, timeout=900) as response:
             for raw_line in response:
+                if cancel_event and cancel_event.is_set():
+                    response.close()
+                    raise OllamaCancelledError("Descarga cancelada por el usuario.")
                 if not raw_line.strip():
                     continue
                 event = json.loads(raw_line.decode("utf-8"))
@@ -151,31 +159,54 @@ def run_inference(uri: str, model: str, prompt: str, timeout: float = 120) -> di
     }
 
 
-def run_chat(uri: str, model: str, messages: list, timeout: float = 120) -> dict:
+def run_chat(
+    uri: str,
+    model: str,
+    messages: list,
+    timeout: float = 120,
+    cancel_event: threading.Event | None = None,
+) -> dict:
     """Ejecuta un turno real de chat (POST /api/chat) y devuelve las metricas reales.
 
     `messages` es la lista completa de turnos previos + el nuevo mensaje del usuario,
     con el formato de Ollama: [{"role": "user"|"assistant"|"system", "content": str}, ...].
     """
-    payload = json.dumps({"model": model, "messages": messages, "stream": False}).encode("utf-8")
+    payload = json.dumps({"model": model, "messages": messages, "stream": True}).encode("utf-8")
     request = urllib.request.Request(
         f"{uri.rstrip('/')}/api/chat", data=payload, method="POST",
         headers={"Content-Type": "application/json"},
     )
+    content = []
+    data = {}
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            for raw_line in response:
+                if cancel_event and cancel_event.is_set():
+                    response.close()
+                    raise OllamaCancelledError("Ejecucion cancelada por el usuario.")
+                if not raw_line.strip():
+                    continue
+                event = json.loads(raw_line.decode("utf-8"))
+                if event.get("error"):
+                    raise OllamaError(event["error"])
+                content.append(event.get("message", {}).get("content", ""))
+                if event.get("done"):
+                    data = event
     except urllib.error.URLError as exc:
         raise OllamaError(f"No se pudo ejecutar el modelo '{model}': {exc}") from exc
-    if data.get("error"):
-        raise OllamaError(data["error"])
+    except json.JSONDecodeError as exc:
+        raise OllamaError("Ollama devolvio una respuesta corrupta.") from exc
+    if cancel_event and cancel_event.is_set():
+        raise OllamaCancelledError("Ejecucion cancelada por el usuario.")
+    if not data.get("done"):
+        raise OllamaError("Ollama cerro la conexion antes de completar la respuesta.")
 
     eval_count = data.get("eval_count", 0)
     eval_duration_ms = data.get("eval_duration", 0) / 1e6
     tokens_per_second = (eval_count / (eval_duration_ms / 1000)) if eval_duration_ms else 0.0
 
     return {
-        "response_text": data.get("message", {}).get("content", ""),
+        "response_text": "".join(content),
         "total_duration_ms": data.get("total_duration", 0) / 1e6,
         "load_duration_ms": data.get("load_duration", 0) / 1e6,
         "prompt_eval_count": data.get("prompt_eval_count", 0),

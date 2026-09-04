@@ -8,6 +8,24 @@
 
 ## Actualizacion posterior a correcciones
 
+### Implementacion integral del backlog priorizado (2026-09-04)
+
+Se cerraron en una iteracion transversal las superficies solicitadas de las fases 1 a 5:
+
+- Cuotas financieras y ecologicas por proyecto, disyuntor duro en el punto de persistencia, forecast de quiebre y override PBKDF2 administrativo de un solo uso con bitacora.
+- Capacity planning con TDP, costo de adquisicion, ahorro anual y payback; no recomienda recambio sin costo verificable ni retorno dentro del plazo configurado.
+- Clientes de billing AWS/Azure/GCP y factores oficiales con timeout, validacion, cache atomica y fallback; UI en QThread.
+- Telemetria SNMP, Modbus TCP y simulador con timeout/cancelacion, factor de perdidas acotado y prueba de enlace en QThread.
+- Restauracion SQLite con `integrity_check`, validacion de esquema, archivo intermedio y reemplazo atomico; accion de UI ejecutada en QThread.
+- CRUD SQLite de hardware y plantillas personalizadas con proteccion obligatoria de registros de fabrica.
+- Grafico temporal nativo para costo/carbono, fallback textual, Markdown seguro existente y cancelacion real del stream/proceso Ollama.
+- ROI de inmersion liquida conectado a UI.
+- Cierre validado de campanas, consolidado ESG y PDF orientado a ISO 14064-1 con escritura atomica; disponible en UI y CLI.
+- Entry point headless `cli.py` para calculo, persistencia, historial, exportacion, restauracion y ESG sin cargar PySide6.
+- Manejo controlado de corrupcion SQLite, permisos, archivos bloqueados, fallos HTTP y memoria insuficiente en las rutas agregadas.
+
+Validacion posterior: **31 pruebas exitosas** (`test_functional_core.py`, `test_advanced_features.py` y `test_ui.py` en modo Qt `offscreen`) y cero diagnosticos del editor en los archivos modificados. Persiste la advertencia no bloqueante del entorno virtual sobre el directorio de fuentes de PySide6.
+
 Se implementaron y verificaron con pruebas automatizadas las siguientes piezas funcionales:
 
 - Motor independiente para costo, divisas, energia, carbono, diesel, agua, WUE, WSI, inmersion, Green Score y semaforo.

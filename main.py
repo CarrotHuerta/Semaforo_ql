@@ -1,3 +1,4 @@
+from functional_core import hash_password, liquid_cooling_roi, predict_limit_breach, validate_password, ValidationError
 import csv
 import json
 import math
@@ -5,6 +6,7 @@ import multiprocessing
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 from html import escape as html_escape
@@ -58,12 +60,13 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
-from functional_core import bootstrap_store, budget_percentage, calculate_carbon, compare_models, component_percentages, export_records, green_score, import_records, render_markdown, rightsizing, semaphore_level, sensor_reading, validate_thresholds
+from functional_core import bootstrap_store, budget_percentage, calculate_carbon, capacity_plan, compare_models, component_percentages, export_records, green_score, import_records, render_markdown, rightsizing, semaphore_level, sensor_reading, validate_thresholds
 from functional_core import classify_cpu_tier
 from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_security_answer
-from functional_core import hash_password, validate_password, ValidationError
+from functional_core import CircuitBreakerError, hash_password, predict_limit_breach, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
 from functional_core import calculate_energy, Execution, utc_iso
+from external_services import BillingCloudClient, CarbonFactorClient, ModbusTelemetryClient, SimulatedTelemetryClient, SnmpTelemetryClient
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -263,6 +266,97 @@ class ExchangeRateThread(QThread):
             self.failed.emit(str(exc))
 
 
+class CarbonSyncThread(QThread):
+    completed = Signal(list, bool)
+    failed = Signal(str)
+
+    def __init__(self, url, cache_path, parent=None):
+        super().__init__(parent)
+        self.url, self.cache_path = url, cache_path
+
+    def run(self):
+        try:
+            data, from_cache = CarbonFactorClient(self.cache_path).sync(self.url)
+            self.completed.emit(data, from_cache)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class BillingSyncThread(QThread):
+    completed = Signal(list, bool)
+    failed = Signal(str)
+
+    def __init__(self, provider, url, cache_path, api_key=None, parent=None):
+        super().__init__(parent)
+        self.provider, self.url, self.cache_path, self.api_key = provider, url, cache_path, api_key
+
+    def run(self):
+        try:
+            data, from_cache = BillingCloudClient(self.cache_path).sync(self.provider, self.url, self.api_key)
+            self.completed.emit(data, from_cache)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class TelemetryThread(QThread):
+    completed = Signal(float)
+    failed = Signal(str)
+
+    def __init__(self, protocol, host, identifier, parent=None):
+        super().__init__(parent)
+        self.protocol, self.host, self.identifier = protocol, host, identifier
+
+    def run(self):
+        try:
+            if self.protocol == "SNMP":
+                client = SnmpTelemetryClient(self.host, self.identifier)
+            elif self.protocol == "Modbus TCP":
+                client = ModbusTelemetryClient(self.host, int(self.identifier))
+            else:
+                client = SimulatedTelemetryClient()
+            self.completed.emit(client.read_watts())
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class DatabaseRestoreThread(QThread):
+    completed = Signal()
+    failed = Signal(str)
+
+    def __init__(self, database_path, backup_path, parent=None):
+        super().__init__(parent)
+        self.database_path, self.backup_path = database_path, backup_path
+
+    def run(self):
+        store = None
+        try:
+            store = bootstrap_store(load_config(), self.database_path)
+            store.restore(self.backup_path)
+            self.completed.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+
+class EsgExportThread(QThread):
+    completed = Signal()
+    failed = Signal(str)
+
+    def __init__(self, data, destination, parent=None):
+        super().__init__(parent)
+        self.data, self.destination = data, destination
+
+    def run(self):
+        try:
+            from esg_export import export_esg_pdf
+            export_esg_pdf(self.data, self.destination)
+            self.completed.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 def parse_number(value):
     if value is None:
         return None
@@ -344,6 +438,30 @@ def save_current_project_id(project_id):
     config["current_project_id"] = project_id
     with open(config_path, "w", encoding="utf-8") as handle:
         json.dump(config, handle, ensure_ascii=True, indent=2)
+
+
+def request_admin_override(parent, store, project_id):
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(t("Override Administrativo"))
+    layout = QVBoxLayout(dialog)
+    form = QFormLayout()
+    username = QLineEdit()
+    password = QLineEdit()
+    password.setEchoMode(QLineEdit.Password)
+    reason = QLineEdit()
+    form.addRow(t("Usuario administrador"), username)
+    form.addRow(t("Contraseña"), password)
+    form.addRow(t("Motivo"), reason)
+    layout.addLayout(form)
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    if dialog.exec() != QDialog.Accepted:
+        return None
+    return store.create_admin_override(
+        project_id, username.text(), password.text(), reason.text(),
+    )
 
 
 def get_default_user(config):
@@ -1086,6 +1204,12 @@ class _OllamaChatWorker(QObject):
         self.uri = uri
         self.model = model
         self.messages = messages
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+        import ollama_integration
+        ollama_integration.stop_local_server()
 
     def run(self):
         import ollama_integration
@@ -1097,8 +1221,10 @@ class _OllamaChatWorker(QObject):
                         "No se encontro un servidor Ollama corriendo ni el binario 'ollama' "
                         "instalado. Instala Ollama desde https://ollama.com y vuelve a intentar."
                     )
-            ollama_integration.ensure_model_available(self.uri, self.model)
-            metrics = ollama_integration.run_chat(self.uri, self.model, self.messages)
+            ollama_integration.ensure_model_available(self.uri, self.model, cancel_event=self.cancel_event)
+            metrics = ollama_integration.run_chat(
+                self.uri, self.model, self.messages, cancel_event=self.cancel_event,
+            )
         except Exception as exc:
             self.finished.emit(False, str(exc), {})
         else:
@@ -1166,6 +1292,12 @@ class OllamaChatWindow(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        self.cancel_btn = QPushButton(t("Cancelar"))
+        self.cancel_btn.setObjectName("dangerButton")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel_active)
+        layout.addWidget(self.cancel_btn)
+
         input_row = QHBoxLayout()
         input_row.setSpacing(8)
 
@@ -1198,6 +1330,7 @@ class OllamaChatWindow(QDialog):
         self.input_line.clear()
         self.input_line.setEnabled(False)
         self.send_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
         self.status_label.setText(t("Esperando respuesta del modelo..."))
 
         self._thread = QThread(self)
@@ -1209,9 +1342,16 @@ class OllamaChatWindow(QDialog):
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.start()
 
+    def _cancel_active(self):
+        if self._worker is not None:
+            self.cancel_btn.setEnabled(False)
+            self.status_label.setText(t("Cancelando..."))
+            self._worker.cancel()
+
     def _handle_response(self, success, error_message, metrics):
         self.input_line.setEnabled(True)
         self.send_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
         self.input_line.setFocus()
 
         if not success:
@@ -1435,10 +1575,18 @@ class HomeView(QWidget):
             model_row = next((m for m in store.list_models(project_id) if m["name"] == model), None)
             model_id = model_row["id"] if model_row else store.add_model(project_id, model)
 
-            store.add_execution(Execution(
+            execution = Execution(
                 model_id=model_id, timestamp=utc_iso(), cost=cost, carbon=carbon,
                 kwh=kwh, water=water, duration_ms=int(duration_ms), semaphore=semaphore,
-            ))
+            )
+            try:
+                store.add_execution(execution)
+            except CircuitBreakerError as exc:
+                QMessageBox.warning(self, t("Disyuntor de cuota"), str(exc))
+                token = request_admin_override(self, store, project_id)
+                if not token:
+                    raise
+                store.add_execution(execution, token)
             return project_name
         finally:
             if store is not None:
@@ -2696,6 +2844,53 @@ class CloudView(QWidget):
             )
 
 
+class TimeSeriesChart(QWidget):
+    """Small dependency-free time-series chart with a textual fallback."""
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.rows = list(reversed(rows))
+        self.setMinimumHeight(220)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+        try:
+            if not self.rows:
+                raise ValueError(t("No hay ejecuciones registradas."))
+            costs = [max(0.0, float(row["cost"])) for row in self.rows]
+            carbon = [max(0.0, float(row["carbon"])) for row in self.rows]
+            bounds = self.rect().adjusted(46, 22, -20, -36)
+            painter.setPen(QPen(QColor("#9eaa9a"), 1))
+            painter.drawLine(bounds.bottomLeft(), bounds.bottomRight())
+            painter.drawLine(bounds.bottomLeft(), bounds.topLeft())
+            self._draw_series(painter, bounds, costs, QColor("#06b6d4"))
+            self._draw_series(painter, bounds, carbon, QColor("#059669"))
+            painter.setPen(QColor("#17324d"))
+            painter.drawText(48, self.height() - 10, t("Costo") + " / " + t("Carbono"))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+            painter.setPen(QColor("#6b7280"))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap, f"{t('Vista textual')}: {exc}")
+
+    @staticmethod
+    def _draw_series(painter, bounds, values, color):
+        maximum = max(values) or 1.0
+        denominator = max(len(values) - 1, 1)
+        points = [
+            QPointF(
+                bounds.left() + bounds.width() * index / denominator,
+                bounds.bottom() - bounds.height() * value / maximum,
+            )
+            for index, value in enumerate(values)
+        ]
+        painter.setPen(QPen(color, 2))
+        for index in range(1, len(points)):
+            painter.drawLine(points[index - 1], points[index])
+        if len(points) == 1:
+            painter.drawEllipse(points[0], 3, 3)
+
+
 class HistoryView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2708,6 +2903,7 @@ class HistoryView(QWidget):
         layout.addWidget(make_separator("separator"))
 
         items = []
+        history = []
         store = None
         try:
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
@@ -2717,7 +2913,7 @@ class HistoryView(QWidget):
                 f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
                 for row in history
             ]
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.DatabaseError):
             items = []
         finally:
             if store is not None:
@@ -2726,6 +2922,7 @@ class HistoryView(QWidget):
             items = [t("No hay ejecuciones registradas.")]
         list_panel = ListPanel(t("Últimas ejecuciones"), items)
 
+        layout.addWidget(TimeSeriesChart(history))
         layout.addWidget(list_panel)
 
 
@@ -2792,6 +2989,11 @@ class ProjectsView(QWidget):
         self.archive_btn.clicked.connect(self._archive_project)
         selector_row.addWidget(self.archive_btn)
 
+        self.close_campaign_btn = QPushButton(t("Cerrar campaña"))
+        self.close_campaign_btn.setObjectName("secondaryButton")
+        self.close_campaign_btn.clicked.connect(self._close_campaign)
+        selector_row.addWidget(self.close_campaign_btn)
+
         layout.addLayout(selector_row)
 
         self.active_project_label = make_label("", "infoText")
@@ -2800,6 +3002,21 @@ class ProjectsView(QWidget):
         self.refresh_status_label = make_label("", "infoText", alignment=Qt.AlignRight)
         active_row.addWidget(self.refresh_status_label)
         layout.addLayout(active_row)
+
+        quota_row = QHBoxLayout()
+        self.budget_quota_input = QLineEdit()
+        self.budget_quota_input.setPlaceholderText(t("Cuota USD"))
+        self.carbon_quota_input = QLineEdit()
+        self.carbon_quota_input.setPlaceholderText(t("Cuota gCO2eq"))
+        quota_btn = QPushButton(t("Guardar cuotas"))
+        quota_btn.setObjectName("secondaryButton")
+        quota_btn.clicked.connect(self._save_quotas)
+        quota_row.addWidget(self.budget_quota_input)
+        quota_row.addWidget(self.carbon_quota_input)
+        quota_row.addWidget(quota_btn)
+        self.quota_forecast_label = make_label("", "infoText")
+        quota_row.addWidget(self.quota_forecast_label, 1)
+        layout.addLayout(quota_row)
 
         if self.is_admin:
             self.global_checkbox = QCheckBox(t("Vista global (todos los proyectos) — solo admin"))
@@ -2910,6 +3127,48 @@ class ProjectsView(QWidget):
             if self.main_window and hasattr(self.main_window, "environmental_view"):
                 self.main_window.environmental_view.refresh_project_data()
                 self.main_window.finops_view.refresh_project_data()
+        self._load_quotas()
+
+    def _load_quotas(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None:
+            return
+        store = None
+        try:
+            store = self._open_store()
+            row = store.connection.execute("SELECT * FROM project_quotas WHERE project_id=?", (project_id,)).fetchone()
+            self.budget_quota_input.setText("" if not row or row["budget_usd"] is None else str(row["budget_usd"]))
+            self.carbon_quota_input.setText("" if not row or row["carbon_gco2eq"] is None else str(row["carbon_gco2eq"]))
+            history = [dict(item) for item in store.list_history(project_id=project_id)]
+            forecasts = []
+            for metric, key in (("cost", "budget_usd"), ("carbon", "carbon_gco2eq")):
+                if row and row[key]:
+                    breach = predict_limit_breach(history, float(row[key]), metric)
+                    if breach:
+                        forecasts.append(f"{metric}: {breach.date().isoformat()}")
+            self.quota_forecast_label.setText(t("Quiebre estimado") + ": " + (" | ".join(forecasts) or t("Sin datos suficientes")))
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            self.quota_forecast_label.setText(str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+    def _save_quotas(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None:
+            return
+        try:
+            budget = float(self.budget_quota_input.text()) if self.budget_quota_input.text().strip() else None
+            carbon = float(self.carbon_quota_input.text()) if self.carbon_quota_input.text().strip() else None
+            store = self._open_store()
+            try:
+                store.set_project_quotas(project_id, budget, carbon)
+            finally:
+                store.close()
+        except (ValueError, ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Guardar cuotas"), str(exc))
+            return
+        self._load_quotas()
 
     def _create_project(self):
         name, ok = QInputDialog.getText(self, t("Nuevo proyecto"), t("Nombre del proyecto"))
@@ -2947,6 +3206,23 @@ class ProjectsView(QWidget):
         finally:
             if store is not None:
                 store.close()
+        self._load_projects()
+
+    def _close_campaign(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None:
+            return
+        store = None
+        try:
+            store = self._open_store()
+            store.close_project(project_id)
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Cerrar campaña"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, t("Cerrar campaña"), t("Campaña cerrada y disponible para consolidado ESG."))
         self._load_projects()
 
     def _toggle_global(self, _state=None):
@@ -3081,6 +3357,7 @@ class ProjectsView(QWidget):
         export_json_action = menu.addAction("JSON")
         export_both_action = menu.addAction("PDF + JSON")
         export_xlsx_action = menu.addAction("XLSX")
+        export_esg_action = menu.addAction(t("Certificado ESG"))
 
         chosen_action = menu.exec(self.export_btn.mapToGlobal(self.export_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
@@ -3091,6 +3368,39 @@ class ProjectsView(QWidget):
             self._export_report("both")
         elif chosen_action == export_xlsx_action:
             self._export_report("xlsx")
+        elif chosen_action == export_esg_action:
+            self._export_esg_certificate()
+
+    def _export_esg_certificate(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None or self.global_view:
+            QMessageBox.warning(self, t("Certificado ESG"), t("Seleccione una campaña cerrada."))
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, t("Certificado ESG"), "certificado_esg.pdf", "PDF (*.pdf)",
+        )
+        if not destination:
+            return
+        if not destination.lower().endswith(".pdf"):
+            destination += ".pdf"
+        store = None
+        try:
+            store = self._open_store()
+            data = store.consolidate_esg(project_id)
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Certificado ESG"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self.export_btn.setEnabled(False)
+        self._esg_thread = EsgExportThread(data, destination, self)
+        self._esg_thread.completed.connect(
+            lambda: QMessageBox.information(self, t("Certificado ESG"), t("Certificado ESG generado correctamente."))
+        )
+        self._esg_thread.failed.connect(lambda error: QMessageBox.critical(self, t("Certificado ESG"), error))
+        self._esg_thread.finished.connect(lambda: self.export_btn.setEnabled(True))
+        self._esg_thread.start()
 
     def _export_report(self, export_format="pdf"):
         import export_handler
@@ -3207,6 +3517,36 @@ class SettingsView(QWidget):
 
         backup_btn.clicked.connect(create_backup)
 
+        restore_btn = QPushButton(t("Restaurar Respaldo"))
+        restore_btn.setObjectName("dangerButton")
+        restore_btn.setCursor(Qt.PointingHandCursor)
+
+        def restore_backup():
+            backup_path, _ = QFileDialog.getOpenFileName(
+                self, t("Restaurar Respaldo"), "", "SQLite (*.sqlite3 *.bak);;Todos los archivos (*)",
+            )
+            if not backup_path:
+                return
+            answer = QMessageBox.question(
+                self, t("Restaurar Respaldo"),
+                t("La base actual será reemplazada por el respaldo validado. ¿Continuar?"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            restore_btn.setEnabled(False)
+            self._restore_thread = DatabaseRestoreThread(writable_path("semaforo.sqlite3"), backup_path, self)
+            self._restore_thread.completed.connect(
+                lambda: QMessageBox.information(self, t("Restaurar Respaldo"), t("Respaldo restaurado correctamente. Reinicie la aplicación."))
+            )
+            self._restore_thread.failed.connect(
+                lambda error: QMessageBox.critical(self, t("Restaurar Respaldo"), error)
+            )
+            self._restore_thread.finished.connect(lambda: restore_btn.setEnabled(True))
+            self._restore_thread.start()
+
+        restore_btn.clicked.connect(restore_backup)
+
         from PySide6.QtWidgets import QCheckBox
         notif_cb = QCheckBox(t("Generar Avisos al OS"))
         notif_cb.setChecked(bool(load_config().get("notifications_os", True)))
@@ -3225,6 +3565,7 @@ class SettingsView(QWidget):
         notif_cb.stateChanged.connect(save_notification_setting)
 
         sys_row.addWidget(backup_btn)
+        sys_row.addWidget(restore_btn)
         sys_row.addWidget(notif_cb)
 
         theme_cb = QCheckBox(t("Modo claro"))
@@ -3270,16 +3611,19 @@ class SettingsView(QWidget):
             if not source_url:
                 QMessageBox.warning(self, t("Sincronización"), t("Configure una URL de factores ambientales antes de sincronizar."))
                 return
-            fallback_path = writable_path("carbon_factors.json")
-            try:
-                data = fetch_json_with_fallback(source_url, fallback_path)
-            except (OSError, ValueError) as exc:
-                QMessageBox.critical(self, t("Sincronización"), t("No se pudieron actualizar los factores: {error}").format(error=exc))
-                return
-            if not isinstance(data, (dict, list)):
-                QMessageBox.critical(self, t("Sincronización"), t("La fuente ambiental devolvió un formato inválido."))
-                return
-            QMessageBox.information(self, t("Sincronización"), t("Factores ambientales sincronizados y guardados localmente."))
+            sync_env_btn.setEnabled(False)
+            self._carbon_thread = CarbonSyncThread(source_url, writable_path("carbon_factors.json"), self)
+            self._carbon_thread.completed.connect(
+                lambda _data, cached: QMessageBox.information(
+                    self, t("Sincronización"),
+                    t("Factores ambientales sincronizados y guardados localmente.") if not cached else t("Se usó el respaldo ambiental local."),
+                )
+            )
+            self._carbon_thread.failed.connect(
+                lambda error: QMessageBox.critical(self, t("Sincronización"), t("No se pudieron actualizar los factores: {error}").format(error=error))
+            )
+            self._carbon_thread.finished.connect(lambda: sync_env_btn.setEnabled(True))
+            self._carbon_thread.start()
 
         sync_env_btn.clicked.connect(sync_environment_factors)
 
@@ -3306,18 +3650,40 @@ class SettingsView(QWidget):
         ping_hw_btn = QPushButton(t("Probar Enlace Sensor On-Premise"))
         ping_hw_btn.setObjectName("secondaryButton")
 
+        protocol_combo = QComboBox()
+        protocol_combo.addItems([t("Simulador"), "SNMP", "Modbus TCP"])
+        sensor_host = QLineEdit()
+        sensor_host.setPlaceholderText(t("Host del sensor"))
+        sensor_identifier = QLineEdit()
+        sensor_identifier.setPlaceholderText(t("OID o registro"))
+
         def test_sensor():
-            try:
-                watts = sensor_reading("simulador")
-            except TimeoutError as exc:
-                QMessageBox.warning(self, t("Sondeo Sensor"), str(exc))
+            protocol = protocol_combo.currentText()
+            host = sensor_host.text().strip()
+            identifier = sensor_identifier.text().strip()
+            if protocol not in {"SNMP", "Modbus TCP"}:
+                protocol, host, identifier = "Simulador", "", ""
+            elif not host or not identifier:
+                QMessageBox.warning(self, t("Sondeo Sensor"), t("Host y OID o registro son obligatorios."))
                 return
-            QMessageBox.information(self, t("Sondeo Activo"), t("Lectura del sensor: {watts} W").format(watts=f"{watts:.1f}"))
+            ping_hw_btn.setEnabled(False)
+            self._telemetry_thread = TelemetryThread(protocol, host, identifier, self)
+            self._telemetry_thread.completed.connect(
+                lambda watts: QMessageBox.information(self, t("Sondeo Activo"), t("Lectura del sensor: {watts} W").format(watts=f"{watts:.1f}"))
+            )
+            self._telemetry_thread.failed.connect(
+                lambda error: QMessageBox.warning(self, t("Sondeo Sensor"), error)
+            )
+            self._telemetry_thread.finished.connect(lambda: ping_hw_btn.setEnabled(True))
+            self._telemetry_thread.start()
 
         ping_hw_btn.clicked.connect(test_sensor)
 
         env_btn_row.addWidget(sync_env_btn)
         env_btn_row.addWidget(revert_env_btn)
+        env_btn_row.addWidget(protocol_combo)
+        env_btn_row.addWidget(sensor_host)
+        env_btn_row.addWidget(sensor_identifier)
         env_btn_row.addWidget(ping_hw_btn)
         env_btn_row.addStretch()
         env_hw_layout.addLayout(env_btn_row)
@@ -3371,6 +3737,36 @@ class SettingsView(QWidget):
         local_metrics_row.addStretch()
 
         env_hw_layout.addLayout(local_metrics_row)
+        
+        immersion_row = QHBoxLayout()
+        immersion_inputs = []
+        for placeholder in (t("kWh anual"), t("PUE actual"), t("PUE inmersión"), t("USD/kWh"), t("Inversión USD")):
+            field = QLineEdit()
+            field.setPlaceholderText(placeholder)
+            field.setMaximumWidth(130)
+            immersion_inputs.append(field)
+            immersion_row.addWidget(field)
+        immersion_result = make_label("", "infoText")
+        immersion_btn = QPushButton(t("Calcular ROI inmersión"))
+        immersion_btn.setObjectName("secondaryButton")
+        
+        def calculate_immersion_roi():
+            try:
+                values = [float(field.text()) for field in immersion_inputs]
+                result = liquid_cooling_roi(*values)
+            except (ValueError, ValidationError) as exc:
+                immersion_result.setText(str(exc))
+                return
+            status = t("Viable") if result["viable"] else t("No viable")
+            immersion_result.setText(
+                f"{status}: {result['annual_kwh_saving']:.2f} kWh/año, "
+                f"USD {result['annual_cost_saving']:.2f}/año, payback {result['payback_years']:.2f} años"
+            )
+        
+        immersion_btn.clicked.connect(calculate_immersion_roi)
+        immersion_row.addWidget(immersion_btn)
+        immersion_row.addWidget(immersion_result, 1)
+        env_hw_layout.addLayout(immersion_row)
         layout.addLayout(env_hw_layout)
 
         # CU 19.1, 19.2, 34.1, 34.2 (Thresholds & Financial)
@@ -3503,17 +3899,61 @@ class SettingsView(QWidget):
         sync_tarifas_btn = QPushButton(t("Sincronizar Tarifas"))
         sync_tarifas_btn.setObjectName("secondaryButton")
 
+        billing_provider = QComboBox()
+        billing_provider.addItems(["AWS", "Azure", "GCP"])
+        billing_url = QLineEdit()
+        billing_url.setPlaceholderText("https://api.example/rates")
+        billing_url.setFixedWidth(240)
+
+        def update_billing_url(provider):
+            urls = load_config().get("billing_urls", {})
+            billing_url.setText(str(urls.get(provider.lower(), "")))
+
+        billing_provider.currentTextChanged.connect(update_billing_url)
+        update_billing_url(billing_provider.currentText())
+
         def sync_tarifas():
-            if not load_config().get("financial_api_key_encrypted", ""):
+            config = load_config()
+            token = config.get("financial_api_key_encrypted", "")
+            if not token:
                 QMessageBox.warning(self, t("Tarifas"), t("Configure y guarde una API Key valida antes de sincronizar."))
                 return
-            QMessageBox.information(self, t("Tarifas"), t("Registros tarifarios locales sobrescritos con precios vigentes de mercado."))
+            url = billing_url.text().strip()
+            if not url.startswith(("http://", "https://")):
+                QMessageBox.warning(self, t("Tarifas"), t("Configure una URL HTTP válida."))
+                return
+            try:
+                api_key = decrypt_api_key(token, api_key_path)
+                config.setdefault("billing_urls", {})[billing_provider.currentText().lower()] = url
+                with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (ApiKeyError, OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Tarifas"), str(exc))
+                return
+            provider = billing_provider.currentText().lower()
+            sync_tarifas_btn.setEnabled(False)
+            self._billing_thread = BillingSyncThread(
+                provider, url, writable_path(f"billing_{provider}.json"), api_key, self,
+            )
+            self._billing_thread.completed.connect(
+                lambda rows, cached: QMessageBox.information(
+                    self, t("Tarifas"),
+                    t("Tarifas disponibles: {count}. Origen: {source}").format(
+                        count=len(rows), source=t("caché local") if cached else t("API remota"),
+                    ),
+                )
+            )
+            self._billing_thread.failed.connect(lambda error: QMessageBox.critical(self, t("Tarifas"), error))
+            self._billing_thread.finished.connect(lambda: sync_tarifas_btn.setEnabled(True))
+            self._billing_thread.start()
 
         sync_tarifas_btn.clicked.connect(sync_tarifas)
 
         fin_row.addWidget(make_label(t("API Key:"), "infoText"))
         fin_row.addWidget(api_key_input)
         fin_row.addWidget(save_key_btn)
+        fin_row.addWidget(billing_provider)
+        fin_row.addWidget(billing_url)
         fin_row.addWidget(sync_tarifas_btn)
         fin_row.addStretch()
 
@@ -4785,7 +5225,8 @@ class HardwareCatalogView(QWidget):
         self._hardware_loaded = False
         self.detected_info = {}
         self.selected_by_type = {component_type: None for component_type in self.COMPONENT_TYPES}
-        self.hardware_rows = load_csv_rows("hardware.csv")
+        self.hardware_rows = []
+        self._reload_catalog_rows()
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(120)
@@ -4843,10 +5284,23 @@ class HardwareCatalogView(QWidget):
         self.rightsize_btn.setEnabled(False)
         self.rightsize_btn.clicked.connect(self._suggest_rightsize)
 
+        self.add_hardware_btn = QPushButton(t("Nuevo hardware personalizado"))
+        self.add_hardware_btn.setObjectName("secondaryButton")
+        self.add_hardware_btn.clicked.connect(self._add_custom_hardware)
+        self.delete_hardware_btn = QPushButton(t("Eliminar personalizado"))
+        self.delete_hardware_btn.setObjectName("dangerButton")
+        self.delete_hardware_btn.clicked.connect(self._delete_custom_hardware)
+        self.template_btn = QPushButton(t("Administrar plantillas"))
+        self.template_btn.setObjectName("secondaryButton")
+        self.template_btn.clicked.connect(self._manage_templates)
+
         search_row.addWidget(self.search_input, 3)
         search_row.addWidget(self.filter_combo, 1)
         search_row.addWidget(self.autoselect_btn)
         search_row.addWidget(self.rightsize_btn)
+        search_row.addWidget(self.add_hardware_btn)
+        search_row.addWidget(self.delete_hardware_btn)
+        search_row.addWidget(self.template_btn)
 
         self.hardware_tabs = QTabWidget()
         self.hardware_tabs.setObjectName("hardwareTabs")
@@ -4899,6 +5353,115 @@ class HardwareCatalogView(QWidget):
         self.filter_combo.currentTextChanged.connect(self._schedule_hardware_filter)
         self._apply_hardware_filters()
         self._refresh_breakdown()
+
+    def _reload_catalog_rows(self):
+        rows = [{**row, "_factory": True} for row in load_csv_rows("hardware.csv")]
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            for item in store.list_hardware():
+                metadata = item.get("metadata", {})
+                rows.append({
+                    "Fabricante": metadata.get("manufacturer", t("Personalizado")),
+                    "Modelo": item["name"], "Categoria": item["category"],
+                    "Tipo_Componente": item["category"].upper(),
+                    "TDP_Max_Watts": str(item["tdp_watts"]),
+                    "_metadata": metadata,
+                    "_hardware_id": item["id"], "_factory": bool(item["is_factory"]),
+                })
+        except (OSError, ValueError, sqlite3.DatabaseError):
+            pass
+        finally:
+            if store is not None:
+                store.close()
+        self.hardware_rows = rows
+
+    def _add_custom_hardware(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Nuevo hardware personalizado"))
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        name = QLineEdit()
+        category = QComboBox()
+        category.addItems(list(self.COMPONENT_TYPES))
+        tdp = QLineEdit()
+        acquisition_cost = QLineEdit()
+        form.addRow(t("Nombre"), name)
+        form.addRow(t("Tipo"), category)
+        form.addRow("TDP (W)", tdp)
+        form.addRow(t("Costo de adquisición USD"), acquisition_cost)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.add_hardware(
+                name.text(), category.currentText(), float(tdp.text()),
+                {"acquisition_cost": float(acquisition_cost.text())},
+            )
+        except (ValueError, ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Hardware"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self._reload_catalog_rows()
+        self._apply_hardware_filters()
+
+    def _delete_custom_hardware(self):
+        row = self.selected_by_type.get(self._current_component_type())
+        if not row or not row.get("_hardware_id"):
+            QMessageBox.warning(self, t("Hardware"), t("Seleccione hardware personalizado primero."))
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.delete_hardware(int(row["_hardware_id"]))
+            self.selected_by_type[self._current_component_type()] = None
+        except (ValidationError, PermissionError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Hardware"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self._reload_catalog_rows()
+        self._apply_hardware_filters()
+        self._refresh_breakdown()
+
+    def _manage_templates(self):
+        actions = [t("Crear plantilla"), t("Eliminar plantilla")]
+        action, ok = QInputDialog.getItem(self, t("Administrar plantillas"), t("Acción"), actions, 0, False)
+        if not ok:
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            if action == actions[0]:
+                name, accepted = QInputDialog.getText(self, t("Crear plantilla"), t("Nombre"))
+                if not accepted:
+                    return
+                raw, accepted = QInputDialog.getMultiLineText(self, t("Crear plantilla"), "JSON", "{}")
+                if not accepted:
+                    return
+                store.add_template(name, json.loads(raw))
+            else:
+                templates = store.list_templates()
+                names = [item["name"] for item in templates if not item["is_factory"]]
+                selected, accepted = QInputDialog.getItem(self, t("Eliminar plantilla"), t("Plantilla"), names, 0, False)
+                if not accepted or not selected:
+                    return
+                template = next(item for item in templates if item["name"] == selected)
+                store.delete_template(template["id"])
+        except (json.JSONDecodeError, ValidationError, PermissionError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Plantillas"), str(exc))
+        finally:
+            if store is not None:
+                store.close()
 
     def _build_component_tab(self, component_type):
         extra_headers, _ = self.column_specs[component_type]
@@ -5192,21 +5755,33 @@ class HardwareCatalogView(QWidget):
             if tdp is None:
                 continue
             candidate = {"name": f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip(), "tdp_watts": tdp}
+            acquisition_cost = row.get("_metadata", {}).get("acquisition_cost")
+            if acquisition_cost is None:
+                continue
+            candidate["acquisition_cost"] = acquisition_cost
             if component_type == "CPU":
                 candidate["performance_score"] = classify_cpu_tier(row.get("Modelo", ""))
             candidates.append(candidate)
         try:
-            recommendation = rightsizing(current_tdp, candidates, current_performance=current_tier)
+            settings = load_config().get("capacity_planning", {})
+            recommendation = capacity_plan(
+                float(settings.get("annual_runtime_hours", 4000)), current_tdp, candidates,
+                float(settings.get("energy_price_per_kwh", 0.20)),
+                pue=float(settings.get("pue", 1.2)),
+                grid_factor=float(settings.get("grid_factor", 400)),
+                max_payback_years=float(settings.get("max_payback_years", 3)),
+            )
         except (TypeError, ValueError) as exc:
             self.rightsize_result.setText(t("No se pudo calcular la recomendación: {error}").format(error=exc))
             return
         if not recommendation:
-            self.rightsize_result.setText(t("No existe una alternativa con ahorro superior al 10%.") )
+            self.rightsize_result.setText(t("No existe una alternativa con costo verificable y retorno justificable."))
             return
         candidate = recommendation["candidate"]
         self.rightsize_result.setText(
-            t("Alternativa: {name} ({tdp:.0f} W), ahorro estimado {saving:.1f}%.").format(
-                name=candidate["name"], tdp=candidate["tdp_watts"], saving=recommendation["saving_percent"]
+            t("Alternativa: {name} ({tdp:.0f} W), ahorro {saving:.1f}%, retorno {payback:.2f} años.").format(
+                name=candidate["name"], tdp=candidate["tdp_watts"], saving=recommendation["saving_percent"],
+                payback=recommendation["payback_years"],
             )
         )
 

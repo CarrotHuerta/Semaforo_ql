@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from html import escape
 from calendar import monthrange
 from dataclasses import dataclass, asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
@@ -45,6 +45,101 @@ class UnsupportedCurrencyError(ValidationError):
 
 class DataIntegrityError(ValidationError):
     pass
+
+
+class CircuitBreakerError(PermissionError):
+    """Raised when a project quota or state forbids an execution."""
+
+
+def predict_limit_breach(
+    history: Iterable[dict[str, Any]],
+    limit: float,
+    metric: str,
+    as_of: datetime | None = None,
+) -> datetime | None:
+    """Extrapolate the UTC date when a cumulative metric reaches its limit."""
+    if limit <= 0 or metric not in {"cost", "carbon"}:
+        raise ValidationError("El limite debe ser positivo y la metrica debe ser cost o carbon.")
+    rows = sorted(history, key=lambda row: str(row.get("timestamp", "")))
+    if not rows:
+        return None
+    try:
+        first = datetime.fromisoformat(str(rows[0]["timestamp"]).replace("Z", "+00:00"))
+        total = sum(float(row[metric]) for row in rows)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DataIntegrityError("El historial no permite calcular una proyeccion.") from exc
+    if total < 0:
+        raise DataIntegrityError("El historial contiene valores negativos.")
+    current = as_of or datetime.now(timezone.utc)
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if total >= limit:
+        return current.astimezone(timezone.utc)
+    elapsed_days = max((current - first).total_seconds() / 86400, 1.0)
+    daily_rate = total / elapsed_days
+    if daily_rate <= 0:
+        return None
+    return current.astimezone(timezone.utc) + timedelta(days=(limit - total) / daily_rate)
+
+
+def capacity_plan(
+    annual_runtime_hours: float,
+    current_tdp_watts: float,
+    candidates: Iterable[dict[str, Any]],
+    energy_price_per_kwh: float,
+    pue: float = 1.0,
+    grid_factor: float = 0.0,
+    max_payback_years: float = 3.0,
+) -> dict[str, Any] | None:
+    """Recommend replacement only when energy savings repay its acquisition cost."""
+    values = (annual_runtime_hours, current_tdp_watts, energy_price_per_kwh, grid_factor)
+    if any(value < 0 for value in values) or current_tdp_watts == 0 or pue < 1 or max_payback_years <= 0:
+        raise ValidationError("Los datos de capacity planning no son validos.")
+    plans = []
+    for candidate in candidates:
+        try:
+            tdp = float(candidate["tdp_watts"])
+            acquisition_cost = float(candidate["acquisition_cost"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DataIntegrityError("Un candidato no contiene TDP y costo validos.") from exc
+        if tdp <= 0 or acquisition_cost < 0 or tdp >= current_tdp_watts:
+            continue
+        annual_kwh_saving = (current_tdp_watts - tdp) * annual_runtime_hours * pue / 1000
+        annual_cost_saving = annual_kwh_saving * energy_price_per_kwh
+        payback = acquisition_cost / annual_cost_saving if annual_cost_saving > 0 else float("inf")
+        saving_percent = (current_tdp_watts - tdp) / current_tdp_watts * 100
+        if saving_percent > 10 and payback <= max_payback_years:
+            plans.append({
+                "candidate": candidate,
+                "saving_percent": round(saving_percent, 2),
+                "annual_kwh_saving": round(annual_kwh_saving, 4),
+                "annual_cost_saving": round(annual_cost_saving, 2),
+                "annual_carbon_saving": round(annual_kwh_saving * grid_factor, 4),
+                "payback_years": round(payback, 2),
+            })
+    return max(plans, key=lambda plan: plan["annual_cost_saving"] - float(plan["candidate"]["acquisition_cost"]) / max_payback_years) if plans else None
+
+
+def liquid_cooling_roi(
+    annual_kwh: float,
+    current_pue: float,
+    immersion_pue: float,
+    energy_price_per_kwh: float,
+    investment: float,
+) -> dict[str, float | bool]:
+    if annual_kwh < 0 or energy_price_per_kwh < 0 or investment < 0 or current_pue < 1 or immersion_pue < 1:
+        raise ValidationError("Los datos de ROI de inmersion no son validos.")
+    saved_kwh = annual_kwh * max(0.0, current_pue - immersion_pue)
+    annual_saving = saved_kwh * energy_price_per_kwh
+    payback = investment / annual_saving if annual_saving else float("inf")
+    return {
+        "annual_kwh_saving": round(saved_kwh, 4),
+        "annual_cost_saving": round(annual_saving, 2),
+        "payback_years": round(payback, 2) if payback != float("inf") else payback,
+        "viable": payback <= 5,
+    }
 
 
 def fetch_exchange_rates(
@@ -552,6 +647,28 @@ class LocalStore:
                 duration_ms INTEGER NOT NULL, semaphore TEXT NOT NULL,
                 FOREIGN KEY(model_id) REFERENCES models(id)
             );
+            CREATE TABLE IF NOT EXISTS project_quotas (
+                project_id INTEGER PRIMARY KEY, budget_usd REAL, carbon_gco2eq REAL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS admin_overrides (
+                token TEXT PRIMARY KEY, project_id INTEGER NOT NULL, admin_user_id INTEGER NOT NULL,
+                reason TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT,
+                FOREIGN KEY(project_id) REFERENCES projects(id), FOREIGN KEY(admin_user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, actor TEXT NOT NULL,
+                action TEXT NOT NULL, project_id INTEGER, details TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS hardware_catalog (
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, category TEXT NOT NULL,
+                tdp_watts REAL NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}',
+                is_factory INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS model_templates (
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+                config_json TEXT NOT NULL, is_factory INTEGER NOT NULL DEFAULT 0
+            );
             """
         )
         self.connection.commit()
@@ -667,6 +784,42 @@ class LocalStore:
         self.connection.execute("UPDATE projects SET state = 'archived' WHERE id = ?", (project_id,))
         self.connection.commit()
 
+    def close_project(self, project_id: int) -> None:
+        project = self.connection.execute("SELECT is_active FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project or not project["is_active"]:
+            raise ValidationError("El proyecto no existe o esta inactivo.")
+        incomplete = self.connection.execute(
+            "SELECT COUNT(*) FROM models m WHERE m.project_id=? AND m.is_active=1 "
+            "AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.model_id=m.id)",
+            (project_id,),
+        ).fetchone()[0]
+        model_count = self.connection.execute(
+            "SELECT COUNT(*) FROM models WHERE project_id=? AND is_active=1", (project_id,)
+        ).fetchone()[0]
+        if model_count == 0 or incomplete:
+            raise ValidationError("Todos los modelos deben tener ejecuciones antes de cerrar la campana.")
+        self.connection.execute("UPDATE projects SET state='closed' WHERE id=?", (project_id,))
+        self.connection.commit()
+
+    def consolidate_esg(self, project_id: int) -> dict[str, Any]:
+        project = self.connection.execute("SELECT name, state FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            raise ValidationError("El proyecto no existe.")
+        if project["state"] != "closed":
+            raise ValidationError("El certificado ESG requiere una campana completa y cerrada.")
+        totals = self.project_totals(project_id)
+        count = self.connection.execute(
+            "SELECT COUNT(*) FROM executions e JOIN models m ON m.id=e.model_id WHERE m.project_id=?",
+            (project_id,),
+        ).fetchone()[0]
+        return {
+            "project_id": project_id,
+            "project_name": project["name"],
+            "generated_at": utc_iso(),
+            "execution_count": count,
+            **totals,
+        }
+
     def clear_project(self, project_id: int) -> None:
         project = self.connection.execute(
             "SELECT id FROM projects WHERE id = ?", (project_id,)
@@ -780,12 +933,209 @@ class LocalStore:
         finally:
             destination_connection.close()
 
-    def add_execution(self, execution: Execution) -> int:
-        cursor = self.connection.execute(
-            "INSERT INTO executions(model_id, timestamp, cost, carbon, kwh, water, duration_ms, semaphore) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            tuple(asdict(execution).values()),
+    def restore(self, source: str | os.PathLike[str]) -> None:
+        """Validate and atomically restore a SQLite backup, preserving the live DB on failure."""
+        source_path = Path(source)
+        destination = Path(self.path)
+        if self.path == ":memory:":
+            raise ValidationError("No se puede restaurar una base en memoria.")
+        staged = destination.with_name(f".{destination.name}.{secrets.token_hex(6)}.restore")
+        source_connection = None
+        staged_connection = None
+        try:
+            source_connection = sqlite3.connect(f"file:{source_path.resolve()}?mode=ro", uri=True)
+            integrity = source_connection.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise DataIntegrityError("El respaldo SQLite esta corrupto.")
+            tables = {row[0] for row in source_connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"users", "projects", "models", "executions"}.issubset(tables):
+                raise DataIntegrityError("El archivo no es un respaldo de Semaforo IA.")
+            staged_connection = sqlite3.connect(staged)
+            source_connection.backup(staged_connection)
+            staged_connection.close()
+            staged_connection = None
+            self.connection.close()
+            try:
+                os.replace(staged, destination)
+            except OSError as exc:
+                self.connection = sqlite3.connect(self.path)
+                self.connection.row_factory = sqlite3.Row
+                self.connection.execute("PRAGMA foreign_keys = ON")
+                raise PermissionError(f"No se pudo reemplazar la base activa: {exc}") from exc
+            self.connection = sqlite3.connect(self.path)
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self._create_schema()
+        except sqlite3.DatabaseError as exc:
+            raise DataIntegrityError(f"No se pudo validar el respaldo SQLite: {exc}") from exc
+        except OSError as exc:
+            raise PermissionError(f"No se pudo leer o preparar el respaldo: {exc}") from exc
+        finally:
+            if source_connection:
+                source_connection.close()
+            if staged_connection:
+                staged_connection.close()
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def add_hardware(self, name: str, category: str, tdp_watts: float, metadata: dict[str, Any] | None = None, is_factory: bool = False) -> int:
+        name, category = str(name).strip(), str(category).strip()
+        if not name or not category or tdp_watts <= 0:
+            raise ValidationError("Nombre, categoria y TDP positivo son obligatorios.")
+        try:
+            cursor = self.connection.execute(
+                "INSERT INTO hardware_catalog(name, category, tdp_watts, metadata_json, is_factory) VALUES (?, ?, ?, ?, ?)",
+                (name, category, tdp_watts, json.dumps(metadata or {}, ensure_ascii=True), int(is_factory)),
+            )
+            self.connection.commit()
+            return int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError("Ya existe hardware con ese nombre.") from exc
+
+    def update_hardware(self, hardware_id: int, name: str, category: str, tdp_watts: float, metadata: dict[str, Any] | None = None) -> None:
+        row = self.connection.execute("SELECT is_factory FROM hardware_catalog WHERE id=?", (hardware_id,)).fetchone()
+        if not row:
+            raise ValidationError("El hardware no existe.")
+        if row["is_factory"]:
+            raise PermissionError("El catalogo de fabrica no se puede modificar.")
+        if not str(name).strip() or not str(category).strip() or tdp_watts <= 0:
+            raise ValidationError("Los datos de hardware no son validos.")
+        self.connection.execute(
+            "UPDATE hardware_catalog SET name=?, category=?, tdp_watts=?, metadata_json=? WHERE id=?",
+            (str(name).strip(), str(category).strip(), tdp_watts, json.dumps(metadata or {}, ensure_ascii=True), hardware_id),
         )
         self.connection.commit()
+
+    def delete_hardware(self, hardware_id: int) -> None:
+        row = self.connection.execute("SELECT is_factory FROM hardware_catalog WHERE id=?", (hardware_id,)).fetchone()
+        if not row:
+            raise ValidationError("El hardware no existe.")
+        if row["is_factory"]:
+            raise PermissionError("El catalogo de fabrica no se puede eliminar.")
+        self.connection.execute("DELETE FROM hardware_catalog WHERE id=?", (hardware_id,))
+        self.connection.commit()
+
+    def list_hardware(self) -> list[dict[str, Any]]:
+        return [{**dict(row), "metadata": json.loads(row["metadata_json"])} for row in self.connection.execute("SELECT * FROM hardware_catalog ORDER BY name")]
+
+    def add_template(self, name: str, config: dict[str, Any], is_factory: bool = False) -> int:
+        if not str(name).strip() or not isinstance(config, dict):
+            raise ValidationError("El nombre y la configuracion de la plantilla son obligatorios.")
+        try:
+            cursor = self.connection.execute(
+                "INSERT INTO model_templates(name, config_json, is_factory) VALUES (?, ?, ?)",
+                (str(name).strip(), json.dumps(config, ensure_ascii=True), int(is_factory)),
+            )
+            self.connection.commit()
+            return int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError("Ya existe una plantilla con ese nombre.") from exc
+
+    def update_template(self, template_id: int, name: str, config: dict[str, Any]) -> None:
+        row = self.connection.execute("SELECT is_factory FROM model_templates WHERE id=?", (template_id,)).fetchone()
+        if not row:
+            raise ValidationError("La plantilla no existe.")
+        if row["is_factory"]:
+            raise PermissionError("Las plantillas de fabrica no se pueden modificar.")
+        self.connection.execute(
+            "UPDATE model_templates SET name=?, config_json=? WHERE id=?",
+            (str(name).strip(), json.dumps(config, ensure_ascii=True), template_id),
+        )
+        self.connection.commit()
+
+    def delete_template(self, template_id: int) -> None:
+        row = self.connection.execute("SELECT is_factory FROM model_templates WHERE id=?", (template_id,)).fetchone()
+        if not row:
+            raise ValidationError("La plantilla no existe.")
+        if row["is_factory"]:
+            raise PermissionError("Las plantillas de fabrica no se pueden eliminar.")
+        self.connection.execute("DELETE FROM model_templates WHERE id=?", (template_id,))
+        self.connection.commit()
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        return [{**dict(row), "config": json.loads(row["config_json"])} for row in self.connection.execute("SELECT * FROM model_templates ORDER BY name")]
+
+    def set_project_quotas(self, project_id: int, budget_usd: float | None, carbon_gco2eq: float | None) -> None:
+        if any(value is not None and value <= 0 for value in (budget_usd, carbon_gco2eq)):
+            raise ValidationError("Las cuotas deben ser positivas o quedar vacias.")
+        if not self.connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone():
+            raise ValidationError("El proyecto no existe.")
+        self.connection.execute(
+            "INSERT INTO project_quotas(project_id, budget_usd, carbon_gco2eq) VALUES (?, ?, ?) "
+            "ON CONFLICT(project_id) DO UPDATE SET budget_usd=excluded.budget_usd, carbon_gco2eq=excluded.carbon_gco2eq",
+            (project_id, budget_usd, carbon_gco2eq),
+        )
+        self.connection.commit()
+
+    def circuit_breaker_status(self, model_id: int, added_cost: float = 0, added_carbon: float = 0) -> dict[str, Any]:
+        if added_cost < 0 or added_carbon < 0:
+            raise ValidationError("Los consumos proyectados no pueden ser negativos.")
+        model = self.connection.execute(
+            "SELECT m.project_id, p.state, p.is_active FROM models m JOIN projects p ON p.id=m.project_id WHERE m.id=? AND m.is_active=1",
+            (model_id,),
+        ).fetchone()
+        if not model:
+            raise ValidationError("El modelo no existe o esta inactivo.")
+        quotas = self.connection.execute("SELECT * FROM project_quotas WHERE project_id = ?", (model["project_id"],)).fetchone()
+        totals = self.project_totals(model["project_id"])
+        projected = {"cost": totals["cost"] + added_cost, "carbon": totals["carbon"] + added_carbon}
+        reasons = []
+        if not model["is_active"] or model["state"] != "active":
+            reasons.append("El proyecto esta archivado o inactivo.")
+        if quotas and quotas["budget_usd"] is not None and projected["cost"] > quotas["budget_usd"]:
+            reasons.append("Se superaria la cuota financiera.")
+        if quotas and quotas["carbon_gco2eq"] is not None and projected["carbon"] > quotas["carbon_gco2eq"]:
+            reasons.append("Se superaria la cuota ecologica.")
+        return {"allowed": not reasons, "project_id": model["project_id"], "totals": totals, "projected": projected, "reasons": reasons}
+
+    def create_admin_override(self, project_id: int, username: str, password: str, reason: str, ttl_seconds: int = 300) -> str:
+        reason = str(reason).strip()
+        if not reason or ttl_seconds < 1 or ttl_seconds > 3600:
+            raise ValidationError("El motivo es obligatorio y la vigencia debe ser valida.")
+        user = self.connection.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
+        valid = bool(user and not user["is_locked"] and user["role"].lower() in {"admin", "administrador"} and verify_password(password, user["password_hash"]))
+        actor = username.strip() or "desconocido"
+        if not valid:
+            self._audit(actor, "override_denied", project_id, reason)
+            self.connection.commit()
+            raise PermissionError("Credenciales administrativas invalidas.")
+        token = secrets.token_urlsafe(32)
+        expires_at = utc_iso(datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds))
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO admin_overrides(token, project_id, admin_user_id, reason, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (token, project_id, user["id"], reason, expires_at),
+            )
+            self._audit(actor, "override_granted", project_id, reason)
+        return token
+
+    def _audit(self, actor: str, action: str, project_id: int | None, details: str) -> None:
+        self.connection.execute(
+            "INSERT INTO audit_log(timestamp, actor, action, project_id, details) VALUES (?, ?, ?, ?, ?)",
+            (utc_iso(), actor, action, project_id, details),
+        )
+
+    def add_execution(self, execution: Execution, override_token: str | None = None) -> int:
+        status = self.circuit_breaker_status(execution.model_id, execution.cost, execution.carbon)
+        override = None
+        if status["reasons"] and override_token:
+            override = self.connection.execute(
+                "SELECT o.*, u.username FROM admin_overrides o JOIN users u ON u.id=o.admin_user_id "
+                "WHERE o.token=? AND o.project_id=? AND o.used_at IS NULL AND o.expires_at>=?",
+                (override_token, status["project_id"], utc_iso()),
+            ).fetchone()
+        if status["reasons"] and not override:
+            raise CircuitBreakerError(" ".join(status["reasons"]))
+        with self.connection:
+            cursor = self.connection.execute(
+                "INSERT INTO executions(model_id, timestamp, cost, carbon, kwh, water, duration_ms, semaphore) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(asdict(execution).values()),
+            )
+            if override:
+                self.connection.execute("UPDATE admin_overrides SET used_at=? WHERE token=?", (utc_iso(), override_token))
+                self._audit(override["username"], "override_used", status["project_id"], override["reason"])
         return int(cursor.lastrowid)
 
     def soft_delete_model(self, model_id: int) -> None:
@@ -816,9 +1166,9 @@ def import_records(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
 
 
 def export_records(records: Iterable[dict[str, Any]], path: str | os.PathLike[str]) -> None:
-    rows = list(records)
     destination = Path(path)
     try:
+        rows = list(records)
         if destination.suffix.lower() == ".json":
             destination.write_text(json.dumps(rows, ensure_ascii=True, indent=2), encoding="utf-8")
             return
@@ -830,6 +1180,8 @@ def export_records(records: Iterable[dict[str, Any]], path: str | os.PathLike[st
                 writer.writeheader()
                 writer.writerows(rows)
             return
+    except MemoryError as exc:
+        raise MemoryError("No hay memoria suficiente para preparar la exportacion.") from exc
     except (OSError, csv.Error) as exc:
         raise PermissionError(f"No se pudo escribir {destination}: {exc}") from exc
     raise DataIntegrityError("Formato de exportacion no soportado; use JSON o CSV.")
