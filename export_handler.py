@@ -15,11 +15,13 @@ try:
     import eco
     import economia
     import inicio
+    import proyecto
     _EXPORT_IMPORT_ERROR = None
 except Exception as exc:
     eco = None
     economia = None
     inicio = None
+    proyecto = None
     _EXPORT_IMPORT_ERROR = exc
 
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
@@ -223,6 +225,16 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 
 def _apply_report_data(report_type, data, file_path, export_format, lang):
     """Actualiza el modulo de reporte y genera el PDF/JSON. Pensada para correr en un hilo aparte."""
+    if report_type == "proyecto":
+        if export_format == "xlsx":
+            proyecto.create_xlsx_report(file_path, data)
+            return
+        if export_format in {"pdf", "both"}:
+            proyecto.create_pdf_report(file_path, data, lang=lang)
+        if export_format in {"json", "both"}:
+            proyecto.export_json_report(file_path, data)
+        return
+
     if export_format == "xlsx":
         _create_xlsx_report(report_type, data, file_path)
         return

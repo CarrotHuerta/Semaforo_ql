@@ -1535,8 +1535,8 @@ class HomeView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
-        export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
+        export_xlsx_action = menu.addAction("XLSX")
 
         chosen_action = menu.exec(self.export_home_btn.mapToGlobal(self.export_home_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
@@ -1799,8 +1799,8 @@ class EnvironmentalPerformanceView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
-        export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
+        export_xlsx_action = menu.addAction("XLSX")
 
         chosen_action = menu.exec(self.export_eco_btn.mapToGlobal(self.export_eco_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
@@ -3030,6 +3030,7 @@ class ProjectsView(QWidget):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
         export_json_action = menu.addAction("JSON")
+        export_both_action = menu.addAction("PDF + JSON")
         export_xlsx_action = menu.addAction("XLSX")
 
         chosen_action = menu.exec(self.export_btn.mapToGlobal(self.export_btn.rect().bottomLeft()))
@@ -3037,6 +3038,8 @@ class ProjectsView(QWidget):
             self._export_report("pdf")
         elif chosen_action == export_json_action:
             self._export_report("json")
+        elif chosen_action == export_both_action:
+            self._export_report("both")
         elif chosen_action == export_xlsx_action:
             self._export_report("xlsx")
 
@@ -3053,23 +3056,30 @@ class ProjectsView(QWidget):
             if self.is_admin and self.global_view:
                 overview = store.global_totals()
                 totals = overview["totals"]
-                details = [
-                    [row["name"], f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f} USD", "gray_800"]
-                    for row in overview["by_project"]
-                ] or [[t("Sin proyectos"), "-", "gray_500"]]
+                projects = []
+                for row in overview["by_project"]:
+                    project_history = store.list_history(project_id=row["id"])
+                    projects.append({
+                        "id": row["id"], "name": row["name"], "cost": row["cost"],
+                        "carbon": row["carbon"], "kwh": row["kwh"], "water": row["water"],
+                        "execution_count": len(project_history),
+                    })
+                totals["execution_count"] = sum(item["execution_count"] for item in projects)
+                executions = []
                 scope_label = t("Overview global (todos los proyectos)")
+                scope = {"kind": "global", "project_id": None, "project_name": scope_label}
             else:
                 project_id = self.project_combo.currentData()
                 if project_id is None:
                     QMessageBox.warning(self, t("Exportar"), t("Selecciona un proyecto primero."))
                     return
                 totals = store.project_totals(project_id)
-                history_rows = store.list_history(project_id=project_id)[:20]
-                details = [
-                    [row["timestamp"], f"{row['model_name']} — {row['semaphore']}", "gray_800"]
-                    for row in history_rows
-                ] or [[t("Sin ejecuciones"), "-", "gray_500"]]
+                history_rows = store.list_history(project_id=project_id)
+                totals["execution_count"] = len(history_rows)
+                executions = [dict(row) for row in history_rows]
+                projects = []
                 scope_label = self.project_combo.currentText()
+                scope = {"kind": "project", "project_id": project_id, "project_name": scope_label}
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, t("Exportar"), str(exc))
             return
@@ -3079,15 +3089,10 @@ class ProjectsView(QWidget):
 
         data = {
             "exported_by": exported_by_text,
-            "chart_values": [round(totals["carbon"], 1), round(totals["cost"], 1)],
-            "chart_labels": [t("Carbono (gCO2eq)"), t("Costo (USD)")],
-            "kpis": [
-                [15, 60, t("Carbono Total"), f"{totals['carbon']:.2f}", "gCO2eq", "emerald_500"],
-                [75, 60, t("Costo Total"), f"{totals['cost']:.2f}", "USD", "cyan_500"],
-            ],
-            "details": details,
-            "logs": [[t("Proyecto: {scope}").format(scope=scope_label), "gray_500"]],
-            "progress": 0,
+            "scope": scope,
+            "totals": totals,
+            "projects": projects,
+            "executions": executions,
         }
         export_handler.generate_and_save_report(
             self, "proyecto", data, export_format=export_format,
