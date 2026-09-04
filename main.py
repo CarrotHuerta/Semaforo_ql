@@ -994,6 +994,23 @@ class ListPanel(QFrame):
                 if separator_spacing:
                     layout.addSpacing(separator_spacing)
 
+    def set_items(self, items, separator_spacing=0):
+        layout = self.layout()
+        while layout.count() > 2:
+            item = layout.takeAt(2)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for index, value in enumerate(items):
+            item_label = make_label(value, "listItem")
+            item_label.setWordWrap(True)
+            layout.addWidget(item_label)
+            if index < len(items) - 1:
+                if separator_spacing:
+                    layout.addSpacing(separator_spacing)
+                layout.addWidget(make_separator("listLine"))
+                if separator_spacing:
+                    layout.addSpacing(separator_spacing)
+
 
 class KpiCard(QFrame):
     def __init__(self, title, value, parent=None):
@@ -1664,8 +1681,9 @@ class HomeView(QWidget):
 
 
 class EnvironmentalPerformanceView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -1692,27 +1710,24 @@ class EnvironmentalPerformanceView(QWidget):
 
         emissions_layout = QHBoxLayout()
         emissions_layout.setSpacing(18)
-        self.emisiones_entrenamiento_card = PerformanceCard(t("Emisiones entrenamiento"), "98 gCO2eq")
-        self.emisiones_ejecucion_card = PerformanceCard(t("Emisiones ejecución"), "44 gCO2eq")
+        self.emisiones_entrenamiento_card = PerformanceCard(t("Emisiones entrenamiento"), "0.00 gCO2eq")
+        self.emisiones_ejecucion_card = PerformanceCard(t("Emisiones ejecución"), "0.00 gCO2eq")
         emissions_layout.addWidget(self.emisiones_entrenamiento_card, 1)
         emissions_layout.addWidget(self.emisiones_ejecucion_card, 1)
 
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(18)
-        self.consumo_energetico_card = PerformanceCard(t("Consumo Energético"), "3.8 kWh")
-        self.tiempo_proceso_card = PerformanceCard(t("Tiempo de Procesamiento"), "00:47:00 mins")
+        self.consumo_energetico_card = PerformanceCard(t("Consumo Energético"), "0.00 Wh")
+        self.tiempo_proceso_card = PerformanceCard(t("Tiempo de Procesamiento"), "0.00 s")
         metrics_layout.addWidget(self.consumo_energetico_card, 1)
         metrics_layout.addWidget(self.tiempo_proceso_card, 1)
 
-        details_rows = [
-            (t("Hardware"), "NVIDIA A100"),
-            (t("Proveedor Nube"), "AWS US-East-1"),
-            (t("Factor de Emisión"), "0.386 kg/kWh"),
-            (t("Región"), "Norteamérica"),
-            (t("Última ejecución"), "Hace 2 minutos"),
-            (t("Estado del cálculo"), t("Finalizado")),
-        ]
-        details_panel = DetailsPanel(t("Detalles del Cálculo"), details_rows)
+        self.details_panel = DetailsPanel(t("Detalles del Cálculo"), [
+            (t("Proyecto activo"), t("No seleccionado")),
+            (t("Ejecuciones"), "0"),
+            (t("Última ejecución"), t("Sin datos")),
+            (t("Estado del cálculo"), t("Sin datos")),
+        ])
 
         activity_items = [
             t("Cálculo Ambiental finalizado correctamente."),
@@ -1725,7 +1740,7 @@ class EnvironmentalPerformanceView(QWidget):
 
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(18)
-        bottom_row.addWidget(details_panel, 1)
+        bottom_row.addWidget(self.details_panel, 1)
         bottom_row.addWidget(activity_panel, 1)
 
         # CU 63.1, 63.2 (Ecological Limit & Insignia)
@@ -1749,7 +1764,7 @@ class EnvironmentalPerformanceView(QWidget):
 
         self.eco_bar = QProgressBar()
         self.eco_bar.setRange(0, 100)
-        self.eco_bar.setValue(45) # Under 50% for badge
+        self.eco_bar.setValue(0)
         self.eco_bar.setTextVisible(True)
         self.eco_bar.setStyleSheet("""
             QProgressBar {
@@ -1773,6 +1788,23 @@ class EnvironmentalPerformanceView(QWidget):
         main_layout.addLayout(metrics_layout)
         main_layout.addLayout(bottom_row)
         main_layout.addLayout(eco_limit_layout)
+        self.refresh_project_data()
+
+    def refresh_project_data(self):
+        metrics = self.main_window.get_active_project_metrics() if self.main_window else None
+        if not metrics:
+            return
+        self.emisiones_entrenamiento_card.set_value("0.00 gCO2eq")
+        self.emisiones_ejecucion_card.set_value(f"{metrics['carbon']:.4f} gCO2eq")
+        self.consumo_energetico_card.set_value(format_energy_value(metrics["kwh"]))
+        self.tiempo_proceso_card.set_value(f"{metrics['duration_ms'] / 1000:.2f} s")
+        self.details_panel.set_values([
+            metrics["project_name"],
+            str(metrics["count"]),
+            metrics["latest_timestamp"] or t("Sin datos"),
+            t("Finalizado") if metrics["count"] else t("Sin datos"),
+        ])
+        self.eco_bar.setValue(max(0, min(100, round(metrics["carbon"]))))
 
 
 
@@ -1796,8 +1828,8 @@ class EnvironmentalPerformanceView(QWidget):
     def export_eco_report(self, export_format="pdf"):
         import export_handler
 
-        consumo_val = self.consumo_energetico_card.findChild(QLabel, "performanceValue").text().replace(" kWh", "") if self.consumo_energetico_card.findChild(QLabel, "performanceValue") else "3.8"
-        tiempo_val = self.tiempo_proceso_card.findChild(QLabel, "performanceValue").text().replace(" mins", "") if self.tiempo_proceso_card.findChild(QLabel, "performanceValue") else "00:47:00"
+        consumo_val = self.consumo_energetico_card.findChild(QLabel, "performanceValue").text() if self.consumo_energetico_card.findChild(QLabel, "performanceValue") else "0 Wh"
+        tiempo_val = self.tiempo_proceso_card.findChild(QLabel, "performanceValue").text() if self.tiempo_proceso_card.findChild(QLabel, "performanceValue") else "0 s"
 
         entrenamiento_text = self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text() if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else "98"
         ejecucion_text = self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text() if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else "44"
@@ -1813,9 +1845,10 @@ class EnvironmentalPerformanceView(QWidget):
                     return default_value
                 return int(round(float(match.group(0).replace(",", "."))))
 
-        entrenamiento_val = extract_emission_value(entrenamiento_text, 98)
-        ejecucion_val = extract_emission_value(ejecucion_text, 44)
-        progress_val = self.eco_bar.value() if hasattr(self, "eco_bar") else 45
+        entrenamiento_val = extract_emission_value(entrenamiento_text, 0)
+        ejecucion_val = extract_emission_value(ejecucion_text, 0)
+        progress_val = self.eco_bar.value() if hasattr(self, "eco_bar") else 0
+        detail_values = [label.text() for label in self.details_panel.value_labels]
 
         user_profile = getattr(self.window(), 'sidebar', None)
         if user_profile:
@@ -1838,12 +1871,10 @@ class EnvironmentalPerformanceView(QWidget):
                 [150, 60, t("Tiempo Proceso"), tiempo_val, "mins", "cyan_500"]
             ],
             "details": [
-                [t("Hardware"), "NVIDIA A100", "emerald_600"],
-                [t("Proveedor Nube"), "AWS US-East-1", "gray_800"],
-                [t("Factor de Emisión"), "0.386 kg/kWh", "gray_800"],
-                [t("Región"), "Norteamérica", "gray_800"],
-                [t("Última ejecución"), "Hace 2 minutos", "gray_800"],
-                [t("Estado del cálculo"), t("Finalizado"), "emerald_600"]
+                [t("Proyecto activo"), detail_values[0], "emerald_600"],
+                [t("Ejecuciones"), detail_values[1], "gray_800"],
+                [t("Última ejecución"), detail_values[2], "gray_800"],
+                [t("Estado del cálculo"), detail_values[3], "emerald_600"]
             ],
             "logs": [
                 [t("Cálculo Ambiental finalizado correctamente."), "emerald_500"],
@@ -2252,14 +2283,17 @@ class ModelsView(QWidget):
 
 
 class FinOpsView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         layout.addWidget(make_label(t("Costos FinOps"), "pageTitle"))
+        self.active_project_label = make_label(t("Proyecto activo: {name}").format(name=t("No seleccionado")), "infoText")
+        layout.addWidget(self.active_project_label)
         layout.addWidget(make_separator("separator"))
 
         header_row = QHBoxLayout()
@@ -2306,9 +2340,9 @@ class FinOpsView(QWidget):
         self.exchange_rate_label = make_label("", "infoText")
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
-        self.base_cost_actual_clp = self.finops_metrics["costo_actual"]
-        self.base_presupuesto_clp = self.finops_metrics["presupuesto_mensual"]
-        self.base_ahorro_clp = self.finops_metrics["ahorro_estimado"]
+        self.base_cost_actual_usd = 0.0
+        self.base_presupuesto_clp = 0.0
+        self.base_ahorro_clp = 0.0
 
         cards.addWidget(self.card_actual, 1)
         cards.addWidget(self.card_presupuesto, 1)
@@ -2319,10 +2353,17 @@ class FinOpsView(QWidget):
         exchange_row.addWidget(self.exchange_rate_label, 2)
         layout.addLayout(exchange_row)
 
-        items = [f"{t(service)} — {percentage:.0f}% del gasto" for service, percentage in self.finops_services]
+        project_metrics = self.main_window.get_active_project_metrics() if self.main_window else None
+        items = []
+        if project_metrics:
+            items = [
+                f"{t('Ejecuciones registradas')}: {project_metrics['count']}",
+                f"{t('Energía acumulada')}: {format_energy_value(project_metrics['kwh'])}",
+                f"{t('Carbono acumulado')}: {project_metrics['carbon']:.4f} gCO2eq",
+            ]
         if not items:
-            items = [t("No hay desglose de servicios disponible.")]
-        list_panel = ListPanel(t("Desglose por servicio"), items)
+            items = [t("No hay proyecto activo para mostrar métricas.")]
+        self.project_summary_panel = ListPanel(t("Resumen del proyecto"), items)
 
         # Budget bar CU 62.1, 62.2
         from PySide6.QtWidgets import QProgressBar
@@ -2333,14 +2374,15 @@ class FinOpsView(QWidget):
         budget_layout.addWidget(make_label(t("% Presupuesto Límite Utilizado"), "kpiTitle"))
         self.budget_bar = QProgressBar()
         self.budget_bar.setRange(0, 100)
-        budget_percent = round(self.base_cost_actual_clp / self.base_presupuesto_clp * 100) if self.base_presupuesto_clp else 0
+        budget_percent = 0
         self.budget_bar.setValue(max(0, min(100, budget_percent)))
         self.budget_bar.setTextVisible(True)
         budget_layout.addWidget(self.budget_bar)
 
         layout.addLayout(cards)
         layout.addWidget(budget_panel)
-        layout.addWidget(list_panel)
+        layout.addWidget(self.project_summary_panel)
+        self.refresh_project_data()
         self._update_currency(self.currency_combo.currentText())
         self._refresh_exchange_rates()
 
@@ -2378,7 +2420,8 @@ class FinOpsView(QWidget):
         symbol_map = {code: label[label.find("(") + 1:-1] for code, label in self.currency_options}
         symbol = symbol_map.get(currency_code, currency_code)
         try:
-            actual, inverse = convert_clp(self.base_cost_actual_clp, currency_code, self.exchange_rates)
+            cost_clp = self.base_cost_actual_usd / self.exchange_rates["USD"]
+            actual, inverse = convert_clp(cost_clp, currency_code, self.exchange_rates)
             presupuesto, _ = convert_clp(self.base_presupuesto_clp, currency_code, self.exchange_rates)
             ahorro, _ = convert_clp(self.base_ahorro_clp, currency_code, self.exchange_rates)
         except (KeyError, TypeError, ValueError) as exc:
@@ -2389,13 +2432,31 @@ class FinOpsView(QWidget):
             self.exchange_rate_label.setText(error)
             return
         self.card_actual.set_value(f"{symbol} {actual:,.2f}")
-        self.card_presupuesto.set_value(f"{symbol} {presupuesto:,.2f}")
-        self.card_ahorro.set_value(f"{symbol} {ahorro:,.2f}")
+        self.card_presupuesto.set_value(t("No definido") if not self.base_presupuesto_clp else f"{symbol} {presupuesto:,.2f}")
+        self.card_ahorro.set_value(t("No calculado") if not self.base_ahorro_clp else f"{symbol} {ahorro:,.2f}")
         self.exchange_rate_label.setText(
             t("1 CLP = {rate:.8f} {currency} | 1 {currency} = {inverse:.8f} CLP").format(
                 rate=self.exchange_rates[currency_code], currency=currency_code, inverse=inverse
             )
         )
+
+    def refresh_project_data(self):
+        metrics = self.main_window.get_active_project_metrics() if self.main_window else None
+        if not metrics:
+            return
+        self.active_project_label.setText(
+            t("Proyecto activo: {name}").format(name=metrics["project_name"])
+        )
+        self.base_cost_actual_usd = metrics["cost"]
+        self.base_presupuesto_clp = 0.0
+        self.base_ahorro_clp = 0.0
+        self.budget_bar.setValue(0)
+        self.project_summary_panel.set_items([
+            f"{t('Ejecuciones registradas')}: {metrics['count']}",
+            f"{t('Energía acumulada')}: {format_energy_value(metrics['kwh'])}",
+            f"{t('Carbono acumulado')}: {metrics['carbon']:.4f} gCO2eq",
+        ])
+        self._update_currency(self.currency_combo.currentText())
 
 
     def _sanitize_money_value(self, value, currency_code):
@@ -2457,22 +2518,18 @@ class FinOpsView(QWidget):
                 [76.6, 60, t("Presupuesto"), self._sanitize_money_value(presupuesto, currency_code), report_currency_unit, "gray_800"],
                 [138.3, 60, t("Ahorro"), self._sanitize_money_value(ahorro, currency_code), report_currency_unit, "emerald_500"]
             ],
-            "chart_values": [48, 22, 14, 16],
+            "chart_values": [self.base_cost_actual_usd],
             "chart_labels": [
-                "GPU compute: 48%",
-                "Storage + snapshots: 22%",
-                "Networking: 14%",
-                f"{t('Servicios administrados')}: 16%"
+                f"{t('Costo real registrado')}: {self.base_cost_actual_usd:.6f} USD"
             ],
             "details": [
-                [t("GPU compute"), "48%", "cyan_600"],
-                [t("Storage + snapshots"), "22%", "cyan_600"],
-                [t("Networking"), "14%", "cyan_600"],
-                [t("Servicios administrados"), "16%", "cyan_600"]
+                [t("Proyecto activo"), self.active_project_label.text(), "cyan_600"],
+                [t("Costo real registrado"), costo_actual, "cyan_600"],
+                [t("Presupuesto"), presupuesto, "gray_800"],
+                [t("Ahorro"), ahorro, "emerald_500"]
             ],
             "logs": [
-                [t("Costos FinOps calculados exitosamente."), "emerald_500"],
-                [t("GPU compute representa la mayor parte del gasto."), "logo_orange"]
+                [t("Costos FinOps calculados exitosamente."), "emerald_500"]
             ],
             "progress": progress_val
         }
@@ -2634,9 +2691,10 @@ class ProjectsView(QWidget):
     Solo los usuarios con rol admin pueden activar la vista global (todos los proyectos).
     """
 
-    def __init__(self, profile=None, parent=None):
+    def __init__(self, profile=None, main_window=None, parent=None):
         super().__init__(parent)
         self.profile = profile or {}
+        self.main_window = main_window
         self.is_admin = str(self.profile.get("role", "")).lower() in {"admin", "administrador"}
         self.global_view = False
         self.global_checkbox = None
@@ -2805,6 +2863,9 @@ class ProjectsView(QWidget):
             self.active_project_label.setText(t("No hay un proyecto activo."))
         if refresh:
             self._refresh()
+            if self.main_window and hasattr(self.main_window, "environmental_view"):
+                self.main_window.environmental_view.refresh_project_data()
+                self.main_window.finops_view.refresh_project_data()
 
     def _create_project(self):
         name, ok = QInputDialog.getText(self, t("Nuevo proyecto"), t("Nombre del proyecto"))
@@ -3040,8 +3101,9 @@ class ProjectsView(QWidget):
 
 
 class SettingsView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3230,6 +3292,11 @@ class SettingsView(QWidget):
         red_input.setPlaceholderText(t("Rojo Min (%)"))
         red_input.setFixedWidth(100)
 
+        saved_thresholds = load_config().get("thresholds", {})
+        green_input.setText(str(saved_thresholds.get("green", 50.0)))
+        yellow_input.setText(str(saved_thresholds.get("yellow", 90.0)))
+        red_input.setText(str(saved_thresholds.get("red", 100.0)))
+
         save_thresh_btn = QPushButton(t("Guardar Umbrales"))
         save_thresh_btn.setObjectName("primaryButton")
         def save_thresholds():
@@ -3248,6 +3315,8 @@ class SettingsView(QWidget):
                 }
                 with open(config_path, "w", encoding="utf-8") as handle:
                     json.dump(config, handle, ensure_ascii=True, indent=2)
+                if self.main_window:
+                    self.main_window._update_semaforo()
             except (OSError, TypeError) as exc:
                 QMessageBox.critical(self, t("Umbrales"), str(exc))
                 return
@@ -3267,6 +3336,8 @@ class SettingsView(QWidget):
                 green_input.setText("50")
                 yellow_input.setText("90")
                 red_input.setText("100")
+                if self.main_window:
+                    self.main_window._update_semaforo()
             except OSError as exc:
                 QMessageBox.critical(self, t("Umbrales"), str(exc))
                 return
@@ -5379,7 +5450,9 @@ class DashboardWindow(QMainWindow):
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
         self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
-        self.projects_view = ProjectsView(profile=user_profile)
+        self.projects_view = ProjectsView(profile=user_profile, main_window=self)
+        self.environmental_view = EnvironmentalPerformanceView(main_window=self)
+        self.finops_view = FinOpsView(main_window=self)
 
         sidebar.lang_action.triggered.connect(self._toggle_language)
         self.header_title = self.home_view.findChild(QLabel, "pageTitle")
@@ -5396,13 +5469,13 @@ class DashboardWindow(QMainWindow):
             sidebar,
             t("Impacto Ambiental"),
             make_leaf_pixmap(18, "#66bb22"),
-            EnvironmentalPerformanceView(),
+            self.environmental_view,
         )
         self._add_nav_item(
             sidebar,
             t("Costos FinOps"),
             make_text_icon("$", 18, "#66bb22"),
-            FinOpsView(),
+            self.finops_view,
         )
         self._add_nav_item(
             sidebar,
@@ -5413,7 +5486,7 @@ class DashboardWindow(QMainWindow):
         self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), self.hardware_view)
         self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), self.cloud_view)
         self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), HistoryView())
-        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), SettingsView())
+        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), SettingsView(main_window=self))
 
         self._add_nav_item(
             sidebar,
@@ -5427,6 +5500,36 @@ class DashboardWindow(QMainWindow):
 
     def refresh_projects_view(self):
         self.projects_view.request_refresh()
+        self.environmental_view.refresh_project_data()
+        self.finops_view.refresh_project_data()
+
+    def get_active_project_metrics(self):
+        project_id = load_config().get("current_project_id")
+        if project_id is None:
+            return None
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            project = store.connection.execute(
+                "SELECT name FROM projects WHERE id = ? AND is_active = 1", (project_id,)
+            ).fetchone()
+            if not project:
+                return None
+            row = store.connection.execute(
+                """SELECT COUNT(*) AS count, COALESCE(SUM(e.cost), 0) AS cost,
+                          COALESCE(SUM(e.carbon), 0) AS carbon, COALESCE(SUM(e.kwh), 0) AS kwh,
+                          COALESCE(SUM(e.duration_ms), 0) AS duration_ms,
+                          MAX(e.timestamp) AS latest_timestamp
+                     FROM executions e JOIN models m ON m.id = e.model_id
+                    WHERE m.project_id = ? AND m.is_active = 1""",
+                (project_id,),
+            ).fetchone()
+            return {"project_name": project["name"], **dict(row)}
+        except (OSError, ValueError):
+            return None
+        finally:
+            if store is not None:
+                store.close()
 
     def _add_nav_item(self, sidebar, label, icon, widget):
         button = sidebar.add_nav_button(label, icon)
