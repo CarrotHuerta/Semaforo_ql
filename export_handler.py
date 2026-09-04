@@ -247,7 +247,12 @@ def _apply_report_data(report_type, data, file_path, export_format, lang):
             eco.REPORT["chart_values"] = data["chart_values"]
         if "chart_labels" in data:
             eco.REPORT["chart_labels"] = data["chart_labels"]
-        eco.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
+        try:
+            eco.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
+        finally:
+            chart_file = eco.REPORT.get("chart_file")
+            if chart_file and os.path.exists(chart_file):
+                os.remove(chart_file)
 
     elif report_type == 'economia':
         if "kpis" in data:

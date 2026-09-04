@@ -681,8 +681,8 @@ class MetricCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 18, 20, 18)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(16, 14, 16, 14)
+        main_layout.setSpacing(10)
 
         title_label = make_label(title, "metricTitle")
 
@@ -784,8 +784,8 @@ class DetailsPanel(QFrame):
         self.value_labels = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
 
         layout.addWidget(make_label(title, "detailsTitle"))
         layout.addSpacing(4)
@@ -916,8 +916,8 @@ class InfoBar(QFrame):
             layout.setContentsMargins(8, 6, 8, 6)
             layout.setSpacing(6)
         else:
-            layout.setContentsMargins(18, 14, 18, 14)
-            layout.setSpacing(14)
+            layout.setContentsMargins(14, 10, 14, 10)
+            layout.setSpacing(10)
 
         icon = QLabel()
         icon_size = 16 if compact else 26
@@ -945,8 +945,8 @@ class InfoCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(5)
 
         layout.addWidget(make_label(title, "infoCardTitle"))
         self.value_label = make_label(value, "infoCardValue")
@@ -973,8 +973,8 @@ class ListPanel(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 20)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
 
         if show_title:
             layout.addWidget(make_label(title, "listTitle"))
@@ -1684,7 +1684,7 @@ class EnvironmentalPerformanceView(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(22)
+        main_layout.setSpacing(14)
 
         header_layout = QHBoxLayout()
         header_layout.setSpacing(10)
@@ -1706,14 +1706,14 @@ class EnvironmentalPerformanceView(QWidget):
         header_layout.addWidget(self.export_eco_btn)
 
         emissions_layout = QHBoxLayout()
-        emissions_layout.setSpacing(18)
+        emissions_layout.setSpacing(12)
         self.emisiones_entrenamiento_card = PerformanceCard(t("Emisiones entrenamiento"), "0.00 gCO2eq")
         self.emisiones_ejecucion_card = PerformanceCard(t("Emisiones ejecución"), "0.00 gCO2eq")
         emissions_layout.addWidget(self.emisiones_entrenamiento_card, 1)
         emissions_layout.addWidget(self.emisiones_ejecucion_card, 1)
 
         metrics_layout = QHBoxLayout()
-        metrics_layout.setSpacing(18)
+        metrics_layout.setSpacing(12)
         self.consumo_energetico_card = PerformanceCard(t("Consumo Energético"), "0.00 Wh")
         self.tiempo_proceso_card = PerformanceCard(t("Tiempo de Procesamiento"), "0.00 s")
         metrics_layout.addWidget(self.consumo_energetico_card, 1)
@@ -1736,19 +1736,19 @@ class EnvironmentalPerformanceView(QWidget):
         activity_panel = ActivityPanel(activity_items, title_alignment=Qt.AlignLeft)
 
         bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(18)
+        bottom_row.setSpacing(12)
         bottom_row.addWidget(self.details_panel, 1)
         bottom_row.addWidget(activity_panel, 1)
 
         # CU 63.1, 63.2 (Ecological Limit & Insignia)
         from PySide6.QtWidgets import QProgressBar
         eco_limit_layout = QHBoxLayout()
-        eco_limit_layout.setSpacing(18)
+        eco_limit_layout.setSpacing(12)
 
         eco_panel = QFrame()
         eco_panel.setObjectName("detailsPanel")
         eco_panel_layout = QVBoxLayout(eco_panel)
-        eco_panel_layout.setContentsMargins(18, 14, 18, 14)
+        eco_panel_layout.setContentsMargins(14, 10, 14, 10)
 
         eco_title_row = QHBoxLayout()
         eco_title_row.addWidget(make_label(t("% Límite Ecológico Utilizado"), "kpiTitle"))
@@ -2105,7 +2105,7 @@ class ModelsView(QWidget):
         self.models_data = load_model_records()
 
         cards = QHBoxLayout()
-        cards.setSpacing(18)
+        cards.setSpacing(12)
         if self.models_data:
             model_total = len(self.models_data)
             domain_total = len(
@@ -2358,7 +2358,7 @@ class FinOpsView(QWidget):
         budget_panel = QFrame()
         budget_panel.setObjectName("detailsPanel")
         budget_layout = QVBoxLayout(budget_panel)
-        budget_layout.setContentsMargins(18, 14, 18, 14)
+        budget_layout.setContentsMargins(14, 10, 14, 10)
         budget_layout.addWidget(make_label(t("% Presupuesto Límite Utilizado"), "kpiTitle"))
         self.budget_bar = QProgressBar()
         self.budget_bar.setRange(0, 100)
@@ -4705,8 +4705,8 @@ class HardwareCatalogView(QWidget):
         catalog_panel = QFrame()
         catalog_panel.setObjectName("catalogPanel")
         panel_layout = QVBoxLayout(catalog_panel)
-        panel_layout.setContentsMargins(20, 20, 20, 20)
-        panel_layout.setSpacing(16)
+        panel_layout.setContentsMargins(16, 14, 16, 14)
+        panel_layout.setSpacing(12)
 
         search_row = QHBoxLayout()
         search_row.setSpacing(16)
@@ -5417,7 +5417,7 @@ class DashboardWindow(QMainWindow):
         content_frame = QFrame()
         content_frame.setObjectName("contentFrame")
         content_layout = QVBoxLayout(content_frame)
-        content_layout.setContentsMargins(28, 24, 28, 24)
+        content_layout.setContentsMargins(20, 16, 20, 16)
         content_layout.addWidget(self.stack)
 
         root_layout.addWidget(sidebar)

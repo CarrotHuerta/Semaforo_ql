@@ -27,6 +27,11 @@ except ImportError:
 
 SHARED, REPORT, COLORS = load_config("eco")
 
+
+def pdf_text(value):
+    """Keep report text compatible with the built-in Helvetica font."""
+    return str(value).encode("latin-1", "replace").decode("latin-1")
+
 class SemaforoPDF(FPDF):
     def add_gradient_background(self):
         """Dibuja un gradiente suave de verde a blanco desde la mitad hacia abajo."""
@@ -139,25 +144,25 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 20)
     pdf.set_text_color(*COLORS['gray_800'])
     pdf.set_xy(32, 13)
-    pdf.cell(100, 10, SHARED['product_name'])
+    pdf.cell(100, 10, pdf_text(SHARED['product_name']))
     
     # Subtítulo
     pdf.set_font("helvetica", "", 10)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(32, 21)
-    pdf.cell(100, 5, t(REPORT['subtitle'], lang))
+    pdf.cell(100, 5, pdf_text(t(REPORT['subtitle'], lang)))
     
     # Textos de la derecha (Fecha y Autor)
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_800'])
     pdf.set_xy(110, 15)
-    pdf.cell(85, 5, f"{t('Exportado por:', lang)} {SHARED['exported_by']}", align="R")
+    pdf.cell(85, 5, pdf_text(f"{t('Exportado por:', lang)} {SHARED['exported_by']}"), align="R")
     
     pdf.set_font("helvetica", "", 8)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(110, 20)
     current_date = datetime.now().strftime(SHARED['date_format'])
-    pdf.cell(85, 5, f"{t('Fecha de exportación:', lang)} {current_date}", align="R")
+    pdf.cell(85, 5, pdf_text(f"{t('Fecha de exportación:', lang)} {current_date}"), align="R")
 
     # Línea separadora del encabezado
     pdf.set_draw_color(*COLORS['emerald_500'])
@@ -199,7 +204,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
         pdf.set_font("helvetica", "B", title_font_size)
         pdf.set_text_color(*COLORS['gray_500'])
         pdf.set_xy(x + 5, y + 4)
-        pdf.cell(box_w - 10, 5, title)
+        pdf.cell(box_w - 10, 5, pdf_text(title))
         
         # Valor KPI
         pdf.set_font("helvetica", "B", value_font_size)
@@ -208,13 +213,13 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
         
         # Ajuste dinámico de ancho para poner la unidad pegada
         val_width = pdf.get_string_width(val) + 2
-        pdf.cell(val_width, 10, val)
+        pdf.cell(val_width, 10, pdf_text(val))
         
         # Unidad KPI
         pdf.set_font("helvetica", "B", unit_font_size)
         pdf.set_text_color(*unit_color)
         pdf.set_xy(x + 5 + val_width, unit_y)
-        pdf.cell(max(12, box_w * 0.3), 5, unit)
+        pdf.cell(max(12, box_w * 0.3), 5, pdf_text(unit))
 
     # --- SECCIÓN GRÁFICOS ---
 
@@ -225,7 +230,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(15, 82)
-    pdf.cell(fixed_box_w, 5, t(REPORT['chart_title'], lang), align="C")
+    pdf.cell(fixed_box_w, 5, pdf_text(t(REPORT['chart_title'], lang)), align="C")
     # Insertar imagen centrada y con margen para evitar superposición con el título.
     _, configured_chart_y = SHARED.get('chart_image_position', [15, 75])
     chart_w = min(SHARED.get('chart_image_width', 75), fixed_box_w - 16)
@@ -238,7 +243,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(107.5, 82)
-    pdf.cell(fixed_box_w, 5, t(REPORT['progress_title'], lang), align="C")
+    pdf.cell(fixed_box_w, 5, pdf_text(t(REPORT['progress_title'], lang)), align="C")
     
     # Barra de progreso nativa (FPDF)
     bar_x = 115
@@ -277,7 +282,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 8)
     pdf.set_text_color(5, 150, 105) # emerald-600
     pdf.set_xy(125, 123)
-    pdf.cell(55, 5, t(REPORT['badge'], lang), align="C")
+    pdf.cell(55, 5, pdf_text(t(REPORT['badge'], lang)), align="C")
 
     # --- SECCIÓN DETALLES Y LOGS ---
     # Detalles
@@ -285,7 +290,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(20, 152)
-    pdf.cell(fixed_box_w - 10, 5, t(REPORT['details_title'], lang))
+    pdf.cell(fixed_box_w - 10, 5, pdf_text(t(REPORT['details_title'], lang)))
     
     # Linea separadora
     pdf.set_draw_color(*COLORS['gray_200'])
@@ -298,12 +303,12 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
         pdf.set_font("helvetica", "", 9)
         pdf.set_text_color(*COLORS['gray_500'])
         pdf.set_xy(20, y_offset)
-        pdf.cell(40, 5, key)
+        pdf.cell(40, 5, pdf_text(key))
         
         pdf.set_font("helvetica", "B", 9)
         pdf.set_text_color(*val_color)
         pdf.set_xy(60, y_offset)
-        pdf.cell(37, 5, val, align="R")
+        pdf.cell(37, 5, pdf_text(val), align="R")
         
         pdf.set_draw_color(*COLORS['gray_100'])
         pdf.line(20, y_offset + 6, 15 + fixed_box_w - 5, y_offset + 6)
@@ -314,7 +319,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "B", 10)
     pdf.set_text_color(*COLORS['gray_700'])
     pdf.set_xy(112.5, 152)
-    pdf.cell(fixed_box_w - 10, 5, t("Registro de Actividad", lang))
+    pdf.cell(fixed_box_w - 10, 5, pdf_text(t("Registro de Actividad", lang)))
     
     pdf.set_draw_color(*COLORS['gray_200'])
     pdf.line(112.5, 159, 107.5 + fixed_box_w - 5, 159)
@@ -336,7 +341,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
         pdf.set_text_color(*COLORS['gray_700'])
         pdf.set_xy(117.5, y_offset)
         start_y = y_offset
-        pdf.multi_cell(fixed_box_w - 15, 3.8, text)
+        pdf.multi_cell(fixed_box_w - 15, 3.8, pdf_text(text))
         consumed_h = pdf.get_y() - start_y
         y_offset += max(7, consumed_h + 1.5)
 
@@ -344,7 +349,7 @@ def create_pdf_report(filename=None, export_format="both", lang=None):
     pdf.set_font("helvetica", "I", 8)
     pdf.set_text_color(*COLORS['gray_500'])
     pdf.set_xy(15, 280)
-    pdf.cell(180, 5, t(SHARED['footer'], lang), align="C")
+    pdf.cell(180, 5, pdf_text(t(SHARED['footer'], lang)), align="C")
 
     # 3. Guardar el PDF
     pdf.output(filename)
