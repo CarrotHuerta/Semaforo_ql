@@ -163,6 +163,11 @@ def start_local_server_if_needed(config: dict, save_config_callback=None, wait_s
             save_config_callback(DEFAULT_LOCAL_URI)
         return DEFAULT_LOCAL_URI
 
+    # A frozen PyInstaller executable is not a Python interpreter. Calling it with
+    # ``-m mlflow`` would reopen the desktop application recursively.
+    if getattr(sys, "frozen", False):
+        return configured_uri or ""
+
     if _local_server_process is None or _local_server_process.poll() is not None:
         mlflow_home = writable_path("mlflow_data")
         os.makedirs(mlflow_home, exist_ok=True)

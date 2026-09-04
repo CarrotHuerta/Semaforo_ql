@@ -197,6 +197,40 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(execution.carbon, 720.0)
         self.assertEqual(badge, "C")
 
+    def test_clear_and_delete_project_are_isolated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "projects.sqlite3")
+            first_project = store.add_project("Primero")
+            second_project = store.add_project("Segundo")
+            first_model = store.add_model(first_project, "Modelo A")
+            second_model = store.add_model(second_project, "Modelo B")
+            for model_id in (first_model, second_model):
+                store.connection.execute(
+                    """INSERT INTO executions(
+                           model_id, timestamp, cost, carbon, kwh, water, duration_ms, semaphore
+                       ) VALUES (?, '2026-01-01 00:00:00', 1, 2, 3, 4, 5, 'Verde')""",
+                    (model_id,),
+                )
+            store.connection.commit()
+
+            store.clear_project(first_project)
+            self.assertEqual(len(store.list_models(first_project)), 0)
+            self.assertEqual(len(store.list_history(project_id=first_project)), 0)
+            self.assertEqual(len(store.list_models(second_project)), 1)
+            self.assertEqual(len(store.list_history(project_id=second_project)), 1)
+            self.assertIsNotNone(store.connection.execute(
+                "SELECT id FROM projects WHERE id = ?", (first_project,)
+            ).fetchone())
+
+            store.delete_project(first_project)
+            self.assertIsNone(store.connection.execute(
+                "SELECT id FROM projects WHERE id = ?", (first_project,)
+            ).fetchone())
+            self.assertEqual(len(store.list_projects()), 1)
+            with self.assertRaises(ValidationError):
+                store.delete_project(first_project)
+            store.close()
+
     def test_secure_authentication_and_lockout(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "test.sqlite3")

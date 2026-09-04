@@ -1,13 +1,15 @@
 import csv
 import json
 import math
+import multiprocessing
 import os
 import re
 import shutil
 import sys
 import threading
+from html import escape as html_escape
 from difflib import SequenceMatcher
-from PySide6.QtCore import QEvent, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QDateTime, QDir, QEvent, QLockFile, QObject, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabWidget,
     QCheckBox,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
     QFileDialog,
@@ -116,6 +119,10 @@ def load_config():
             config = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return data
+
+    for key, value in config.items():
+        if key != "users":
+            data[key] = value
 
     users = []
     raw_users = config.get("users")
@@ -1019,10 +1026,178 @@ class ActivityPanel(QFrame):
             layout.addWidget(item_label)
 
 
+class _OllamaChatWorker(QObject):
+    """Corre un turno real de chat con Ollama en un hilo aparte para no congelar la UI."""
+    finished = Signal(bool, str, dict)
+
+    def __init__(self, uri, model, messages):
+        super().__init__()
+        self.uri = uri
+        self.model = model
+        self.messages = messages
+
+    def run(self):
+        import ollama_integration
+        try:
+            if not ollama_integration.is_reachable(self.uri):
+                started = ollama_integration.start_local_server_if_needed(self.uri)
+                if not started:
+                    raise ollama_integration.OllamaError(
+                        "No se encontro un servidor Ollama corriendo ni el binario 'ollama' "
+                        "instalado. Instala Ollama desde https://ollama.com y vuelve a intentar."
+                    )
+            ollama_integration.ensure_model_available(self.uri, self.model)
+            metrics = ollama_integration.run_chat(self.uri, self.model, self.messages)
+        except Exception as exc:
+            self.finished.emit(False, str(exc), {})
+        else:
+            self.finished.emit(True, "", metrics)
+
+
+class _OllamaChatController(QObject):
+    """Vive en el hilo principal: igual que _ExportController en export_handler.py,
+    conectar la senal del worker (que corre en otro hilo) a un slot de un QObject con
+    afinidad al hilo principal es lo que evita tocar la UI desde el hilo equivocado."""
+
+    def __init__(self, chat_window, thread, worker):
+        super().__init__()
+        self.chat_window = chat_window
+        self.thread = thread
+        self.worker = worker
+
+    @Slot(bool, str, dict)
+    def on_finished(self, success, error_message, metrics):
+        self.thread.quit()
+        self.thread.wait()
+        self.chat_window._thread = None
+        self.chat_window._worker = None
+        self.chat_window._handle_response(success, error_message, metrics)
+        if self.chat_window._controller is self:
+            self.chat_window._controller = None
+
+
+class OllamaChatWindow(QDialog):
+    """Ventana de chat real contra Ollama; cada respuesta real se registra en el
+    proyecto activo (LocalStore + MLflow) via los helpers de HomeView."""
+
+    def __init__(self, home_view, hardware, provider, region, tdp, intensity, parent=None):
+        super().__init__(parent)
+        self.home_view = home_view
+        self.hardware = hardware
+        self.provider = provider
+        self.region = region
+        self.tdp = tdp
+        self.intensity = intensity
+        self.messages = []
+        self._thread = None
+        self._worker = None
+        self._controller = None
+
+        import ollama_integration
+        config = load_config()
+        self.uri = config.get("ollama_uri") or ollama_integration.DEFAULT_OLLAMA_URI
+        self.model = config.get("ollama_test_model") or ollama_integration.DEFAULT_TEST_MODEL
+
+        self.setWindowTitle(t("Chat con Ollama"))
+        self.resize(560, 640)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        layout.addWidget(make_label(t("Modelo: {model}").format(model=self.model), "infoText"))
+
+        self.history_view = QTextEdit()
+        self.history_view.setReadOnly(True)
+        layout.addWidget(self.history_view, 1)
+
+        self.status_label = make_label("", "infoText")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+
+        self.input_line = QLineEdit()
+        self.input_line.setPlaceholderText(t("Escribe un mensaje..."))
+        self.input_line.returnPressed.connect(self._send_message)
+        input_row.addWidget(self.input_line, 1)
+
+        self.send_btn = QPushButton(t("Enviar"))
+        self.send_btn.setObjectName("primaryButton")
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.clicked.connect(self._send_message)
+        input_row.addWidget(self.send_btn)
+
+        layout.addLayout(input_row)
+        self.input_line.setFocus()
+
+    def _append_line(self, who, text):
+        safe_who = html_escape(str(who))
+        safe_text = html_escape(str(text)).replace("\n", "<br>")
+        self.history_view.append(f"<b>{safe_who}:</b> {safe_text}<br>")
+
+    def _send_message(self):
+        prompt = self.input_line.text().strip()
+        if not prompt or (self._thread is not None and self._thread.isRunning()):
+            return
+
+        self._append_line(t("Tú"), prompt)
+        self.messages.append({"role": "user", "content": prompt})
+        self.input_line.clear()
+        self.input_line.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.status_label.setText(t("Esperando respuesta del modelo..."))
+
+        self._thread = QThread(self)
+        self._worker = _OllamaChatWorker(self.uri, self.model, list(self.messages))
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._controller = _OllamaChatController(self, self._thread, self._worker)
+        self._worker.finished.connect(self._controller.on_finished)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _handle_response(self, success, error_message, metrics):
+        self.input_line.setEnabled(True)
+        self.send_btn.setEnabled(True)
+        self.input_line.setFocus()
+
+        if not success:
+            self.status_label.setText("")
+            QMessageBox.critical(
+                self, t("Chat con Ollama"),
+                t("No se pudo ejecutar el modelo en Ollama:\n{error}").format(error=error_message),
+            )
+            return
+
+        response_text = metrics.get("response_text", "")
+        self.messages.append({"role": "assistant", "content": response_text})
+        self._append_line(self.model, response_text)
+
+        result = self.home_view._register_ollama_metrics(
+            self.model, self.hardware, self.provider, self.region, self.tdp, self.intensity, metrics,
+        )
+        status_text = t("Tokens: {count} · {tps} tok/s · {ms:.0f} ms · {kwh:.6f} kWh").format(
+            count=metrics.get("eval_count", 0), tps=metrics.get("tokens_per_second", 0),
+            ms=metrics.get("total_duration_ms", 0), kwh=result["kwh"],
+        )
+        if result["registered"]:
+            status_text += " · " + t("registrado en el proyecto activo")
+        elif result["error"]:
+            status_text += " · " + t("no se pudo registrar: {error}").format(error=result["error"])
+        elif result["carbon"] is None:
+            status_text += " · " + t("sin región/proveedor: no se estimó carbono")
+        else:
+            status_text += " · " + t("sin proyecto activo: no se registró")
+        self.status_label.setText(status_text)
+
+
 class HomeView(QWidget):
     def __init__(self, parent=None, main_window=None):
         super().__init__(parent)
         self.main_window = main_window
+        self._chat_window = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1052,6 +1227,12 @@ class HomeView(QWidget):
         self.register_execution_btn.setCursor(Qt.PointingHandCursor)
         self.register_execution_btn.clicked.connect(self._register_execution)
         header_layout.addWidget(self.register_execution_btn)
+
+        self.run_model_btn = QPushButton(t("Chat con Ollama"))
+        self.run_model_btn.setObjectName("secondaryButton")
+        self.run_model_btn.setCursor(Qt.PointingHandCursor)
+        self.run_model_btn.clicked.connect(self._open_ollama_chat)
+        header_layout.addWidget(self.run_model_btn)
 
         layout.addLayout(header_layout)
         layout.addWidget(make_separator("separator"))
@@ -1172,6 +1353,40 @@ class HomeView(QWidget):
             else:
                 card.update_description(card.default_description)
 
+    def _save_execution_locally(self, *, project_id, model, cost, carbon, kwh, water, duration_ms, semaphore):
+        """Persiste la ejecucion en LocalStore y devuelve el nombre real del proyecto."""
+        config = load_config()
+        store = None
+        try:
+            store = bootstrap_store(config, writable_path("semaforo.sqlite3"))
+            project_row = store.connection.execute(
+                "SELECT name FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if project_row is None:
+                raise ValidationError(t("El proyecto activo ya no existe."))
+            project_name = project_row["name"]
+
+            model_row = next((m for m in store.list_models(project_id) if m["name"] == model), None)
+            model_id = model_row["id"] if model_row else store.add_model(project_id, model)
+
+            store.add_execution(Execution(
+                model_id=model_id, timestamp=utc_iso(), cost=cost, carbon=carbon,
+                kwh=kwh, water=water, duration_ms=int(duration_ms), semaphore=semaphore,
+            ))
+            return project_name
+        finally:
+            if store is not None:
+                store.close()
+
+    def _log_execution_to_mlflow(self, *, project_name, model, hardware, provider, region,
+                                  cost, carbon, kwh, water, duration_ms, semaphore):
+        import mlflow_integration
+        return mlflow_integration.log_execution_run(
+            load_config(), project_name=project_name, model_name=model, hardware=hardware,
+            provider=provider, region=region, cost=cost, carbon=carbon, kwh=kwh,
+            water=water, duration_ms=int(duration_ms), semaphore=semaphore,
+        )
+
     def _register_execution(self):
         """Persiste el calculo real actual (LocalStore + MLflow); no hay valores inventados."""
         if not self.main_window:
@@ -1192,8 +1407,7 @@ class HomeView(QWidget):
             )
             return
 
-        config = load_config()
-        project_id = config.get("current_project_id")
+        project_id = load_config().get("current_project_id")
         if project_id is None:
             QMessageBox.warning(
                 self, t("Registrar Ejecución"),
@@ -1206,37 +1420,21 @@ class HomeView(QWidget):
         water = 0.0
         duration_ms = 3600000
 
-        store = None
         try:
-            store = bootstrap_store(config, writable_path("semaforo.sqlite3"))
-            project_row = store.connection.execute(
-                "SELECT name FROM projects WHERE id = ?", (project_id,)
-            ).fetchone()
-            if project_row is None:
-                QMessageBox.warning(self, t("Registrar Ejecución"), t("El proyecto activo ya no existe."))
-                return
-            project_name = project_row["name"]
-
-            model_row = next((m for m in store.list_models(project_id) if m["name"] == model), None)
-            model_id = model_row["id"] if model_row else store.add_model(project_id, model)
-
-            store.add_execution(Execution(
-                model_id=model_id, timestamp=utc_iso(), cost=cost, carbon=score,
+            project_name = self._save_execution_locally(
+                project_id=project_id, model=model, cost=cost, carbon=score,
                 kwh=kwh, water=water, duration_ms=duration_ms, semaphore=semaphore_value,
-            ))
+            )
+            self.main_window.refresh_projects_view()
         except (OSError, ValidationError) as exc:
             QMessageBox.critical(self, t("Registrar Ejecución"), str(exc))
             return
-        finally:
-            if store is not None:
-                store.close()
 
-        import mlflow_integration
         try:
-            run_id = mlflow_integration.log_execution_run(
-                config, project_name=project_name, model_name=model, hardware=hardware,
-                provider=provider, region=region, cost=cost, carbon=score, kwh=kwh,
-                water=water, duration_ms=duration_ms, semaphore=semaphore_value,
+            run_id = self._log_execution_to_mlflow(
+                project_name=project_name, model=model, hardware=hardware, provider=provider,
+                region=region, cost=cost, carbon=score, kwh=kwh, water=water,
+                duration_ms=duration_ms, semaphore=semaphore_value,
             )
         except Exception as exc:
             QMessageBox.warning(
@@ -1249,6 +1447,62 @@ class HomeView(QWidget):
             self, t("Registrar Ejecución"),
             t("Ejecución registrada localmente y en MLflow (run {run_id}).").format(run_id=run_id),
         )
+
+    def _open_ollama_chat(self):
+        """Abre una ventana de chat real contra Ollama, ligada al hardware/región activos."""
+        if not self.main_window:
+            return
+        state = self.main_window.selection_state
+        hardware = state.get("hardware")
+        tdp = state.get("hardware_tdp")
+        provider = state.get("provider")
+        region = state.get("region")
+        intensity = state.get("region_intensity")
+
+        if not hardware or tdp is None:
+            QMessageBox.warning(
+                self, t("Chat con Ollama"),
+                t("Selecciona un hardware antes de ejecutar el modelo."),
+            )
+            return
+
+        if self._chat_window is not None:
+            self._chat_window.close()
+        self._chat_window = OllamaChatWindow(self, hardware, provider, region, tdp, intensity, parent=self)
+        self._chat_window.setAttribute(Qt.WA_DeleteOnClose)
+        self._chat_window.destroyed.connect(lambda: setattr(self, "_chat_window", None))
+        self._chat_window.show()
+
+    def _register_ollama_metrics(self, model, hardware, provider, region, tdp, intensity, metrics):
+        """Calcula energia/carbono reales desde un turno de Ollama y registra la ejecucion
+        en el proyecto activo (LocalStore + MLflow) si hay uno seleccionado. No muestra
+        dialogos: devuelve los valores calculados para que el llamador decida como mostrarlos."""
+        duration_ms = metrics["total_duration_ms"]
+        hours = duration_ms / 3_600_000.0
+        kwh = calculate_energy(tdp, hours, 1.0)
+        carbon = calculate_carbon(tdp, hours, 1.0, intensity) if intensity is not None else None
+
+        result = {"kwh": kwh, "carbon": carbon, "registered": False, "error": None}
+
+        project_id = load_config().get("current_project_id")
+        semaphore_value = (self.main_window.current_semaphore_level if self.main_window else None) or "Verde"
+        if carbon is not None and project_id is not None:
+            try:
+                project_name = self._save_execution_locally(
+                    project_id=project_id, model=model, cost=0.0, carbon=carbon,
+                    kwh=kwh, water=0.0, duration_ms=duration_ms, semaphore=semaphore_value,
+                )
+                if self.main_window:
+                    self.main_window.refresh_projects_view()
+                self._log_execution_to_mlflow(
+                    project_name=project_name, model=model, hardware=hardware, provider=provider or "",
+                    region=region or "", cost=0.0, carbon=carbon, kwh=kwh, water=0.0,
+                    duration_ms=duration_ms, semaphore=semaphore_value,
+                )
+                result["registered"] = True
+            except Exception as exc:
+                result["error"] = str(exc)
+        return result
 
     def show_export_home_menu(self):
         menu = QMenu(self)
@@ -2374,6 +2628,10 @@ class ProjectsView(QWidget):
         self.global_view = False
         self.global_checkbox = None
         self.projects = []
+        self._mlflow_items_by_project = {}
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(5000)
+        self._refresh_timer.timeout.connect(self._refresh_automatically)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2401,6 +2659,12 @@ class ProjectsView(QWidget):
         self.project_combo.currentIndexChanged.connect(self._handle_project_change)
         selector_row.addWidget(self.project_combo, 1)
 
+        self.activate_btn = QPushButton(t("Activar proyecto"))
+        self.activate_btn.setObjectName("primaryButton")
+        self.activate_btn.setCursor(Qt.PointingHandCursor)
+        self.activate_btn.clicked.connect(self._activate_selected_project)
+        selector_row.addWidget(self.activate_btn)
+
         new_btn = QPushButton(t("Nuevo proyecto"))
         new_btn.setObjectName("secondaryButton")
         new_btn.setCursor(Qt.PointingHandCursor)
@@ -2414,6 +2678,13 @@ class ProjectsView(QWidget):
         selector_row.addWidget(self.archive_btn)
 
         layout.addLayout(selector_row)
+
+        self.active_project_label = make_label("", "infoText")
+        active_row = QHBoxLayout()
+        active_row.addWidget(self.active_project_label, 1)
+        self.refresh_status_label = make_label("", "infoText", alignment=Qt.AlignRight)
+        active_row.addWidget(self.refresh_status_label)
+        layout.addLayout(active_row)
 
         if self.is_admin:
             self.global_checkbox = QCheckBox(t("Vista global (todos los proyectos) — solo admin"))
@@ -2437,11 +2708,41 @@ class ProjectsView(QWidget):
 
         self._load_projects()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._load_projects()
+        self._refresh_timer.start()
+
+    def hideEvent(self, event):
+        self._refresh_timer.stop()
+        super().hideEvent(event)
+
+    def request_refresh(self):
+        if self.isVisible():
+            QTimer.singleShot(0, self._load_projects)
+
+    def _refresh_automatically(self):
+        store = None
+        try:
+            store = self._open_store()
+            current_projects = store.list_projects()
+        except (OSError, ValueError):
+            current_projects = []
+        finally:
+            if store is not None:
+                store.close()
+        known = [(project["id"], project["name"]) for project in self.projects]
+        current = [(project["id"], project["name"]) for project in current_projects]
+        if current != known:
+            self._load_projects(include_mlflow=False)
+        else:
+            self._refresh(include_mlflow=False)
+
     @staticmethod
     def _open_store():
         return bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
 
-    def _load_projects(self):
+    def _load_projects(self, include_mlflow=True):
         store = None
         try:
             store = self._open_store()
@@ -2467,13 +2768,27 @@ class ProjectsView(QWidget):
             self.project_combo.setCurrentIndex(index)
         self.project_combo.blockSignals(False)
 
-        self._refresh()
+        if self.project_combo.count():
+            self._activate_selected_project(refresh=False)
+        else:
+            self.active_project_label.setText(t("No hay un proyecto activo."))
+
+        self._refresh(include_mlflow=include_mlflow)
 
     def _handle_project_change(self, _index=None):
+        self._activate_selected_project()
+
+    def _activate_selected_project(self, _checked=False, refresh=True):
         project_id = self.project_combo.currentData()
         if project_id is not None:
             save_current_project_id(project_id)
-        self._refresh()
+            self.active_project_label.setText(
+                t("Proyecto activo: {name}").format(name=self.project_combo.currentText())
+            )
+        else:
+            self.active_project_label.setText(t("No hay un proyecto activo."))
+        if refresh:
+            self._refresh()
 
     def _create_project(self):
         name, ok = QInputDialog.getText(self, t("Nuevo proyecto"), t("Nombre del proyecto"))
@@ -2516,6 +2831,7 @@ class ProjectsView(QWidget):
     def _toggle_global(self, _state=None):
         self.global_view = bool(self.global_checkbox and self.global_checkbox.isChecked())
         self.project_combo.setEnabled(not self.global_view)
+        self.activate_btn.setEnabled(not self.global_view)
         self.archive_btn.setEnabled(not self.global_view)
         self._refresh()
 
@@ -2526,7 +2842,7 @@ class ProjectsView(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
-    def _refresh(self):
+    def _refresh(self, include_mlflow=True):
         self._clear_history()
         project_id = self.project_combo.currentData()
 
@@ -2575,7 +2891,14 @@ class ProjectsView(QWidget):
         self.history_container.addWidget(ListPanel(title, history_items))
 
         if project_name and not (self.is_admin and self.global_view):
-            self.history_container.addWidget(ListPanel(t("Runs en MLflow"), self._mlflow_run_items(project_name)))
+            if include_mlflow:
+                self._mlflow_items_by_project[project_name] = self._mlflow_run_items(project_name)
+            mlflow_items = self._mlflow_items_by_project.get(project_name)
+            if mlflow_items is not None:
+                self.history_container.addWidget(ListPanel(t("Runs en MLflow"), mlflow_items))
+        self.refresh_status_label.setText(
+            t("Actualizado: {time}").format(time=QDateTime.currentDateTime().toString("HH:mm:ss"))
+        )
 
     def _mlflow_run_items(self, project_name):
         import mlflow_integration
@@ -2969,21 +3292,23 @@ class SettingsView(QWidget):
         mlflow_row = QHBoxLayout()
         mlflow_row.setSpacing(10)
 
-        mlflow_token_key_path = writable_path("secrets", "mlflow_token.key")
+        self.mlflow_token_key_path = writable_path("secrets", "mlflow_token.key")
         mlflow_config = load_config()
 
-        uri_input = QLineEdit()
-        uri_input.setFixedWidth(220)
-        uri_input.setPlaceholderText("http://127.0.0.1:5000")
-        uri_input.setText(mlflow_config.get("mlflow_tracking_uri", ""))
+        self.uri_input = QLineEdit()
+        self.uri_input.setFixedWidth(220)
+        self.uri_input.setPlaceholderText("http://127.0.0.1:5000")
+        self.uri_input.setText(mlflow_config.get("mlflow_tracking_uri", ""))
+        uri_input = self.uri_input
 
-        token_input = QLineEdit()
-        token_input.setEchoMode(QLineEdit.Password)
-        token_input.setFixedWidth(180)
+        self.token_input = QLineEdit()
+        self.token_input.setEchoMode(QLineEdit.Password)
+        self.token_input.setFixedWidth(180)
+        token_input = self.token_input
         stored_mlflow_token = mlflow_config.get("mlflow_token_encrypted", "")
         if stored_mlflow_token:
             try:
-                token_input.setPlaceholderText(mask_api_key(decrypt_api_key(stored_mlflow_token, mlflow_token_key_path)))
+                token_input.setPlaceholderText(mask_api_key(decrypt_api_key(stored_mlflow_token, self.mlflow_token_key_path)))
             except ApiKeyError:
                 token_input.setPlaceholderText(t("Token almacenado no legible"))
         else:
@@ -3003,7 +3328,7 @@ class SettingsView(QWidget):
                 config = load_config()
                 config["mlflow_tracking_uri"] = uri
                 if raw_token:
-                    config["mlflow_token_encrypted"] = encrypt_api_key(raw_token, mlflow_token_key_path)
+                    config["mlflow_token_encrypted"] = encrypt_api_key(raw_token, self.mlflow_token_key_path)
                 with open(config_path, "w", encoding="utf-8") as handle:
                     json.dump(config, handle, ensure_ascii=True, indent=2)
             except ApiKeyError as exc:
@@ -3024,8 +3349,21 @@ class SettingsView(QWidget):
 
         def test_mlflow_connection():
             import mlflow_integration
+            uri = uri_input.text().strip()
+            if not uri:
+                QMessageBox.warning(self, t("MLflow"), t("Ingrese la Tracking URI del servidor MLflow."))
+                return
+            raw_token = token_input.text().strip()
+            test_config = dict(load_config())
+            test_config["mlflow_tracking_uri"] = uri
             try:
-                mlflow_integration.test_connection(load_config())
+                if raw_token:
+                    # Token recien tipeado, todavia no guardado: se prueba tal cual esta en pantalla.
+                    test_config["mlflow_token_encrypted"] = encrypt_api_key(raw_token, self.mlflow_token_key_path)
+                mlflow_integration.test_connection(test_config)
+            except ApiKeyError as exc:
+                QMessageBox.warning(self, t("MLflow"), str(exc))
+                return
             except Exception as exc:
                 QMessageBox.critical(self, t("MLflow"), t("No se pudo conectar al servidor MLflow:\n{error}").format(error=str(exc)))
                 return
@@ -3040,10 +3378,20 @@ class SettingsView(QWidget):
         mlflow_row.addWidget(test_mlflow_btn)
         mlflow_row.addStretch()
 
+
         thresh_fin_layout.addLayout(thresh_row)
         thresh_fin_layout.addLayout(fin_row)
         thresh_fin_layout.addLayout(mlflow_row)
         layout.addLayout(thresh_fin_layout)
+
+    def showEvent(self, event):
+        """El autostart de MLflow guarda su URI en segundo plano; si esta vista se
+        construyo antes de que terminara, refresca el campo cuando se vuelve a ver."""
+        super().showEvent(event)
+        if not self.uri_input.text().strip():
+            uri = load_config().get("mlflow_tracking_uri", "")
+            if uri:
+                self.uri_input.setText(uri)
 
 class AccountHeaderCard(QFrame):
     def __init__(self, user_profile, parent=None):
@@ -3282,6 +3630,16 @@ class AdminMenuView(QWidget):
             ),
             1,
         )
+        bottom_row.addWidget(
+            MenuSection(
+                t("EXPERIMENTAL"),
+                [
+                    (t("Limpiar datos de un proyecto"), "dangerButton", self.clear_project),
+                    (t("Eliminar un proyecto"), "dangerButton", self.delete_project),
+                ],
+            ),
+            1,
+        )
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
@@ -3465,6 +3823,92 @@ class AdminMenuView(QWidget):
                 store.close()
 
         QMessageBox.information(self, t("Eliminar usuario"), t("Usuario eliminado correctamente."))
+
+    def _select_project_for_destructive_action(self, title):
+        if not self._require_admin():
+            return None
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            projects = store.list_projects()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return None
+        finally:
+            if store is not None:
+                store.close()
+        if not projects:
+            QMessageBox.information(self, title, t("No hay proyectos disponibles."))
+            return None
+        names = [project["name"] for project in projects]
+        selected_name, accepted = QInputDialog.getItem(
+            self, title, t("Selecciona el proyecto:"), names, 0, False
+        )
+        if not accepted:
+            return None
+        return next((project for project in projects if project["name"] == selected_name), None)
+
+    def clear_project(self):
+        title = t("Limpiar datos de un proyecto")
+        project = self._select_project_for_destructive_action(title)
+        if project is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            title,
+            t("¿Limpiar todos los modelos y ejecuciones de {name}? El proyecto se conservará. Esta acción no se puede deshacer.").format(
+                name=project["name"]
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.clear_project(project["id"])
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, title, t("Datos del proyecto eliminados correctamente."))
+        if self.main_window:
+            self.main_window.refresh_projects_view()
+
+    def delete_project(self):
+        title = t("Eliminar un proyecto")
+        project = self._select_project_for_destructive_action(title)
+        if project is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            title,
+            t("¿Eliminar permanentemente el proyecto {name}, sus modelos y sus ejecuciones? Esta acción no se puede deshacer.").format(
+                name=project["name"]
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.delete_project(project["id"])
+            remaining_projects = store.list_projects()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        if load_config().get("current_project_id") == project["id"]:
+            replacement_id = remaining_projects[0]["id"] if remaining_projects else None
+            save_current_project_id(replacement_id)
+        QMessageBox.information(self, title, t("Proyecto eliminado correctamente."))
+        if self.main_window:
+            self.main_window.refresh_projects_view()
 
     def show_user_locks(self):
         role = self.user_profile.get("role", "")
@@ -4437,17 +4881,36 @@ class HardwareCatalogView(QWidget):
         return best_row if best_score >= self._HW_MATCH_THRESHOLD else None
 
     def _auto_select_detected(self):
-        component_type = self._current_component_type()
         key_map = {"GPU": "gpu", "CPU": "cpu", "RAM": "ram"}
-        detected_value = (self.detected_info or {}).get(key_map.get(component_type, ""), "")
-        if not detected_value or detected_value == t("No detectado"):
-            self.rightsize_result.setText(t("No hay hardware local detectado todavía para {tipo}.").format(tipo=component_type))
-            return
-        match = self._find_matching_row(component_type, detected_value)
-        if not match:
-            self.rightsize_result.setText(t("No se encontró una coincidencia en el catálogo para: {valor}").format(valor=detected_value))
-            return
-        self._handle_assign(match)
+        selected_types = []
+        unmatched_values = []
+        for component_type in self.COMPONENT_TYPES:
+            detected_value = (self.detected_info or {}).get(key_map[component_type], "")
+            if not detected_value or detected_value == t("No detectado"):
+                continue
+            match = self._find_matching_row(component_type, detected_value)
+            if match:
+                self._handle_assign(match)
+                selected_types.append(component_type)
+            else:
+                unmatched_values.append(str(detected_value))
+
+        self._on_tab_changed(self.hardware_tabs.currentIndex())
+        if selected_types:
+            message = self._format_selection_summary()
+            if unmatched_values:
+                message += "\n" + t("No se encontró una coincidencia en el catálogo para: {valor}").format(
+                    valor=", ".join(unmatched_values)
+                )
+            self.rightsize_result.setText(message)
+        elif unmatched_values:
+            self.rightsize_result.setText(
+                t("No se encontró una coincidencia en el catálogo para: {valor}").format(
+                    valor=", ".join(unmatched_values)
+                )
+            )
+        else:
+            self.rightsize_result.setText(t("No hay hardware local detectado todavía para {tipo}.").format(tipo="GPU / CPU / RAM"))
 
     def _suggest_rightsize(self):
         component_type = self._current_component_type()
@@ -4862,6 +5325,7 @@ class DashboardWindow(QMainWindow):
         self.models_view = ModelsView(on_selection=self._handle_model_selection)
         self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile)
         self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
+        self.projects_view = ProjectsView(profile=user_profile)
 
         sidebar.lang_action.triggered.connect(self._toggle_language)
         self.header_title = self.home_view.findChild(QLabel, "pageTitle")
@@ -4872,7 +5336,7 @@ class DashboardWindow(QMainWindow):
             sidebar,
             t("Proyectos"),
             make_text_icon("P", 18, "#66bb22"),
-            ProjectsView(profile=user_profile),
+            self.projects_view,
         )
         self._add_nav_item(
             sidebar,
@@ -4906,6 +5370,9 @@ class DashboardWindow(QMainWindow):
 
         sidebar.button_group.buttons()[0].setChecked(True)
         self.stack.setCurrentIndex(0)
+
+    def refresh_projects_view(self):
+        self.projects_view.request_refresh()
 
     def _add_nav_item(self, sidebar, label, icon, widget):
         button = sidebar.add_nav_button(label, icon)
@@ -5714,19 +6181,46 @@ def _shutdown_mlflow_autostart():
     mlflow_integration.stop_local_server()
 
 
+def _bootstrap_ollama_autostart():
+    """Detecta o arranca un servidor Ollama local (si el binario esta instalado), sin bloquear la UI."""
+    def worker():
+        import ollama_integration
+        try:
+            ollama_integration.start_local_server_if_needed()
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _shutdown_ollama_autostart():
+    import ollama_integration
+    ollama_integration.stop_local_server()
+
+
 def main():
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
+    instance_lock = QLockFile(os.path.join(QDir.tempPath(), "SemaforoIA.lock"))
+    instance_lock.setStaleLockTime(5000)
+    if not instance_lock.tryLock(100):
+        QMessageBox.information(None, t("Semáforo IA"), t("Semáforo IA ya está abierto."))
+        return
     app.setFont(QFont("Segoe UI", 10))
     apply_stylesheet(app)
 
     i18n.load_saved_language()
     _bootstrap_mlflow_autostart()
+    _bootstrap_ollama_autostart()
     app.aboutToQuit.connect(_shutdown_mlflow_autostart)
+    app.aboutToQuit.connect(_shutdown_ollama_autostart)
 
     window = LoginWindow()
     window.show()
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    instance_lock.unlock()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -604,6 +604,33 @@ class LocalStore:
         self.connection.execute("UPDATE projects SET state = 'archived' WHERE id = ?", (project_id,))
         self.connection.commit()
 
+    def clear_project(self, project_id: int) -> None:
+        project = self.connection.execute(
+            "SELECT id FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            raise ValidationError("El proyecto no existe.")
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM executions WHERE model_id IN (SELECT id FROM models WHERE project_id = ?)",
+                (project_id,),
+            )
+            self.connection.execute("DELETE FROM models WHERE project_id = ?", (project_id,))
+
+    def delete_project(self, project_id: int) -> None:
+        project = self.connection.execute(
+            "SELECT id FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            raise ValidationError("El proyecto no existe.")
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM executions WHERE model_id IN (SELECT id FROM models WHERE project_id = ?)",
+                (project_id,),
+            )
+            self.connection.execute("DELETE FROM models WHERE project_id = ?", (project_id,))
+            self.connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
     def reassign_model(self, model_id: int, target_project_id: int) -> None:
         target = self.connection.execute(
             "SELECT state, is_active FROM projects WHERE id = ?", (target_project_id,)
