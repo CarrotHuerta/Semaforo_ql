@@ -2920,10 +2920,10 @@ class ProjectsView(QWidget):
             if store is not None:
                 store.close()
 
-        self.cost_card.set_value(f"{totals['cost']:.2f}")
-        self.carbon_card.set_value(f"{totals['carbon']:.2f}")
-        self.kwh_card.set_value(f"{totals['kwh']:.2f}")
-        self.water_card.set_value(f"{totals['water']:.2f}")
+        self.cost_card.set_value(f"{totals['cost']:.2f} USD")
+        self.carbon_card.set_value(f"{totals['carbon']:.2f} gCO2eq")
+        self.kwh_card.set_value(f"{totals['kwh']:.2f} kWh")
+        self.water_card.set_value(f"{totals['water']:.2f} L")
 
         self.history_container.addWidget(
             self._scrollable_list_panel(title, history_items, "projectHistoryListScroll"),
