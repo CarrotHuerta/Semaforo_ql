@@ -168,8 +168,9 @@ def _send_os_notification():
         if os.path.isfile(config_path):
             import json
             with open(config_path, "r", encoding="utf-8") as handle:
-                if not json.load(handle).get("notifications_os", True):
-                    return
+                config = json.load(handle)
+            if not config.get("notifications_os", True) or config.get("focus_mode", False):
+                return
         from plyer import notification
         notification.notify(
             title="Semaforo IA",

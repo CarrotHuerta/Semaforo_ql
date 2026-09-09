@@ -51,6 +51,235 @@ class CircuitBreakerError(PermissionError):
     """Raised when a project quota or state forbids an execution."""
 
 
+ERROR_CATALOG = {
+    "ERR_QUOTA_FIN": {
+        "cause": "La ejecucion proyectada supera la cuota financiera del proyecto.",
+        "action": "Aumente la cuota, reduzca el costo estimado o solicite un override administrativo.",
+    },
+    "ERR_QUOTA_ECO": {
+        "cause": "La ejecucion proyectada supera la cuota ecologica del proyecto.",
+        "action": "Reduzca la duracion, migre a una region mas limpia o solicite un override administrativo.",
+    },
+    "ERR_USER_QUOTA_FIN": {
+        "cause": "La ejecucion proyectada supera la cuota financiera del usuario.",
+        "action": "Pida a un administrador que ajuste su cuota personal o reduzca el costo estimado.",
+    },
+    "ERR_USER_QUOTA_ECO": {
+        "cause": "La ejecucion proyectada supera la cuota de CO2 del usuario.",
+        "action": "Pida a un administrador que ajuste su cuota personal o reduzca las emisiones estimadas.",
+    },
+    "ERR_PROJECT_READONLY": {
+        "cause": "El proyecto esta archivado, cerrado o inactivo.",
+        "action": "Active otro proyecto o pida a un administrador que reabra el actual.",
+    },
+    "ERR_LOCKED_PARAM": {
+        "cause": "Uno o mas parametros estan bloqueados por el entorno Cloud seleccionado.",
+        "action": "Desactive el entorno Cloud o ajuste solo los parametros desbloqueados.",
+    },
+    "ERR_IO": {
+        "cause": "No se pudo leer o escribir un archivo local (permisos, bloqueo o disco).",
+        "action": "Cierre programas que usen el archivo, verifique permisos y reintente.",
+    },
+    "ERR_NET": {
+        "cause": "Fallo de red o el servicio remoto no respondio a tiempo.",
+        "action": "Verifique la conexion, la URL configurada y reintente; se usara la cache local si existe.",
+    },
+    "ERR_DB": {
+        "cause": "La base de datos local esta corrupta o inaccesible.",
+        "action": "Restaure un respaldo validado desde Ajustes o contacte a un administrador.",
+    },
+    "ERR_DATA": {
+        "cause": "Los datos de entrada no cumplen el formato o esquema requerido.",
+        "action": "Corrija los campos marcados y vuelva a intentar la operacion.",
+    },
+}
+
+
+def describe_error(code: str, detail: str = "") -> dict[str, str]:
+    """Return a guided error payload (code, cause, action) for the given catalog code."""
+    entry = ERROR_CATALOG.get(code)
+    if not entry:
+        entry = {"cause": "Error no catalogado.", "action": "Revise el detalle tecnico y reintente."}
+        code = "ERR_UNKNOWN"
+    return {"code": code, "cause": entry["cause"], "action": entry["action"], "detail": str(detail)}
+
+
+def assert_parameters_unlocked(locked: Iterable[str], required: Iterable[str]) -> None:
+    """Reject an action that needs parameters currently locked by the active environment."""
+    locked_set = {str(item).strip().lower() for item in locked}
+    blocked = sorted(str(item) for item in required if str(item).strip().lower() in locked_set)
+    if blocked:
+        raise ValidationError(
+            "Parametros bloqueados por el entorno activo: " + ", ".join(blocked) + "."
+        )
+
+
+def paginate(records: Iterable[dict[str, Any]], page: int, page_size: int = 10) -> dict[str, Any]:
+    """Slice records into a validated page; pages are 1-based."""
+    rows = list(records)
+    if page_size <= 0:
+        raise ValidationError("El tamano de pagina debe ser positivo.")
+    total = len(rows)
+    pages = max(1, -(-total // page_size))
+    page = min(max(1, int(page)), pages)
+    start = (page - 1) * page_size
+    return {"items": rows[start:start + page_size], "page": page, "pages": pages, "total": total}
+
+
+LOW_CARBON_THRESHOLD = 100.0
+
+
+def is_low_carbon_region(intensity: float | None, threshold: float = LOW_CARBON_THRESHOLD) -> bool:
+    """A region qualifies as low-carbon when its factor is a known value under the threshold."""
+    if intensity is None:
+        return False
+    try:
+        return 0 <= float(intensity) < threshold
+    except (TypeError, ValueError):
+        return False
+
+
+def detect_new_hardware(detected: dict[str, str], catalog_names: Iterable[str]) -> list[str]:
+    """Return detected component names that do not appear in the local catalog."""
+    known = {str(name).strip().lower() for name in catalog_names if str(name).strip()}
+    unknown = []
+    for key in ("cpu", "gpu", "ram"):
+        name = str(detected.get(key, "")).strip()
+        if not name or name.lower() in {"no detectado", "not detected"}:
+            continue
+        if not any(name.lower() in entry or entry in name.lower() for entry in known):
+            unknown.append(name)
+    return unknown
+
+
+IMMERSION_FLUID_COMPATIBILITY = {
+    "aceite mineral": {"CPU", "GPU"},
+    "fluido sintetico": {"CPU", "GPU", "RAM"},
+    "fluorocarbono": {"CPU", "GPU", "RAM"},
+}
+
+
+def check_immersion_compatibility(components: Iterable[str], fluid: str) -> list[str]:
+    """Return the components NOT compatible with the selected immersion fluid."""
+    key = str(fluid).strip().lower()
+    if key not in IMMERSION_FLUID_COMPATIBILITY:
+        raise ValidationError(f"Fluido de inmersion no soportado: {fluid}")
+    allowed = IMMERSION_FLUID_COMPATIBILITY[key]
+    return sorted({str(c).strip().upper() for c in components if str(c).strip()} - allowed)
+
+
+def parse_hydro_records(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate flow-meter/CSV water records with timestamp and litres columns."""
+    parsed = []
+    for index, record in enumerate(records, start=1):
+        raw_ts = str(record.get("timestamp", "")).strip()
+        try:
+            timestamp = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise DataIntegrityError(f"El registro hidrico {index} tiene un timestamp invalido.") from exc
+        try:
+            litres = float(record.get("litres", record.get("litros", "")))
+        except (TypeError, ValueError) as exc:
+            raise DataIntegrityError(f"El registro hidrico {index} no tiene litros validos.") from exc
+        if litres < 0:
+            raise DataIntegrityError(f"El registro hidrico {index} tiene litros negativos.")
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        parsed.append({"timestamp": timestamp, "litres": litres})
+    if not parsed:
+        raise DataIntegrityError("El archivo hidrico no contiene registros.")
+    return parsed
+
+
+def detect_hydro_desync(records: list[dict[str, Any]], max_gap_minutes: float = 120.0) -> list[str]:
+    """Detect out-of-order timestamps or gaps larger than the tolerated window."""
+    if max_gap_minutes <= 0:
+        raise ValidationError("La tolerancia de desincronizacion debe ser positiva.")
+    issues = []
+    previous = None
+    for index, record in enumerate(records, start=1):
+        current = record["timestamp"]
+        if previous is not None:
+            delta = (current - previous).total_seconds() / 60
+            if delta < 0:
+                issues.append(f"Registro {index}: timestamp anterior al previo (desincronizacion horaria).")
+            elif delta > max_gap_minutes:
+                issues.append(f"Registro {index}: brecha de {delta:.0f} min supera la tolerancia.")
+        previous = current
+    return issues
+
+
+def hydro_total_litres(records: list[dict[str, Any]]) -> float:
+    return round(sum(record["litres"] for record in records), 4)
+
+
+def flow_meter_reading(address: str, timeout: float = 1.0) -> float:
+    """Read litres/hour from a flow meter; only the local simulator is reachable offline."""
+    if not address or not str(address).strip():
+        raise TimeoutError("Timeout de conexion: direccion del flujometro vacia.")
+    if str(address).strip().lower() in {"simulator", "simulador", "127.0.0.1"}:
+        seed = int(time.time() * 1000) % 191
+        return round(float(10 + seed) / 10, 2)
+    raise TimeoutError(f"Timeout de conexion con el flujometro {address}.")
+
+
+def primary_energy_source(mix: dict[str, float]) -> dict[str, Any]:
+    """Identify the dominant energy source; ties are reported as 'Mix Equilibrado'."""
+    cleaned = {}
+    for name, value in mix.items():
+        label = str(name).strip()
+        try:
+            percent = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(f"El porcentaje de {label} no es valido.") from exc
+        if percent < 0:
+            raise ValidationError(f"El porcentaje de {label} no puede ser negativo.")
+        if label:
+            cleaned[label] = percent
+    total = sum(cleaned.values())
+    if not cleaned or total <= 0:
+        raise ValidationError("La matriz energetica no contiene porcentajes positivos.")
+    normalized = {name: round(value / total * 100, 2) for name, value in cleaned.items()}
+    top_value = max(normalized.values())
+    leaders = sorted(name for name, value in normalized.items() if value == top_value)
+    tied = len(leaders) > 1
+    return {
+        "label": "Mix Equilibrado" if tied else leaders[0],
+        "percent": top_value,
+        "tied": tied,
+        "breakdown": normalized,
+    }
+
+
+MIN_TRUSTED_YEAR = 2020
+MAX_TRUSTED_YEAR = 2100
+
+
+def clock_is_trusted(value: datetime | None = None) -> bool:
+    """Detect an obviously corrupt OS clock before emitting normative timestamps."""
+    current = value or datetime.now(timezone.utc)
+    return MIN_TRUSTED_YEAR <= current.year <= MAX_TRUSTED_YEAR
+
+
+def normative_date(value: datetime | None = None) -> str:
+    """Return a strict YYYY-MM-DD date in UTC, refusing corrupt clocks."""
+    current = value or datetime.now(timezone.utc)
+    if not clock_is_trusted(current):
+        raise ValidationError("El reloj del sistema es invalido; corrija la fecha del equipo.")
+    return current.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+def format_local_timestamp(utc_text: str) -> str:
+    """Convert a stored UTC timestamp to local time with explicit offset for the UI."""
+    try:
+        parsed = datetime.strptime(str(utc_text).strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return str(utc_text)
+    local = parsed.replace(tzinfo=timezone.utc).astimezone()
+    offset = local.strftime("%z")
+    return f"{local.strftime('%Y-%m-%d %H:%M:%S')} UTC{offset[:3]}:{offset[3:]}" if offset else local.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def predict_limit_breach(
     history: Iterable[dict[str, Any]],
     limit: float,
@@ -360,6 +589,52 @@ def best_shifting_hour(hourly_factors: Iterable[float]) -> tuple[int, float]:
         raise ValidationError("La matriz horaria debe contener 24 factores validos.")
     minimum = min(factors)
     return factors.index(minimum), minimum
+
+
+def software_efficiency_recommendations(
+    duration_ms: int,
+    cpu_utilization: float | None = None,
+    memory_utilization: float | None = None,
+    batch_size: int | None = None,
+) -> list[dict[str, str]]:
+    """Return conservative software-efficiency findings from explicit runtime metrics."""
+    if duration_ms < 0:
+        raise ValidationError("La duracion no puede ser negativa.")
+    for value, label in (
+        (cpu_utilization, "CPU"),
+        (memory_utilization, "RAM"),
+    ):
+        if value is not None and not 0 <= value <= 100:
+            raise ValidationError(f"La utilizacion de {label} debe estar entre 0 y 100.")
+    if batch_size is not None and batch_size <= 0:
+        raise ValidationError("El tamano de lote debe ser positivo.")
+
+    findings = []
+    if duration_ms > 600_000:
+        findings.append({
+            "code": "LONG_RUNTIME",
+            "title": "Duracion elevada",
+            "recommendation": "Revisar early stopping, cache y paralelismo antes de aumentar hardware.",
+        })
+    if cpu_utilization is not None and cpu_utilization < 50 and duration_ms > 120_000:
+        findings.append({
+            "code": "LOW_CPU_UTILIZATION",
+            "title": "CPU subutilizada",
+            "recommendation": "Revisar esperas de I/O, serializacion o tamano de lote.",
+        })
+    if memory_utilization is not None and memory_utilization > 90:
+        findings.append({
+            "code": "HIGH_MEMORY_PRESSURE",
+            "title": "Presion de memoria",
+            "recommendation": "Reducir el tamano de lote o liberar datos intermedios antes de continuar.",
+        })
+    if batch_size == 1 and duration_ms > 120_000:
+        findings.append({
+            "code": "SINGLE_ITEM_BATCH",
+            "title": "Lote unitario",
+            "recommendation": "Evaluar procesamiento por lotes para reducir el costo fijo por iteracion.",
+        })
+    return findings
 
 
 def compare_models(models: Iterable[dict[str, Any]], limit: int = 4) -> list[dict[str, Any]]:
@@ -672,6 +947,19 @@ class LocalStore:
             """
         )
         self.connection.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Additive migrations for databases created by older releases."""
+        migrations = (
+            ("executions", "username", "ALTER TABLE executions ADD COLUMN username TEXT"),
+            ("model_templates", "is_deleted", "ALTER TABLE model_templates ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
+        )
+        for table, column, statement in migrations:
+            columns = {row[1] for row in self.connection.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                self.connection.execute(statement)
+        self.connection.commit()
 
     def add_user(self, username: str, password: str, role: str = "standard") -> int:
         validate_password(password)
@@ -691,6 +979,69 @@ class LocalStore:
         )
         self.connection.commit()
         return int(cursor.lastrowid)
+
+    def set_user_password(self, username: str, password: str) -> None:
+        validate_password(password)
+        cursor = self.connection.execute(
+            "UPDATE users SET password_hash = ?, failed_attempts = 0, is_locked = 0, "
+            "force_password_change = 0 WHERE username = ?",
+            (hash_password(password), username.strip()),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
+    def reset_password_temporary(self, username: str, temp_password: str) -> None:
+        """Admin reset: assign a temporary password that must be changed at next login."""
+        validate_password(temp_password)
+        cursor = self.connection.execute(
+            "UPDATE users SET password_hash = ?, failed_attempts = 0, is_locked = 0, "
+            "force_password_change = 1 WHERE username = ?",
+            (hash_password(temp_password), username.strip()),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
+    def set_user_quotas(self, username: str, budget_usd: float | None, budget_co2: float | None) -> None:
+        """Persist per-user USD/CO2 quotas; None removes the corresponding limit."""
+        if any(value is not None and value <= 0 for value in (budget_usd, budget_co2)):
+            raise ValidationError("Las cuotas de usuario deben ser positivas o quedar vacias.")
+        cursor = self.connection.execute(
+            "UPDATE users SET budget_usd = ?, budget_co2 = ? WHERE username = ?",
+            (budget_usd, budget_co2, username.strip()),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
+    def user_quotas(self, username: str) -> dict[str, float | None]:
+        row = self.connection.execute(
+            "SELECT budget_usd, budget_co2 FROM users WHERE username = ?", (username.strip(),)
+        ).fetchone()
+        if not row:
+            raise ValidationError("El usuario no existe.")
+        return {"budget_usd": row["budget_usd"], "budget_co2": row["budget_co2"]}
+
+    def user_totals(self, username: str) -> dict[str, float]:
+        row = self.connection.execute(
+            "SELECT COALESCE(SUM(cost), 0) AS cost, COALESCE(SUM(carbon), 0) AS carbon "
+            "FROM executions WHERE username = ?",
+            (username.strip(),),
+        ).fetchone()
+        return {"cost": round(float(row["cost"]), 6), "carbon": round(float(row["carbon"]), 6)}
+
+    def set_user_role(self, username: str, role: str) -> None:
+        normalized_role = str(role).strip().lower()
+        if normalized_role not in {"standard", "admin", "administrador", "usuario"}:
+            raise ValidationError("El rol no es valido.")
+        cursor = self.connection.execute(
+            "UPDATE users SET role = ? WHERE username = ?",
+            (role.strip(), username.strip()),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError("El usuario no existe.")
+        self.connection.commit()
 
     def authenticate(self, username: str, password: str) -> sqlite3.Row | None:
         user = self.connection.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
@@ -1054,8 +1405,48 @@ class LocalStore:
         self.connection.execute("DELETE FROM model_templates WHERE id=?", (template_id,))
         self.connection.commit()
 
-    def list_templates(self) -> list[dict[str, Any]]:
-        return [{**dict(row), "config": json.loads(row["config_json"])} for row in self.connection.execute("SELECT * FROM model_templates ORDER BY name")]
+    def soft_delete_template(self, template_id: int) -> None:
+        """Hide a custom template while keeping it recoverable in the database."""
+        row = self.connection.execute("SELECT is_factory FROM model_templates WHERE id=?", (template_id,)).fetchone()
+        if not row:
+            raise ValidationError("La plantilla no existe.")
+        if row["is_factory"]:
+            raise PermissionError("Las plantillas de fabrica no se pueden eliminar.")
+        self.connection.execute("UPDATE model_templates SET is_deleted=1 WHERE id=?", (template_id,))
+        self.connection.commit()
+
+    def template_linked_projects(self, template_id: int) -> list[str]:
+        """Projects referenced by a template config via project_id/project_ids keys."""
+        row = self.connection.execute("SELECT config_json FROM model_templates WHERE id=?", (template_id,)).fetchone()
+        if not row:
+            raise ValidationError("La plantilla no existe.")
+        try:
+            config = json.loads(row["config_json"])
+        except json.JSONDecodeError as exc:
+            raise DataIntegrityError("La configuracion de la plantilla esta corrupta.") from exc
+        ids = []
+        if isinstance(config, dict):
+            if config.get("project_id") is not None:
+                ids.append(config["project_id"])
+            if isinstance(config.get("project_ids"), list):
+                ids.extend(config["project_ids"])
+        names = []
+        for project_id in ids:
+            try:
+                project = self.connection.execute(
+                    "SELECT name FROM projects WHERE id = ? AND is_active = 1", (int(project_id),)
+                ).fetchone()
+            except (TypeError, ValueError):
+                continue
+            if project:
+                names.append(project["name"])
+        return sorted(set(names))
+
+    def list_templates(self, include_deleted: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM model_templates"
+        if not include_deleted:
+            query += " WHERE is_deleted = 0"
+        return [{**dict(row), "config": json.loads(row["config_json"])} for row in self.connection.execute(query + " ORDER BY name")]
 
     def set_project_quotas(self, project_id: int, budget_usd: float | None, carbon_gco2eq: float | None) -> None:
         if any(value is not None and value <= 0 for value in (budget_usd, carbon_gco2eq)):
@@ -1069,7 +1460,7 @@ class LocalStore:
         )
         self.connection.commit()
 
-    def circuit_breaker_status(self, model_id: int, added_cost: float = 0, added_carbon: float = 0) -> dict[str, Any]:
+    def circuit_breaker_status(self, model_id: int, added_cost: float = 0, added_carbon: float = 0, username: str | None = None) -> dict[str, Any]:
         if added_cost < 0 or added_carbon < 0:
             raise ValidationError("Los consumos proyectados no pueden ser negativos.")
         model = self.connection.execute(
@@ -1082,13 +1473,29 @@ class LocalStore:
         totals = self.project_totals(model["project_id"])
         projected = {"cost": totals["cost"] + added_cost, "carbon": totals["carbon"] + added_carbon}
         reasons = []
+        codes = []
         if not model["is_active"] or model["state"] != "active":
             reasons.append("El proyecto esta archivado o inactivo.")
+            codes.append("ERR_PROJECT_READONLY")
         if quotas and quotas["budget_usd"] is not None and projected["cost"] > quotas["budget_usd"]:
             reasons.append("Se superaria la cuota financiera.")
+            codes.append("ERR_QUOTA_FIN")
         if quotas and quotas["carbon_gco2eq"] is not None and projected["carbon"] > quotas["carbon_gco2eq"]:
             reasons.append("Se superaria la cuota ecologica.")
-        return {"allowed": not reasons, "project_id": model["project_id"], "totals": totals, "projected": projected, "reasons": reasons}
+            codes.append("ERR_QUOTA_ECO")
+        if username:
+            user = self.connection.execute(
+                "SELECT budget_usd, budget_co2 FROM users WHERE username = ?", (username.strip(),)
+            ).fetchone()
+            if user:
+                user_totals = self.user_totals(username)
+                if user["budget_usd"] is not None and user_totals["cost"] + added_cost > user["budget_usd"]:
+                    reasons.append("Se superaria la cuota financiera del usuario.")
+                    codes.append("ERR_USER_QUOTA_FIN")
+                if user["budget_co2"] is not None and user_totals["carbon"] + added_carbon > user["budget_co2"]:
+                    reasons.append("Se superaria la cuota de CO2 del usuario.")
+                    codes.append("ERR_USER_QUOTA_ECO")
+        return {"allowed": not reasons, "project_id": model["project_id"], "totals": totals, "projected": projected, "reasons": reasons, "codes": codes}
 
     def create_admin_override(self, project_id: int, username: str, password: str, reason: str, ttl_seconds: int = 300) -> str:
         reason = str(reason).strip()
@@ -1117,8 +1524,8 @@ class LocalStore:
             (utc_iso(), actor, action, project_id, details),
         )
 
-    def add_execution(self, execution: Execution, override_token: str | None = None) -> int:
-        status = self.circuit_breaker_status(execution.model_id, execution.cost, execution.carbon)
+    def add_execution(self, execution: Execution, override_token: str | None = None, username: str | None = None) -> int:
+        status = self.circuit_breaker_status(execution.model_id, execution.cost, execution.carbon, username=username)
         override = None
         if status["reasons"] and override_token:
             override = self.connection.execute(
@@ -1130,8 +1537,8 @@ class LocalStore:
             raise CircuitBreakerError(" ".join(status["reasons"]))
         with self.connection:
             cursor = self.connection.execute(
-                "INSERT INTO executions(model_id, timestamp, cost, carbon, kwh, water, duration_ms, semaphore) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                tuple(asdict(execution).values()),
+                "INSERT INTO executions(model_id, timestamp, cost, carbon, kwh, water, duration_ms, semaphore, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(asdict(execution).values()) + (username.strip() if username else None,),
             )
             if override:
                 self.connection.execute("UPDATE admin_overrides SET used_at=? WHERE token=?", (utc_iso(), override_token))
@@ -1146,23 +1553,45 @@ class LocalStore:
         self.connection.close()
 
 
-def import_records(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
+def import_records(
+    path: str | os.PathLike[str],
+    required_fields: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read JSON/CSV records and optionally enforce a declared import schema."""
     file_path = Path(path)
     try:
         if file_path.suffix.lower() == ".json":
             data = json.loads(file_path.read_text(encoding="utf-8"))
             if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
                 raise DataIntegrityError("El JSON debe contener una lista de objetos.")
-            return data
-        if file_path.suffix.lower() == ".csv":
+            records = data
+        elif file_path.suffix.lower() == ".csv":
             with file_path.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             if not rows or not rows[0]:
                 raise DataIntegrityError("El CSV no contiene registros o encabezados.")
-            return rows
+            records = rows
+        else:
+            raise DataIntegrityError("Formato no soportado; use JSON o CSV.")
+        if not records:
+            raise DataIntegrityError("El archivo no contiene registros.")
+        schema = tuple(dict.fromkeys(str(field).strip() for field in (required_fields or ())))
+        if any(not field for field in schema):
+            raise ValidationError("El esquema de importacion contiene campos vacios.")
+        if schema:
+            expected = set(schema)
+            for index, record in enumerate(records, start=1):
+                missing = sorted(expected - set(record))
+                if missing:
+                    raise DataIntegrityError(
+                        f"El registro {index} no contiene los campos requeridos: {', '.join(missing)}."
+                    )
+        keys = set(records[0]) if records else set()
+        if any(set(record) != keys for record in records):
+            raise DataIntegrityError("Todos los registros deben usar las mismas columnas.")
+        return records
     except (OSError, UnicodeError, json.JSONDecodeError, csv.Error) as exc:
         raise DataIntegrityError(f"No se pudo leer el archivo: {exc}") from exc
-    raise DataIntegrityError("Formato no soportado; use JSON o CSV.")
 
 
 def export_records(records: Iterable[dict[str, Any]], path: str | os.PathLike[str]) -> None:

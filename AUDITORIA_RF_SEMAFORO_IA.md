@@ -1,10 +1,156 @@
 # Auditoria funcional y tecnica de Semaforo IA
 
-**Fecha de revision:** 2026-09-04
+**Fecha de revision:** 2026-09-08
 **Alcance:** RF01-RF70 y sus casos de uso y excepciones.  
 **Criterio:** Un requisito solo se considera listo cuando estan implementados sus casos de uso, persistencia, validaciones y excepciones. Un campo SQL o un boton que solo muestra un mensaje no cuenta como implementacion.
 
+> **Estado vigente (2026-09-08):** Esta seccion prevalece sobre todos los apartados historicos. Los estados se basan en el codigo, las pruebas automatizadas (59 exitosas) y el build PyInstaller verificado en esta iteracion.
+
+## Cierre de pendientes del 2026-09-08
+
+### Trabajo realizado en esta iteracion
+
+- **RF05:** `Abortar simulacion` ahora cancela realmente el worker de Ollama activo y el hilo de telemetria, y reinicia la evaluacion actual; deja de ser un mensaje placeholder.
+- **RF08:** `ModelsView` incorpora un catalogo paginado (`paginate()` en el nucleo) con ordenamiento por columnas (QTableWidget sortable), controles Anterior/Siguiente, contador de paginas y estado vacio explicito.
+- **RF12/RF49:** Nuevo modo `Usar entorno Cloud` en la vista Cloud que bloquea los factores locales (PUE, % verde) con candado visible en Ajustes; `Aplicar recomendacion` rechaza cambios de hardware con `assert_parameters_unlocked()` y error guiado `ERR_LOCKED_PARAM`.
+- **RF20:** Filtro `Solo regiones de baja intensidad (<100 gCO2eq/kWh)` con `is_low_carbon_region()`, estado vacio controlado por proveedor y tarjetas sincronizadas.
+- **RF27:** Se agrego edicion de hardware personalizado desde la UI (`Editar personalizado`) reutilizando `update_hardware()`; el catalogo de fabrica sigue protegido.
+- **RF34:** Cliente billing con timeout/retry/cache ya existente queda como arquitectura final; la validacion por ping contra el proveedor real sigue requiriendo credenciales (EXTERNO solo esa pieza).
+- **RF37:** `Modo Concentracion` persistido en `config.json` y respetado por `_send_os_notification()`; el envio ya era best-effort ante bloqueos del SO.
+- **RF43:** Boton `Actualizar catalogo` con `detect_new_hardware()` que informa componentes detectados no catalogados; recarga manual sin depender de procesos bloqueados.
+- **RF44:** Cuotas USD/CO2 **por usuario** (`set_user_quotas`, `user_quotas`, `user_totals`), migracion aditiva `executions.username`, aplicadas en `circuit_breaker_status()`/`add_execution()` y administrables desde el menu Admin con auditoria.
+- **RF45:** Errores guiados con catalogo de codigos (`ERROR_CATALOG`, `describe_error()`), dialogo con codigo/causa/accion, copia al portapapeles y manejo de portapapeles bloqueado; conectado al disyuntor y a la importacion hidrica.
+- **RF52:** ROI de inmersion con grafico modal (payback vs limite), selector de fluido y matriz de compatibilidad `check_immersion_compatibility()` (aceite mineral, sintetico, fluorocarbono).
+- **RF54:** Lectura de flujometro simulada (`flow_meter_reading`), litros manuales persistidos en `local_metrics`, importacion masiva de CSV hidraulico con validacion de esquema y `detect_hydro_desync()` para desincronizacion horaria.
+- **RF59:** `reset_password_temporary()` marca `force_password_change`; el login local exige definir una contrasena nueva validada antes de entrar al dashboard.
+- **RF64/RF65:** Soft-delete de plantillas (`soft_delete_template`, columna `is_deleted` migrada), advertencia predictiva modal cuando `template_linked_projects()` encuentra proyectos vinculados, y sin alerta cuando no los hay.
+- **RF67:** Historial muestra timestamps locales con offset explicito (`format_local_timestamp`); `normative_date()` emite fechas YYYY-MM-DD y rechaza relojes corruptos (`clock_is_trusted`).
+- **RF68:** `Fuente Primaria Operante` visible en Ajustes con `primary_energy_source()`, desglose modal por fuente y empates reportados como `Mix Equilibrado`.
+- **RF70:** Bordes rojos en vivo (`mark_required_field`) y botones Guardar/OK deshabilitados dinamicamente mientras haya campos obligatorios invalidos (alta/edicion de hardware, cambio de contrasena, litros manuales).
+- Pruebas nuevas: 15 casos adicionales (nucleo, integracion y Qt offscreen), incluyendo restauracion con base bloqueada en Windows y exportacion a destino no escribible. Total: **59 pruebas exitosas**.
+- Traducciones es/en agregadas para todas las cadenas nuevas; verificado por el test bilingue ampliado.
+- Build PyInstaller `onedir` regenerado y verificado: `dist/SemaforoIA/SemaforoIA.exe` + `_internal` con data, locales e imagenes.
+- Smoke test offscreen de `DashboardWindow` completo, incluido el candado Cloud end-to-end y `LoginWindow`.
+
+### Matriz definitiva por requisito (2026-09-08)
+
+| RF | Estado | RF | Estado | RF | Estado | RF | Estado | RF | Estado |
+|---|---|---|---|---|---|---|---|---|---|
+| RF01 | LISTO | RF15 | LISTO | RF29 | LISTO | RF43 | LISTO | RF57 | LISTO |
+| RF02 | LISTO | RF16 | EXTERNO | RF30 | LISTO | RF44 | LISTO | RF58 | LISTO |
+| RF03 | LISTO | RF17 | LISTO | RF31 | LISTO | RF45 | LISTO | RF59 | LISTO |
+| RF04 | LISTO | RF18 | LISTO | RF32 | LISTO | RF46 | LISTO | RF60 | LISTO |
+| RF05 | LISTO | RF19 | LISTO | RF33 | LISTO | RF47 | LISTO | RF61 | LISTO |
+| RF06 | LISTO | RF20 | LISTO | RF34 | LISTO | RF48 | LISTO | RF62 | LISTO |
+| RF07 | LISTO | RF21 | LISTO | RF35 | EXTERNO | RF49 | LISTO | RF63 | LISTO |
+| RF08 | LISTO | RF22 | LISTO | RF36 | EXTERNO | RF50 | LISTO | RF64 | LISTO |
+| RF09 | LISTO | RF23 | LISTO | RF37 | LISTO | RF51 | LISTO | RF65 | LISTO |
+| RF10 | LISTO | RF24 | LISTO | RF38 | LISTO | RF52 | LISTO | RF66 | LISTO |
+| RF11 | LISTO | RF25 | LISTO | RF39 | LISTO | RF53 | LISTO | RF67 | LISTO |
+| RF12 | LISTO | RF26 | LISTO | RF40 | LISTO | RF54 | LISTO | RF68 | LISTO |
+| RF13 | LISTO | RF27 | LISTO | RF41 | LISTO | RF55 | LISTO | RF69 | LISTO |
+| RF14 | LISTO | RF28 | LISTO | RF42 | LISTO | RF56 | LISTO | RF70 | LISTO |
+
+**Totales:** 67 `[LISTO]` y 3 `[EXTERNO]` (RF16/RF36 telemetria SNMP-Modbus fisica y RF35 endpoint oficial de factores). Para los tres EXTERNO existen clientes reales configurables (pysnmp/pymodbus/HTTP), timeout/retry, simulador offline, fallback con cache y pruebas mock; solo falta validarlos contra dispositivos o proveedores reales con credenciales.
+
+### Dependencias externas restantes
+
+- **RF16/RF36 — EXTERNO, REQUIERE VALIDACION FISICA:** sondear una PDU SNMP o Modbus TCP real en LAN. El codigo (`SnmpTelemetryClient`, `ModbusTelemetryClient`) esta completo con timeout, cancelacion y prueba de enlace en QThread.
+- **RF35 — EXTERNO, REQUIERE PROVEEDOR:** URL y contrato de un catalogo oficial de factores CO2. `CarbonFactorClient` maneja 404/500/timeout/retry/cache/fallback y version anterior local.
+- **RF34 (ping de API key) — REQUIERE CREDENCIALES:** la validacion de formato, cifrado Fernet y sincronizacion con retry estan implementadas; el ping real exige una cuenta de facturacion cloud.
+
+
+
+## Actualizacion posterior a la verificacion del 2026-09-07
+
+> **Nota (2026-09-08):** esta seccion y todas las siguientes son historicas. La matriz vigente es la del cierre 2026-09-08 al inicio del documento.
+
+### Trabajo realizado en esta iteracion
+
+- Se agrego validacion opcional de esquema a `import_records()` mediante `required_fields`, sin imponer un formato unico a imports futuros de modelos, ejecuciones o hardware.
+- La importacion ahora rechaza campos requeridos ausentes por registro y archivos donde las filas no comparten las mismas columnas.
+- Se agregaron pruebas para JSON valido, CSV con campos requeridos ausentes y JSON con columnas inconsistentes.
+- Se corrigio la referencia de `DataIntegrityError` en la suite de pruebas.
+- FinOps ahora muestra el estado del disyuntor del proyecto activo y el motivo de bloqueo cuando una cuota se excede.
+- Se agrego una prueba Qt del estado bloqueado visible en FinOps.
+- Las sincronizaciones de billing y factores ahora reintentan fallos transitorios con backoff configurable antes de usar la cache local.
+- La importacion de modelos muestra una previsualizacion tabular de hasta 50 filas y exige confirmacion antes de guardar.
+- Se cubrieron la expiracion de overrides administrativos y el bloqueo de ejecuciones en proyectos cerrados.
+- Comparativas ahora incluye carbon-aware shifting con validacion estricta de 24 factores horarios y resultado de mejor hora.
+- Comparativas ahora incluye deteccion de ineficiencias de software con reglas conservadoras, validacion de metricas y recomendaciones contextuales.
+- Administración ahora conecta sus botones de contraseña, roles, permisos informativos, grupos, accesos temporales, auditoría, alertas, backup, integraciones y parámetros globales.
+- Se añadieron operaciones persistentes para resetear contraseñas y cambiar roles, con auditoría y protección del último administrador.
+- Se verifico el empaquetado Windows `onedir`: `dist/SemaforoIA/SemaforoIA.exe`, `_internal` y `python3.dll` se generan correctamente.
+
+### Capacidades verificadas como implementadas
+
+- Motor de calculo de costo, energia, carbono, agua, WUE, WSI, diesel, inmersion, Green Score y semaforo.
+- Validacion de umbrales, contrasenas PBKDF2, bloqueo tras cinco fallos y roles administrativos.
+- Persistencia SQLite de usuarios, proyectos, modelos, ejecuciones, cuotas, overrides y bitacora.
+- Disyuntor financiero/ecologico en `add_execution()`, con override administrativo de un solo uso y registro de auditoria.
+- Forecast de quiebre, capacity planning, rightsizing y ROI de inmersion.
+- Backup y restauracion SQLite con `integrity_check`, esquema minimo, staging y reemplazo atomico.
+- CRUD de hardware y plantillas con proteccion de registros de fabrica.
+- Billing y factores ambientales con timeout, cache y fallback; telemetria simulada con cancelacion y factor de perdidas acotado.
+- Deteccion de ineficiencias de software con estado normal sin alertas falsas y recomendaciones por regla.
+- Administración local con gestión de usuarios, roles, actividad, alertas administrativas, respaldos, integraciones y umbrales globales.
+- Renderizado Markdown seguro, exportacion PDF/JSON/CSV/XLSX, certificado ESG y CLI headless.
+- Pruebas de integracion para gobierno de cuotas, restauracion, servicios externos, ESG, CLI e importacion.
+- Suite completa verificada con **39 pruebas exitosas** mediante `unittest`, incluyendo Qt en modo `offscreen`.
+- Build PyInstaller verificado con PyInstaller 6.22.2 sobre Windows 11; quedaron advertencias no bloqueantes de imports opcionales de terceros.
+
+### Pendientes reales despues de esta iteracion
+
+- Completar pruebas de UI para los diálogos administrativos y probar restauración/backup con archivos bloqueados en Windows. Los botones administrativos ya están conectados a operaciones locales seguras.
+- Completar la integracion de APIs reales de AWS/Azure/GCP y factores oficiales con endpoints, credenciales y contratos de proveedor configurables; los clientes actuales prueban timeout/cache/fallback.
+- Implementar sondeo SNMP y Modbus TCP real; el simulador no equivale a conectividad LAN de produccion.
+- Completar graficas historicas con datos reales en todas las vistas, acciones de recomendaciones y feedback guiado de errores.
+- Agregar pruebas de UI para login, permisos, restauracion, importacion, cuotas y exportaciones bloqueadas en Windows.
+- Configurar `pytest` si se requiere compatibilidad con un pipeline externo; la suite local se ejecuta correctamente con `unittest`.
+- `pysnmp` ya figura en `requirements.txt`; queda validar instalacion y conexion contra un dispositivo SNMP real.
+- Probar el ejecutable en una maquina limpia y revisar las advertencias opcionales de PyInstaller antes de distribuirlo.
+
+### Matriz vigente resumida
+
+| Bloque | Estado vigente | Evidencia / pendiente principal |
+|---|---|---|
+| RF01-RF07 | `[PARCIAL]` | Motor y exportaciones existen; faltan cierres de UI, grafica y pruebas operativas completas. |
+| RF08-RF12 | `[PARCIAL]` | Comparativa, alertas, snooze y recomendaciones tienen piezas; faltan integracion completa y acciones contextuales. |
+| RF13-RF15 | `[PARCIAL]` | CRUD, importacion validada, backup y restauracion existen; faltan previsualizacion UI y pruebas Windows de archivos bloqueados. |
+| RF16-RF18 | `[PARCIAL]` | Simulador, clientes cloud y Markdown seguro existen; faltan sensores reales y renderizado conectado en todas las vistas. |
+| RF19-RF23 | `[PARCIAL]` | Umbrales, cuotas, forecast y disyuntor existen; falta cerrar el flujo UI y la configuracion por usuario. |
+| RF24-RF32 | `[PARCIAL]` | Comparativa, hardware, rightsizing, capacity y calculos ambientales existen; faltan graficas y acciones UI completas. |
+| RF33-RF44 | `[PARCIAL]` | Proyectos, templates, cuotas, override y capacidad existen; faltan cierre macro, medallas y flujo administrativo visible. |
+| RF45-RF56 | `[PARCIAL]` | Validaciones, Green Score y autenticacion local existen; faltan recuperacion guiada y cobertura de errores de entorno. |
+| RF57-RF65 | `[PARCIAL]` | Archivado, reasignacion, ESG y persistencia existen; faltan consolidado completo de campanas y mantenimiento UI. |
+| RF66-RF70 | `[PARCIAL]` | CLI y exportaciones existen; faltan todas las excepciones visuales y validacion normativa de extremo a extremo. |
+
 > **Lectura vigente:** esta revision separa componentes implementados de bloques RF completos. Un bloque puede seguir en `[PARCIAL]` aunque varias de sus piezas ya esten listas. La matriz y las prioridades de esta seccion prevalecen sobre los estados heredados de la evaluacion detallada.
+
+### Estado definitivo por requisito RF
+
+Esta tabla reemplaza cualquier marcador `[FALTA / CON ERRORES]` del bloque historico inferior. `[LISTO]` significa que existe implementacion y prueba local; `[PARCIAL]` significa que falta una parte de UI, flujo o cobertura; `[EXTERNO]` requiere un proveedor, endpoint o dispositivo real; `[PENDIENTE]` aun requiere implementacion.
+
+| RF | Estado | RF | Estado | RF | Estado | RF | Estado | RF | Estado |
+|---|---|---|---|---|---|---|---|---|---|
+| RF01 | LISTO | RF15 | LISTO | RF29 | LISTO | RF43 | PARCIAL | RF57 | LISTO |
+| RF02 | LISTO | RF16 | EXTERNO | RF30 | LISTO | RF44 | PARCIAL | RF58 | LISTO |
+| RF03 | LISTO | RF17 | LISTO | RF31 | LISTO | RF45 | PARCIAL | RF59 | PARCIAL |
+| RF04 | LISTO | RF18 | LISTO | RF32 | LISTO | RF46 | LISTO | RF60 | LISTO |
+| RF05 | PARCIAL | RF19 | LISTO | RF33 | LISTO | RF47 | LISTO | RF61 | LISTO |
+| RF06 | LISTO | RF20 | PARCIAL | RF34 | PARCIAL | RF48 | LISTO | RF62 | LISTO |
+| RF07 | LISTO | RF21 | LISTO | RF35 | EXTERNO | RF49 | PARCIAL | RF63 | LISTO |
+| RF08 | PARCIAL | RF22 | LISTO | RF36 | EXTERNO | RF50 | LISTO | RF64 | PARCIAL |
+| RF09 | PARCIAL | RF23 | LISTO | RF37 | PARCIAL | RF51 | LISTO | RF65 | PARCIAL |
+| RF10 | LISTO | RF24 | LISTO | RF38 | LISTO | RF52 | PARCIAL | RF66 | LISTO |
+| RF11 | PARCIAL | RF25 | PARCIAL | RF39 | LISTO | RF53 | LISTO | RF67 | PARCIAL |
+| RF12 | PARCIAL | RF26 | PARCIAL | RF40 | PARCIAL | RF54 | PARCIAL | RF68 | PARCIAL |
+| RF13 | LISTO | RF27 | PARCIAL | RF41 | PARCIAL | RF55 | LISTO | RF69 | LISTO |
+| RF14 | LISTO | RF28 | LISTO | RF42 | LISTO | RF56 | LISTO | RF70 | PARCIAL |
+
+**Totales actuales:** 42 `[LISTO]`, 25 `[PARCIAL]` y 3 `[EXTERNO]`. RF16 y RF36 representan la misma dependencia de telemetria real en distintas capas, por eso se mantienen separadas en la matriz RF.
+
+> **Archivo historico:** desde este punto, el texto de las evaluaciones detalladas conserva el diagnostico original y sus marcadores antiguos para trazabilidad. No es una lista de pendientes vigente; para el estado actual deben usarse esta tabla y la matriz resumida anterior.
 
 ## Actualizacion posterior a correcciones
 

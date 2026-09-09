@@ -7,6 +7,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,28 +46,74 @@ def _read_cache(path: Path) -> Any:
         raise ExternalServiceError(f"La cache local no esta disponible o esta corrupta: {exc}") from exc
 
 
+def _placeholder_payload(url: str, *, provider: str | None = None) -> Any:
+    if not url.startswith("placeholder://"):
+        return None
+    host = url.replace("placeholder://", "", 1).split("/", 1)[0].strip().lower() or (provider or "demo")
+    if host in {"aws", "azure", "gcp"}:
+        examples = {
+            "aws": [{"instance": "placeholder-g5.xlarge", "region": "us-east-1", "hourly_usd": 0.12}, {"instance": "placeholder-m6i.large", "region": "us-east-1", "hourly_usd": 0.09}],
+            "azure": [{"instance": "placeholder-D8s_v5", "region": "eastus", "hourly_usd": 0.14}, {"instance": "placeholder-D4s_v5", "region": "eastus", "hourly_usd": 0.07}],
+            "gcp": [{"instance": "placeholder-n2-standard-8", "region": "us-central1", "hourly_usd": 0.13}, {"instance": "placeholder-e2-standard-2", "region": "us-central1", "hourly_usd": 0.06}],
+        }
+        return {"rates": examples.get(host, examples["aws"])}
+    return {
+        "factors": [
+            {"region": "us-east-1", "gco2eq_kwh": 0.42, "updated_at": "2026-09-08T00:00:00Z"},
+            {"region": "us-west-1", "gco2eq_kwh": 0.35, "updated_at": "2026-09-08T00:00:00Z"},
+        ]
+    }
+
+
 class CachedJsonClient:
-    def __init__(self, cache_path: str | os.PathLike[str], timeout: float = 8.0, session: requests.Session | None = None):
+    def __init__(
+        self,
+        cache_path: str | os.PathLike[str],
+        timeout: float = 8.0,
+        session: requests.Session | None = None,
+        retries: int = 2,
+        backoff_seconds: float = 0.2,
+    ):
         if timeout <= 0:
             raise ValueError("El timeout debe ser positivo.")
+        if retries < 0 or backoff_seconds < 0:
+            raise ValueError("Los reintentos y el backoff no pueden ser negativos.")
         self.cache_path = Path(cache_path)
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.retries = retries
+        self.backoff_seconds = backoff_seconds
 
     def fetch(self, url: str, parser: Callable[[Any], Any], headers: dict[str, str] | None = None) -> tuple[Any, bool]:
-        try:
-            response = self.session.get(url, timeout=self.timeout, headers=headers or {"Accept": "application/json"})
-            response.raise_for_status()
-            parsed = parser(response.json())
+        if url.startswith("placeholder://"):
+            payload = _placeholder_payload(url, provider=(headers or {}).get("X-Provider") or None)
+            parsed = parser(payload)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_json_write(self.cache_path, parsed)
             return parsed, False
-        except (requests.RequestException, ValueError, TypeError, KeyError, PermissionError) as network_error:
+
+        network_error = None
+        for attempt in range(self.retries + 1):
             try:
-                return parser(_read_cache(self.cache_path)), True
-            except (ExternalServiceError, ValueError, TypeError, KeyError) as cache_error:
-                raise ExternalServiceError(
-                    f"Fallo la sincronizacion ({network_error}) y no existe un fallback valido ({cache_error})."
-                ) from network_error
+                response = self.session.get(url, timeout=self.timeout, headers=headers or {"Accept": "application/json"})
+                response.raise_for_status()
+                parsed = parser(response.json())
+                _atomic_json_write(self.cache_path, parsed)
+                return parsed, False
+            except (requests.RequestException, ValueError, TypeError, KeyError, PermissionError) as exc:
+                network_error = exc
+                if attempt < self.retries:
+                    delay = self.backoff_seconds * (2 ** attempt)
+                    if delay:
+                        time.sleep(delay)
+        try:
+            if network_error is None:
+                raise ExternalServiceError("La sincronizacion no produjo una respuesta valida.")
+            return parser(_read_cache(self.cache_path)), True
+        except (ExternalServiceError, ValueError, TypeError, KeyError) as cache_error:
+            raise ExternalServiceError(
+                f"Fallo la sincronizacion ({network_error}) y no existe un fallback valido ({cache_error})."
+            ) from network_error
 
 
 class BillingCloudClient(CachedJsonClient):
@@ -76,7 +123,7 @@ class BillingCloudClient(CachedJsonClient):
         provider = provider.strip().lower()
         if provider not in {"aws", "azure", "gcp"}:
             raise ValueError("Proveedor cloud no soportado.")
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "X-Provider": provider}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return self.fetch(url, lambda payload: self._parse(provider, payload), headers)

@@ -1,4 +1,4 @@
-from functional_core import hash_password, liquid_cooling_roi, predict_limit_breach, validate_password, ValidationError
+from functional_core import best_shifting_hour, hash_password, liquid_cooling_roi, predict_limit_breach, software_efficiency_recommendations, validate_password, ValidationError
 import csv
 import json
 import math
@@ -56,6 +56,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QInputDialog,
+    QTableWidget,
+    QTableWidgetItem,
 )
 
 from hardware_info import get_hardware_info
@@ -68,6 +70,11 @@ from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_f
 from functional_core import CircuitBreakerError, hash_password, predict_limit_breach, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
 from functional_core import calculate_energy, Execution, utc_iso
+from functional_core import (
+    assert_parameters_unlocked, calculate_water, check_immersion_compatibility, describe_error,
+    detect_hydro_desync, detect_new_hardware, flow_meter_reading, format_local_timestamp,
+    hydro_total_litres, is_low_carbon_region, paginate, parse_hydro_records, primary_energy_source,
+)
 from external_services import BillingCloudClient, CarbonFactorClient, ModbusTelemetryClient, SimulatedTelemetryClient, SnmpTelemetryClient
 
 
@@ -464,6 +471,53 @@ def request_admin_override(parent, store, project_id):
     return store.create_admin_override(
         project_id, username.text(), password.text(), reason.text(),
     )
+
+
+def show_guided_error(parent, code, detail=""):
+    """Guided recovery dialog: error code, cause, suggested action and copy-to-clipboard."""
+    payload = describe_error(code, detail)
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(t("Error guiado") + f" — {payload['code']}")
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(make_label(t("Código") + f": {payload['code']}", "kpiTitle"))
+    cause = make_label(t("Causa") + f": {t(payload['cause'])}", "infoText")
+    cause.setWordWrap(True)
+    layout.addWidget(cause)
+    action = make_label(t("Acción recomendada") + f": {t(payload['action'])}", "infoText")
+    action.setWordWrap(True)
+    layout.addWidget(action)
+    if payload["detail"]:
+        detail_label = make_label(t("Detalle") + f": {payload['detail']}", "infoText")
+        detail_label.setWordWrap(True)
+        layout.addWidget(detail_label)
+    button_row = QHBoxLayout()
+    copy_btn = QPushButton(t("Copiar detalles"))
+    copy_btn.setObjectName("secondaryButton")
+
+    def copy_to_clipboard():
+        text = "\n".join(f"{key}: {value}" for key, value in payload.items() if value)
+        try:
+            clipboard = QApplication.clipboard()
+            if clipboard is None:
+                raise RuntimeError("clipboard unavailable")
+            clipboard.setText(text)
+            copy_btn.setText(t("Copiado"))
+        except (RuntimeError, OSError):
+            copy_btn.setText(t("Portapapeles bloqueado"))
+
+    copy_btn.clicked.connect(copy_to_clipboard)
+    close_btn = QPushButton(t("Cerrar"))
+    close_btn.setObjectName("primaryButton")
+    close_btn.clicked.connect(dialog.accept)
+    button_row.addWidget(copy_btn)
+    button_row.addWidget(close_btn)
+    layout.addLayout(button_row)
+    dialog.exec()
+
+
+def mark_required_field(field, valid):
+    """Toggle the red border used for empty/invalid mandatory inputs (RF70)."""
+    field.setStyleSheet("" if valid else "border: 1px solid #dc2626; border-radius: 4px;")
 
 
 def get_default_user(config):
@@ -1611,14 +1665,18 @@ class HomeView(QWidget):
                 model_id=model_id, timestamp=utc_iso(), cost=cost, carbon=carbon,
                 kwh=kwh, water=water, duration_ms=int(duration_ms), semaphore=semaphore,
             )
+            username = None
+            if self.main_window and getattr(self.main_window, "user_profile", None):
+                username = self.main_window.user_profile.get("username")
             try:
-                store.add_execution(execution)
+                store.add_execution(execution, username=username)
             except CircuitBreakerError as exc:
-                QMessageBox.warning(self, t("Disyuntor de cuota"), str(exc))
+                status = store.circuit_breaker_status(model_id, cost, carbon, username=username)
+                show_guided_error(self, (status.get("codes") or ["ERR_QUOTA_FIN"])[0], str(exc))
                 token = request_admin_override(self, store, project_id)
                 if not token:
                     raise
-                store.add_execution(execution, token)
+                store.add_execution(execution, token, username=username)
             return project_name
         finally:
             if store is not None:
@@ -2097,9 +2155,10 @@ class EnvironmentalPerformanceView(QWidget):
 
 
 class CarbonDetailView(QWidget):
-    def __init__(self, parent=None, on_apply_recommendation=None):
+    def __init__(self, parent=None, on_apply_recommendation=None, on_abort_simulation=None):
         super().__init__(parent)
         self.on_apply_recommendation = on_apply_recommendation
+        self.on_abort_simulation = on_abort_simulation
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2162,6 +2221,88 @@ class CarbonDetailView(QWidget):
         compare_button.clicked.connect(run_comparison)
         layout.addWidget(comparison_panel)
 
+        shifting_panel = QFrame()
+        shifting_panel.setObjectName("detailsPanel")
+        shifting_layout = QVBoxLayout(shifting_panel)
+        shifting_layout.addWidget(make_label(t("Carbon-aware shifting"), "kpiTitle"))
+        shifting_layout.addWidget(
+            make_label(
+                t("Ingresa 24 factores horarios separados por comas para encontrar la hora de menor intensidad."),
+                "infoText",
+            )
+        )
+        shifting_input = QLineEdit()
+        shifting_input.setPlaceholderText(t("24 factores: 0.42, 0.38, ..."))
+        shifting_button = QPushButton(t("Buscar mejor hora"))
+        shifting_button.setObjectName("secondaryButton")
+        shifting_result = make_label(t("Sin matriz horaria cargada."), "infoText")
+
+        def calculate_shifting():
+            try:
+                factors = [float(value.strip()) for value in shifting_input.text().split(",") if value.strip()]
+                hour, factor = best_shifting_hour(factors)
+            except (TypeError, ValueError, ValidationError) as exc:
+                shifting_result.setText(t("No se pudo calcular shifting: {error}").format(error=exc))
+                return
+            shifting_result.setText(
+                t("Mejor hora: {hour:02d}:00 UTC | Factor: {factor:.4f}").format(hour=hour, factor=factor)
+            )
+
+        shifting_button.clicked.connect(calculate_shifting)
+        shifting_layout.addWidget(shifting_input)
+        shifting_layout.addWidget(shifting_button, 0, Qt.AlignLeft)
+        shifting_layout.addWidget(shifting_result)
+        self.shifting_input = shifting_input
+        self.shifting_button = shifting_button
+        self.shifting_result = shifting_result
+        layout.addWidget(shifting_panel)
+
+        efficiency_panel = QFrame()
+        efficiency_panel.setObjectName("detailsPanel")
+        efficiency_layout = QVBoxLayout(efficiency_panel)
+        efficiency_layout.addWidget(make_label(t("Ineficiencias de software"), "kpiTitle"))
+        efficiency_form = QFormLayout()
+        runtime_input = QLineEdit("60000")
+        cpu_input = QLineEdit("70")
+        memory_input = QLineEdit("60")
+        batch_input = QLineEdit("8")
+        efficiency_form.addRow(t("Duracion (ms)"), runtime_input)
+        efficiency_form.addRow(t("CPU utilizada (%)"), cpu_input)
+        efficiency_form.addRow(t("RAM utilizada (%)"), memory_input)
+        efficiency_form.addRow(t("Tamano de lote"), batch_input)
+        efficiency_button = QPushButton(t("Analizar eficiencia"))
+        efficiency_button.setObjectName("secondaryButton")
+        efficiency_result = make_label(t("Sin analisis ejecutado."), "infoText")
+        efficiency_result.setWordWrap(True)
+
+        def analyze_efficiency():
+            try:
+                optional_values = [
+                    float(value.text()) if value.text().strip() else None
+                    for value in (cpu_input, memory_input)
+                ]
+                batch = int(batch_input.text()) if batch_input.text().strip() else None
+                findings = software_efficiency_recommendations(
+                    int(runtime_input.text()), optional_values[0], optional_values[1], batch,
+                )
+            except (TypeError, ValueError, ValidationError) as exc:
+                efficiency_result.setText(t("No se pudo analizar: {error}").format(error=exc))
+                return
+            if not findings:
+                efficiency_result.setText(t("No se detectaron ineficiencias con los datos ingresados."))
+                return
+            efficiency_result.setText("\n".join(
+                f"{item['title']}: {item['recommendation']}" for item in findings
+            ))
+
+        efficiency_button.clicked.connect(analyze_efficiency)
+        efficiency_layout.addLayout(efficiency_form)
+        efficiency_layout.addWidget(efficiency_button, 0, Qt.AlignLeft)
+        efficiency_layout.addWidget(efficiency_result)
+        self.efficiency_button = efficiency_button
+        self.efficiency_result = efficiency_result
+        layout.addWidget(efficiency_panel)
+
         panel = QFrame()
         panel.setObjectName("detailModal")
         panel_layout = QVBoxLayout(panel)
@@ -2217,7 +2358,10 @@ class CarbonDetailView(QWidget):
         abort_btn = QPushButton(t("Abortar simulación"))
         abort_btn.setObjectName("secondaryButton")
         abort_btn.setCursor(Qt.PointingHandCursor)
-        abort_btn.clicked.connect(lambda: QMessageBox.information(self, t("Simulación Abortada"), t("Proceso local detenido y variables reiniciadas.")))
+        if self.on_abort_simulation:
+            abort_btn.clicked.connect(self.on_abort_simulation)
+        else:
+            abort_btn.clicked.connect(lambda: QMessageBox.information(self, t("Simulación Abortada"), t("No había procesos activos; la evaluación actual fue reiniciada.")))
 
         apply_btn = QPushButton(t("Aplicar recomendación"))
         apply_btn.setObjectName("primaryButton")
@@ -2298,8 +2442,38 @@ class ModelsView(QWidget):
                 return
             try:
                 imported = import_records(source)
-            except ValueError as exc:
+            except (ValueError, OSError) as exc:
                 QMessageBox.warning(self, t("Importar"), str(exc))
+                return
+            preview_rows = imported[:50]
+            columns = list(dict.fromkeys(key for row in preview_rows for key in row))
+            preview = QDialog(self)
+            preview.setWindowTitle(t("Vista previa de importación"))
+            preview.setMinimumSize(720, 360)
+            preview_layout = QVBoxLayout(preview)
+            preview_layout.addWidget(
+                make_label(
+                    t("{count} registros validados; se muestran hasta 50 antes de guardar.").format(
+                        count=len(imported)
+                    ),
+                    "infoText",
+                )
+            )
+            table = QTableWidget(len(preview_rows), len(columns), preview)
+            table.setHorizontalHeaderLabels(columns)
+            table.setEditTriggers(QTableWidget.NoEditTriggers)
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            table.setAlternatingRowColors(True)
+            for row_index, row in enumerate(preview_rows):
+                for column_index, column in enumerate(columns):
+                    table.setItem(row_index, column_index, QTableWidgetItem(str(row.get(column, ""))))
+            table.resizeColumnsToContents()
+            preview_layout.addWidget(table, 1)
+            preview_buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel, parent=preview)
+            preview_buttons.accepted.connect(preview.accept)
+            preview_buttons.rejected.connect(preview.reject)
+            preview_layout.addWidget(preview_buttons)
+            if preview.exec() != QDialog.Accepted:
                 return
             model_file = writable_path("models.json")
             existing = []
@@ -2427,6 +2601,72 @@ class ModelsView(QWidget):
         layout.addWidget(self.description_view)
         layout.addWidget(list_panel)
 
+        # RF08: paginated, sortable model table with explicit empty state
+        table_panel = QFrame()
+        table_panel.setObjectName("detailsPanel")
+        table_layout = QVBoxLayout(table_panel)
+        table_layout.addWidget(make_label(t("Catálogo paginado"), "kpiTitle"))
+        self.page_size = 8
+        self.current_page = 1
+        self.models_table = QTableWidget(0, 4)
+        self.models_table.setHorizontalHeaderLabels([t("Modelo"), t("Dominio"), t("Empresa"), t("Consumo base")])
+        self.models_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.models_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.models_table.setSortingEnabled(True)
+        self.models_table.setAlternatingRowColors(True)
+        self.models_table.setMinimumHeight(220)
+        table_layout.addWidget(self.models_table)
+        self.table_empty_label = make_label(t("No hay modelos disponibles en el catálogo."), "infoText")
+        self.table_empty_label.setVisible(False)
+        table_layout.addWidget(self.table_empty_label)
+        pager_row = QHBoxLayout()
+        self.prev_page_btn = QPushButton(t("Anterior"))
+        self.prev_page_btn.setObjectName("secondaryButton")
+        self.prev_page_btn.clicked.connect(lambda: self._change_page(-1))
+        self.next_page_btn = QPushButton(t("Siguiente"))
+        self.next_page_btn.setObjectName("secondaryButton")
+        self.next_page_btn.clicked.connect(lambda: self._change_page(1))
+        self.page_label = make_label("", "infoText", alignment=Qt.AlignCenter)
+        pager_row.addWidget(self.prev_page_btn)
+        pager_row.addWidget(self.page_label, 1)
+        pager_row.addWidget(self.next_page_btn)
+        table_layout.addLayout(pager_row)
+        layout.addWidget(table_panel)
+        self._render_page()
+
+    def _change_page(self, delta):
+        self.current_page += delta
+        self._render_page()
+
+    def _render_page(self):
+        rows = self.models_data or []
+        try:
+            page = paginate(rows, self.current_page, self.page_size)
+        except ValidationError:
+            page = {"items": [], "page": 1, "pages": 1, "total": 0}
+        self.current_page = page["page"]
+        self.models_table.setSortingEnabled(False)
+        self.models_table.setRowCount(len(page["items"]))
+        for row_index, row in enumerate(page["items"]):
+            name = str(row.get("Nombre_Modelo") or row.get("name") or "").strip()
+            domain = str(row.get("Dominio") or "").strip()
+            maker = str(row.get("Empresa_Creador") or "").strip()
+            energy = row.get("Consumo_Energetico_Base") or row.get("energy") or ""
+            for column, value in enumerate((name, domain, maker, str(energy))):
+                self.models_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.models_table.setSortingEnabled(True)
+        self.models_table.resizeColumnsToContents()
+        empty = page["total"] == 0
+        self.models_table.setVisible(not empty)
+        self.table_empty_label.setVisible(empty)
+        self.page_label.setText(
+            t("Página {page} de {pages} ({total} modelos)").format(
+                page=page["page"], pages=page["pages"], total=page["total"]
+            )
+        )
+        self.prev_page_btn.setEnabled(page["page"] > 1)
+        self.next_page_btn.setEnabled(page["page"] < page["pages"])
+
     def _handle_soft_delete(self):
         curr_idx = self.model_combo.currentIndex()
         if curr_idx >= 0:
@@ -2456,6 +2696,8 @@ class ModelsView(QWidget):
                 self.model_combo.addItem(name)
         if self.model_combo.count():
             self._handle_model_change(self.model_combo.currentText())
+        self.current_page = 1
+        self._render_page()
 
     def _handle_hard_delete(self):
         curr_idx = self.model_combo.currentIndex()
@@ -2546,7 +2788,7 @@ class FinOpsView(QWidget):
 
         # Valores base en CLP para conversión consistente entre UI y exportación.
         self.base_cost_actual_usd = 0.0
-        self.base_presupuesto_clp = 0.0
+        self.base_presupuesto_usd = 0.0
         self.base_ahorro_clp = 0.0
 
         status_row = QHBoxLayout()
@@ -2604,6 +2846,8 @@ class FinOpsView(QWidget):
         budget_header.addWidget(make_label(t("Uso del presupuesto"), "finopsSectionTitle"), 1)
         self.budget_state_label = make_label(t("Sin límite configurado"), "finopsBudgetState", alignment=Qt.AlignRight)
         budget_header.addWidget(self.budget_state_label)
+        self.circuit_status_label = make_label(t("Disyuntor sin evaluar"), "finopsCircuitState", alignment=Qt.AlignRight)
+        budget_header.addWidget(self.circuit_status_label)
         budget_layout.addLayout(budget_header)
         budget_layout.addWidget(make_label(t("Consumo acumulado frente al límite mensual"), "finopsMetricHint"))
         self.budget_bar = QProgressBar()
@@ -2613,6 +2857,23 @@ class FinOpsView(QWidget):
         self.budget_bar.setObjectName("standardProgressBar")
         self.budget_bar.setFixedHeight(18)
         budget_layout.addWidget(self.budget_bar)
+
+        # RF22: fijar/quitar el límite mensual USD desde la propia vista FinOps
+        budget_input_row = QHBoxLayout()
+        budget_input_row.setSpacing(10)
+        self.budget_input = QLineEdit()
+        self.budget_input.setPlaceholderText(t("Presupuesto mensual USD"))
+        self.budget_input.setFixedWidth(180)
+        self.save_budget_btn = QPushButton(t("Guardar presupuesto"))
+        self.save_budget_btn.setObjectName("secondaryButton")
+        self.save_budget_btn.setCursor(Qt.PointingHandCursor)
+        self.save_budget_btn.clicked.connect(self._save_budget)
+        self.budget_input.returnPressed.connect(self._save_budget)
+        self.budget_feedback_label = make_label("", "finopsMetricHint")
+        budget_input_row.addWidget(self.budget_input)
+        budget_input_row.addWidget(self.save_budget_btn)
+        budget_input_row.addWidget(self.budget_feedback_label, 1)
+        budget_layout.addLayout(budget_input_row)
         budget_layout.addStretch()
 
         layout.addLayout(cards)
@@ -2662,7 +2923,8 @@ class FinOpsView(QWidget):
         try:
             cost_clp = self.base_cost_actual_usd / self.exchange_rates["USD"]
             actual, inverse = convert_clp(cost_clp, currency_code, self.exchange_rates)
-            presupuesto, _ = convert_clp(self.base_presupuesto_clp, currency_code, self.exchange_rates)
+            presupuesto_clp = self.base_presupuesto_usd / self.exchange_rates["USD"]
+            presupuesto, _ = convert_clp(presupuesto_clp, currency_code, self.exchange_rates)
             ahorro, _ = convert_clp(self.base_ahorro_clp, currency_code, self.exchange_rates)
         except (KeyError, TypeError, ValueError) as exc:
             error = t("Tasa no disponible: {error}").format(error=exc)
@@ -2672,7 +2934,7 @@ class FinOpsView(QWidget):
             self.exchange_rate_label.setText(error)
             return
         self.card_actual.set_value(f"{symbol} {actual:,.2f}")
-        self.card_presupuesto.set_value(t("No definido") if not self.base_presupuesto_clp else f"{symbol} {presupuesto:,.2f}")
+        self.card_presupuesto.set_value(t("No definido") if not self.base_presupuesto_usd else f"{symbol} {presupuesto:,.2f}")
         self.card_ahorro.set_value(t("No calculado") if not self.base_ahorro_clp else f"{symbol} {ahorro:,.2f}")
         self.exchange_rate_label.setText(
             t("1 CLP = {rate:.4f} {currency} | 1 {currency} = {inverse:.4f} CLP").format(
@@ -2682,31 +2944,90 @@ class FinOpsView(QWidget):
 
     def refresh_project_data(self):
         metrics = self.main_window.get_active_project_metrics() if self.main_window else None
-        if not metrics:
-            return
-        self.active_project_label.setText(
-            t("Proyecto activo: {name}").format(name=metrics["project_name"])
-        )
-        self.base_cost_actual_usd = metrics["cost"]
         config = load_config()
         user_budget = config.get("budget_usd")
         if user_budget is None:
             username = str(config.get("default_user", "")).strip().lower()
             user_budget = next((user.get("budget_usd") for user in config.get("users", []) if str(user.get("username", "")).lower() == username), None)
-        self.base_presupuesto_clp = float(user_budget or 0.0)
+        self.base_presupuesto_usd = float(user_budget or 0.0)
+        if not self.budget_input.hasFocus():
+            self.budget_input.setText("" if not self.base_presupuesto_usd else f"{self.base_presupuesto_usd:g}")
+        if not metrics:
+            self.circuit_status_label.setText(t("Disyuntor sin proyecto"))
+            self._update_currency(self.currency_combo.currentText())
+            return
+        self.active_project_label.setText(
+            t("Proyecto activo: {name}").format(name=metrics["project_name"])
+        )
+        self.base_cost_actual_usd = metrics["cost"]
         self.base_ahorro_clp = 0.0
-        percentage = budget_percentage(float(metrics["cost"]), self.base_presupuesto_clp)
+        percentage = budget_percentage(float(metrics["cost"]), self.base_presupuesto_usd)
         self.budget_bar.setValue(percentage or 0)
         self.budget_bar.setFormat(t("Sin límite configurado") if percentage is None else f"{percentage}%")
         self.budget_state_label.setText(
             t("Sin límite configurado") if percentage is None else t("{percentage}% utilizado").format(percentage=percentage)
         )
+        self._refresh_circuit_status()
         self.project_summary_panel.set_values([
             str(metrics["count"]),
             format_energy_value(metrics["kwh"]),
             f"{metrics['carbon']:.2f} gCO2eq",
         ])
         self._update_currency(self.currency_combo.currentText())
+
+    def _save_budget(self):
+        """RF22: persist the monthly USD budget; empty clears the limit."""
+        raw = self.budget_input.text().strip().replace(",", ".")
+        try:
+            budget = float(raw) if raw else None
+            if budget is not None and (budget <= 0 or budget != budget or budget == float("inf")):
+                raise ValueError
+        except ValueError:
+            mark_required_field(self.budget_input, False)
+            self.budget_feedback_label.setText(t("El presupuesto debe ser un número positivo o quedar vacío."))
+            return
+        mark_required_field(self.budget_input, True)
+        try:
+            config_path = writable_path("config.json")
+            config = load_config()
+            if budget is None:
+                config.pop("budget_usd", None)
+            else:
+                config["budget_usd"] = budget
+            with open(config_path, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=True, indent=2)
+        except (OSError, TypeError) as exc:
+            show_guided_error(self, "ERR_IO", str(exc))
+            return
+        self.budget_feedback_label.setText(
+            t("Límite eliminado.") if budget is None else t("Presupuesto guardado.")
+        )
+        self.refresh_project_data()
+
+    def _refresh_circuit_status(self):
+        project_id = load_config().get("current_project_id")
+        if project_id is None:
+            self.circuit_status_label.setText(t("Disyuntor sin proyecto"))
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            models = store.list_models(project_id)
+            if not models:
+                self.circuit_status_label.setText(t("Disyuntor: sin modelos"))
+                return
+            status = store.circuit_breaker_status(models[0]["id"])
+            if status["allowed"]:
+                self.circuit_status_label.setText(t("Disyuntor: dentro de cuota"))
+            else:
+                self.circuit_status_label.setText(
+                    t("Disyuntor activo: {reason}").format(reason="; ".join(status["reasons"]))
+                )
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            self.circuit_status_label.setText(t("Disyuntor no disponible: {error}").format(error=exc))
+        finally:
+            if store is not None:
+                store.close()
 
 
     def _sanitize_money_value(self, value, currency_code):
@@ -2856,6 +3177,19 @@ class CloudView(QWidget):
         selector_layout.addWidget(self._build_selector(t("Tier"), self.tier_combo), 1)
         selector_layout.addWidget(self._build_selector(t("Región"), self.region_combo), 1)
 
+        options_row = QHBoxLayout()
+        self.cloud_mode_checkbox = QCheckBox(t("Usar entorno Cloud (bloquea factores locales)"))
+        self.cloud_mode_checkbox.setCursor(Qt.PointingHandCursor)
+        self.cloud_mode_checkbox.stateChanged.connect(self._sync_cards)
+        options_row.addWidget(self.cloud_mode_checkbox)
+        self.renewable_checkbox = QCheckBox(t("Solo regiones de baja intensidad (<100 gCO2eq/kWh)"))
+        self.renewable_checkbox.setCursor(Qt.PointingHandCursor)
+        self.renewable_checkbox.stateChanged.connect(lambda _state: self._update_regions(self.provider_combo.currentText()))
+        options_row.addWidget(self.renewable_checkbox)
+        options_row.addStretch()
+        self.region_empty_label = make_label("", "infoText")
+        self.region_empty_label.setVisible(False)
+
         self.provider_combo.currentTextChanged.connect(self._update_regions)
         self.region_combo.currentTextChanged.connect(self._sync_cards)
         self._update_regions(self.provider_combo.currentText())
@@ -2865,6 +3199,8 @@ class CloudView(QWidget):
 
         layout.addLayout(cards)
         layout.addWidget(selector_panel)
+        layout.addLayout(options_row)
+        layout.addWidget(self.region_empty_label)
         layout.addWidget(list_panel)
 
     def _build_selector(self, label_text, combo):
@@ -2879,21 +3215,37 @@ class CloudView(QWidget):
         return wrapper
 
     def _update_regions(self, provider):
-        regions = self.region_map.get(provider, [])
+        regions = list(self.region_map.get(provider, []))
+        if getattr(self, "renewable_checkbox", None) and self.renewable_checkbox.isChecked():
+            regions = [
+                region for region in regions
+                if is_low_carbon_region(self.region_intensity_map.get(region))
+            ]
+        self.region_combo.blockSignals(True)
         self.region_combo.clear()
         self.region_combo.addItems(regions)
+        self.region_combo.setEnabled(bool(regions))
+        self.region_combo.blockSignals(False)
+        if getattr(self, "region_empty_label", None):
+            self.region_empty_label.setVisible(not regions)
+            if not regions:
+                self.region_empty_label.setText(
+                    t("Ninguna región de {provider} cumple el filtro de baja intensidad.").format(provider=provider)
+                )
         self._sync_cards()
 
-    def _sync_cards(self):
+    def _sync_cards(self, _state=None):
         self.provider_card.set_value(self.provider_combo.currentText())
-        self.region_card.set_value(self.region_combo.currentText())
+        self.region_card.set_value(self.region_combo.currentText() or t("Sin región"))
         if self.on_selection:
             region_label = self.region_combo.currentText()
             intensity = self.region_intensity_map.get(region_label)
+            cloud_enabled = bool(getattr(self, "cloud_mode_checkbox", None) and self.cloud_mode_checkbox.isChecked())
             self.on_selection(
                 provider=self.provider_combo.currentText(),
                 region=region_label,
                 region_intensity=intensity,
+                cloud_enabled=cloud_enabled,
             )
 
 
@@ -2962,7 +3314,7 @@ class HistoryView(QWidget):
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
             history = store.list_history()
             items = [
-                f"{row['timestamp']} — {row['model_name']} — {row['semaphore']} — "
+                f"{format_local_timestamp(row['timestamp'])} — {row['model_name']} — {row['semaphore']} — "
                 f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
                 for row in history
             ]
@@ -3630,9 +3982,27 @@ class SettingsView(QWidget):
 
         notif_cb.stateChanged.connect(save_notification_setting)
 
+        focus_cb = QCheckBox(t("Modo Concentración (silencia avisos)"))
+        focus_cb.setChecked(bool(load_config().get("focus_mode", False)))
+
+        def save_focus_setting(state):
+            try:
+                config_path = writable_path("config.json")
+                config = load_config()
+                config["focus_mode"] = bool(state)
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Notificaciones"), str(exc))
+                return
+
+        focus_cb.stateChanged.connect(save_focus_setting)
+        self.focus_checkbox = focus_cb
+
         sys_row.addWidget(backup_btn)
         sys_row.addWidget(restore_btn)
         sys_row.addWidget(notif_cb)
+        sys_row.addWidget(focus_cb)
 
         theme_cb = QCheckBox(t("Modo claro"))
         theme_cb.setObjectName("themeToggle")
@@ -3795,14 +4165,56 @@ class SettingsView(QWidget):
 
         save_metrics_btn.clicked.connect(save_metrics)
 
+        self.local_lock_label = make_label(t("🔒 Bloqueado por Cloud"), "infoText")
+        self.local_lock_label.setVisible(False)
+        self._local_factor_inputs = (pue_input, green_energy_input, save_metrics_btn)
+
         local_metrics_row.addWidget(make_label(t("PUE Local:"), "infoText"))
         local_metrics_row.addWidget(pue_input)
         local_metrics_row.addWidget(make_label(t("% Verde:"), "infoText"))
         local_metrics_row.addWidget(green_energy_input)
         local_metrics_row.addWidget(save_metrics_btn)
+        local_metrics_row.addWidget(self.local_lock_label)
         local_metrics_row.addStretch()
 
         env_hw_layout.addLayout(local_metrics_row)
+
+        # RF68: fuente primaria operante con desglose modal
+        energy_source_row = QHBoxLayout()
+        self.energy_source_label = make_label("", "infoText")
+        energy_breakdown_btn = QPushButton(t("Ver desglose energético"))
+        energy_breakdown_btn.setObjectName("secondaryButton")
+        energy_breakdown_btn.clicked.connect(self._show_energy_breakdown)
+        energy_source_row.addWidget(self.energy_source_label, 1)
+        energy_source_row.addWidget(energy_breakdown_btn)
+        env_hw_layout.addLayout(energy_source_row)
+        self._refresh_energy_source_label()
+
+        # RF54: empirismo hidrico (litros manuales, flujometro y CSV masivo)
+        hydro_row = QHBoxLayout()
+        self.manual_litres_input = QLineEdit()
+        self.manual_litres_input.setPlaceholderText(t("Litros manuales"))
+        self.manual_litres_input.setFixedWidth(130)
+        saved_litres = load_config().get("local_metrics", {}).get("manual_litres")
+        if saved_litres is not None:
+            self.manual_litres_input.setText(str(saved_litres))
+        save_litres_btn = QPushButton(t("Guardar litros"))
+        save_litres_btn.setObjectName("secondaryButton")
+        save_litres_btn.clicked.connect(self._save_manual_litres)
+        flow_btn = QPushButton(t("Leer flujometro"))
+        flow_btn.setObjectName("secondaryButton")
+        flow_btn.clicked.connect(self._read_flow_meter)
+        hydro_import_btn = QPushButton(t("Importar CSV hidráulico"))
+        hydro_import_btn.setObjectName("secondaryButton")
+        hydro_import_btn.clicked.connect(self._import_hydro_csv)
+        self.hydro_result_label = make_label("", "infoText")
+        hydro_row.addWidget(make_label(t("Agua:"), "infoText"))
+        hydro_row.addWidget(self.manual_litres_input)
+        hydro_row.addWidget(save_litres_btn)
+        hydro_row.addWidget(flow_btn)
+        hydro_row.addWidget(hydro_import_btn)
+        hydro_row.addWidget(self.hydro_result_label, 1)
+        env_hw_layout.addLayout(hydro_row)
         
         immersion_row = QHBoxLayout()
         immersion_inputs = []
@@ -3812,23 +4224,38 @@ class SettingsView(QWidget):
             field.setMaximumWidth(130)
             immersion_inputs.append(field)
             immersion_row.addWidget(field)
+        self.fluid_combo = QComboBox()
+        self.fluid_combo.addItems([t("Aceite mineral"), t("Fluido sintetico"), t("Fluorocarbono")])
+        immersion_row.addWidget(self.fluid_combo)
         immersion_result = make_label("", "infoText")
         immersion_btn = QPushButton(t("Calcular ROI inmersión"))
         immersion_btn.setObjectName("secondaryButton")
-        
+
         def calculate_immersion_roi():
+            fluid_map = {
+                t("Aceite mineral"): "aceite mineral",
+                t("Fluido sintetico"): "fluido sintetico",
+                t("Fluorocarbono"): "fluorocarbono",
+            }
             try:
                 values = [float(field.text()) for field in immersion_inputs]
                 result = liquid_cooling_roi(*values)
+                incompatible = check_immersion_compatibility(
+                    ("CPU", "GPU", "RAM"), fluid_map.get(self.fluid_combo.currentText(), ""),
+                )
             except (ValueError, ValidationError) as exc:
                 immersion_result.setText(str(exc))
                 return
             status = t("Viable") if result["viable"] else t("No viable")
-            immersion_result.setText(
+            text = (
                 f"{status}: {result['annual_kwh_saving']:.2f} kWh/año, "
                 f"USD {result['annual_cost_saving']:.2f}/año, payback {result['payback_years']:.2f} años"
             )
-        
+            if incompatible:
+                text += " | " + t("Incompatible con: {items}").format(items=", ".join(incompatible))
+            immersion_result.setText(text)
+            self._show_immersion_roi_chart(result)
+
         immersion_btn.clicked.connect(calculate_immersion_roi)
         immersion_row.addWidget(immersion_btn)
         immersion_row.addWidget(immersion_result, 1)
@@ -4118,6 +4545,133 @@ class SettingsView(QWidget):
         thresh_fin_layout.addLayout(mlflow_row)
         layout.addLayout(thresh_fin_layout)
 
+    def set_local_factors_locked(self, locked):
+        """RF49: gray-lock local PUE/green energy factors while a Cloud environment is active."""
+        for widget in getattr(self, "_local_factor_inputs", ()):
+            widget.setEnabled(not locked)
+            widget.setToolTip(t("Bloqueado mientras el entorno Cloud está activo.") if locked else "")
+        if getattr(self, "local_lock_label", None):
+            self.local_lock_label.setVisible(bool(locked))
+
+    def _current_energy_mix(self):
+        metrics = load_config().get("local_metrics", {})
+        try:
+            green = max(0.0, min(100.0, float(metrics.get("green_energy_percent", 0))))
+        except (TypeError, ValueError):
+            green = 0.0
+        return {t("Renovable (PPA)"): green, t("Red convencional"): 100.0 - green}
+
+    def _refresh_energy_source_label(self):
+        try:
+            summary = primary_energy_source(self._current_energy_mix())
+        except ValidationError:
+            self.energy_source_label.setText(t("Fuente Primaria Operante") + ": N/A")
+            return
+        self.energy_source_label.setText(
+            t("Fuente Primaria Operante") + f": {t(summary['label'])} ({summary['percent']:.1f}%)"
+        )
+
+    def _show_energy_breakdown(self):
+        try:
+            summary = primary_energy_source(self._current_energy_mix())
+        except ValidationError as exc:
+            QMessageBox.warning(self, t("Desglose energético"), str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Desglose energético"))
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.addWidget(make_label(
+            t("Fuente Primaria Operante") + f": {t(summary['label'])}", "kpiTitle"))
+        for name, percent in summary["breakdown"].items():
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(int(round(percent)))
+            bar.setFormat(f"{name}: {percent:.1f}%")
+            dialog_layout.addWidget(bar)
+        if summary["tied"]:
+            dialog_layout.addWidget(make_label(t("Empate técnico: se reporta Mix Equilibrado."), "infoText"))
+        close_btn = QPushButton(t("Cerrar"))
+        close_btn.clicked.connect(dialog.accept)
+        dialog_layout.addWidget(close_btn)
+        dialog.exec()
+        self._refresh_energy_source_label()
+
+    def _save_manual_litres(self):
+        raw = self.manual_litres_input.text().strip()
+        try:
+            litres = float(raw) if raw else None
+            if litres is not None and litres < 0:
+                raise ValueError(t("Los litros manuales no pueden ser negativos."))
+            config_path = writable_path("config.json")
+            config = load_config()
+            metrics = config.get("local_metrics", {})
+            if litres is None:
+                metrics.pop("manual_litres", None)
+            else:
+                metrics["manual_litres"] = litres
+            config["local_metrics"] = metrics
+            with open(config_path, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=True, indent=2)
+        except (OSError, TypeError, ValueError) as exc:
+            mark_required_field(self.manual_litres_input, False)
+            QMessageBox.warning(self, t("Agua"), str(exc))
+            return
+        mark_required_field(self.manual_litres_input, True)
+        self.hydro_result_label.setText(
+            t("Litros manuales guardados.") if litres is not None else t("Litros manuales eliminados.")
+        )
+
+    def _read_flow_meter(self):
+        try:
+            reading = flow_meter_reading("simulador")
+        except TimeoutError as exc:
+            self.hydro_result_label.setText(str(exc))
+            return
+        self.hydro_result_label.setText(t("Flujometro: {value} L/h (simulado)").format(value=f"{reading:.2f}"))
+
+    def _import_hydro_csv(self):
+        source, _ = QFileDialog.getOpenFileName(self, t("Importar CSV hidráulico"), "", "CSV (*.csv);;JSON (*.json)")
+        if not source:
+            return
+        try:
+            records = parse_hydro_records(import_records(source, required_fields=("timestamp",)))
+            issues = detect_hydro_desync(records)
+            total = hydro_total_litres(records)
+        except (ValueError, OSError) as exc:
+            show_guided_error(self, "ERR_DATA", str(exc))
+            return
+        message = t("{count} registros hídricos válidos. Total: {total} L.").format(count=len(records), total=f"{total:.2f}")
+        if issues:
+            message += " " + t("Advertencias de desincronización: {count}.").format(count=len(issues))
+            QMessageBox.warning(self, t("Importar CSV hidráulico"), message + "\n" + "\n".join(issues[:5]))
+        else:
+            QMessageBox.information(self, t("Importar CSV hidráulico"), message)
+        self.hydro_result_label.setText(message)
+
+    def _show_immersion_roi_chart(self, result):
+        """RF52: simple visual payback bar with textual fallback already in the row label."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("ROI de inmersión"))
+        dialog_layout = QVBoxLayout(dialog)
+        payback = result["payback_years"]
+        viable = result["viable"]
+        dialog_layout.addWidget(make_label(
+            t("Ahorro anual: USD {value}").format(value=f"{result['annual_cost_saving']:.2f}"), "kpiTitle"))
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        if payback == float("inf"):
+            bar.setValue(0)
+            bar.setFormat(t("Sin retorno: no hay ahorro"))
+        else:
+            bar.setValue(int(max(0, min(100, (5 - min(payback, 5)) / 5 * 100))))
+            bar.setFormat(t("Payback: {years} años (límite 5)").format(years=f"{payback:.2f}"))
+        dialog_layout.addWidget(bar)
+        dialog_layout.addWidget(make_label(t("Viable") if viable else t("No viable"), "infoText"))
+        close_btn = QPushButton(t("Cerrar"))
+        close_btn.clicked.connect(dialog.accept)
+        dialog_layout.addWidget(close_btn)
+        dialog.exec()
+
     def showEvent(self, event):
         """El autostart de MLflow guarda su URI en segundo plano; si esta vista se
         construyo antes de que terminara, refresca el campo cuando se vuelve a ver."""
@@ -4335,9 +4889,10 @@ class AdminMenuView(QWidget):
                 t("Usuarios"),
                 [
                     (t("Crear usuario"), "menuButton", self.create_user),
-                    (t("Resetear contrasena"), "menuButton", None),
+                    (t("Resetear contrasena"), "menuButton", self.reset_password),
+                    (t("Cuotas por usuario"), "menuButton", self.set_user_quotas),
                     (t("Eliminar usuario"), "menuButton", self.delete_user),
-                    (t("Editar roles"), "menuButton", None),
+                    (t("Editar roles"), "menuButton", self.edit_roles),
                     (t("Ver bloqueos de usuarios"), "menuButton", self.show_user_locks),
                 ],
             ),
@@ -4347,9 +4902,9 @@ class AdminMenuView(QWidget):
             MenuSection(
                 t("Permisos"),
                 [
-                    (t("Roles y permisos"), "menuButton", None),
-                    (t("Grupos"), "menuButton", None),
-                    (t("Accesos temporales"), "menuButton", None),
+                    (t("Roles y permisos"), "menuButton", self.show_roles_permissions),
+                    (t("Grupos"), "menuButton", self.show_groups),
+                    (t("Accesos temporales"), "menuButton", self.show_temporary_access),
                 ],
             ),
             0, 1,
@@ -4358,8 +4913,8 @@ class AdminMenuView(QWidget):
             MenuSection(
                 t("Auditoria"),
                 [
-                    (t("Registro de Actividad"), "menuButton", None),
-                    (t("Alertas"), "menuButton", None),
+                    (t("Registro de Actividad"), "menuButton", self.show_activity_log),
+                    (t("Alertas"), "menuButton", self.show_alerts),
                     (t("Exportar reporte"), "menuButton", self.export_html_report),
                 ],
             ),
@@ -4369,9 +4924,9 @@ class AdminMenuView(QWidget):
             MenuSection(
                 t("Sistema"),
                 [
-                    (t("Backup y restauracion"), "menuButton", None),
-                    (t("Integraciones"), "menuButton", None),
-                    (t("Parametros globales"), "menuButton", None),
+                    (t("Backup y restauracion"), "menuButton", self.manage_backup),
+                    (t("Integraciones"), "menuButton", self.manage_integrations),
+                    (t("Parametros globales"), "menuButton", self.manage_global_parameters),
                     (t("Salir de la cuenta"), "logoutButton", on_logout),
                 ],
             ),
@@ -4397,6 +4952,291 @@ class AdminMenuView(QWidget):
             QMessageBox.warning(self, t("Usuarios"), t("Solo un administrador puede gestionar usuarios."))
             return False
         return True
+
+    def _open_admin_store(self):
+        return bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+
+    def reset_password(self):
+        if not self._require_admin():
+            return
+        users = load_config().get("users", [])
+        usernames = [str(user.get("username", "")).strip() for user in users if user.get("username")]
+        selected, accepted = QInputDialog.getItem(self, t("Resetear contrasena"), t("Usuario"), usernames, 0, False)
+        if not accepted or not selected:
+            return
+        password, accepted = QInputDialog.getText(
+            self, t("Resetear contrasena"), t("Nueva contrasena (8+ caracteres, mayuscula, numero y @ - _):"),
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            store.reset_password_temporary(selected, password)
+            store._audit(self.user_profile.get("username", "admin"), "password_reset", None, f"Usuario: {selected}")
+            store.connection.commit()
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Resetear contrasena"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(
+            self, t("Resetear contrasena"),
+            t("Contrasena temporal asignada; el usuario deberá cambiarla en su próximo inicio de sesión."),
+        )
+
+    def set_user_quotas(self):
+        """RF44: per-user USD/CO2 quotas enforced by the execution circuit breaker."""
+        if not self._require_admin():
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            users = store.list_user_status()
+            usernames = [row["username"] for row in users]
+            selected, accepted = QInputDialog.getItem(self, t("Cuotas por usuario"), t("Usuario"), usernames, 0, False)
+            if not accepted or not selected:
+                return
+            current = store.user_quotas(selected)
+            dialog = QDialog(self)
+            dialog.setWindowTitle(t("Cuotas por usuario") + f" — {selected}")
+            form = QFormLayout(dialog)
+            budget_input = QLineEdit("" if current["budget_usd"] is None else str(current["budget_usd"]))
+            budget_input.setPlaceholderText(t("Sin límite"))
+            carbon_input = QLineEdit("" if current["budget_co2"] is None else str(current["budget_co2"]))
+            carbon_input.setPlaceholderText(t("Sin límite"))
+            form.addRow(t("Cuota USD"), budget_input)
+            form.addRow(t("Cuota gCO2eq"), carbon_input)
+            buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            form.addRow(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            budget = float(budget_input.text()) if budget_input.text().strip() else None
+            carbon = float(carbon_input.text()) if carbon_input.text().strip() else None
+            store.set_user_quotas(selected, budget, carbon)
+            store._audit(
+                self.user_profile.get("username", "admin"), "user_quota_changed", None,
+                f"Usuario: {selected}; USD: {budget}; CO2: {carbon}",
+            )
+            store.connection.commit()
+        except (ValueError, ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Cuotas por usuario"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, t("Cuotas por usuario"), t("Cuotas del usuario guardadas; el disyuntor las aplicará en cada ejecución."))
+
+    def edit_roles(self):
+        if not self._require_admin():
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            users = store.list_user_status()
+            choices = [f"{row['username']} ({row['role']})" for row in users]
+            selected, accepted = QInputDialog.getItem(self, t("Editar roles"), t("Usuario"), choices, 0, False)
+            if not accepted:
+                return
+            username = selected.rsplit(" (", 1)[0]
+            role, accepted = QInputDialog.getItem(
+                self, t("Editar roles"), t("Nuevo rol"), [t("Usuario"), t("Administrador")], 0, False,
+            )
+            if not accepted:
+                return
+            role_value = "Administrador" if role == t("Administrador") else "Usuario"
+            if username == self.user_profile.get("username") and role_value != "Administrador":
+                remaining = [row for row in users if str(row["role"]).lower() in {"admin", "administrador"} and row["username"] != username]
+                if not remaining:
+                    raise ValidationError("No puedes quitar el rol del unico administrador.")
+            store.set_user_role(username, role_value)
+            store._audit(self.user_profile.get("username", "admin"), "role_changed", None, f"Usuario: {username}; Rol: {role_value}")
+            store.connection.commit()
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Editar roles"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, t("Editar roles"), t("Rol actualizado correctamente."))
+
+    def show_roles_permissions(self):
+        if not self._require_admin():
+            return
+        QMessageBox.information(
+            self, t("Roles y permisos"),
+            t("Administrador: usuarios, auditoria, respaldos y proyectos.\nUsuario: calculos, historial y exportaciones propias.\nLos permisos granulares aun no estan habilitados."),
+        )
+
+    def show_groups(self):
+        if not self._require_admin():
+            return
+        config = load_config()
+        users = config.get("users", [])
+        admins = [user.get("username") for user in users if str(user.get("role", "")).lower() in {"admin", "administrador"}]
+        standard = [user.get("username") for user in users if user.get("username") not in admins]
+        QMessageBox.information(
+            self, t("Grupos"),
+            t("Grupo Administradores:\n{admins}\n\nGrupo Usuarios:\n{users}").format(
+                admins=", ".join(admins) or t("Sin usuarios"), users=", ".join(standard) or t("Sin usuarios"),
+            ),
+        )
+
+    def show_temporary_access(self):
+        if not self._require_admin():
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            rows = store.connection.execute(
+                "SELECT project_id, reason, expires_at, used_at FROM admin_overrides ORDER BY expires_at DESC LIMIT 50"
+            ).fetchall()
+            text = "\n".join(
+                f"Proyecto {row['project_id']} | {row['reason']} | vence {row['expires_at']} | "
+                f"{'usado' if row['used_at'] else 'pendiente'}" for row in rows
+            ) or t("No hay accesos temporales registrados.")
+            QMessageBox.information(self, t("Accesos temporales"), text)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Accesos temporales"), str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+    def show_activity_log(self):
+        if not self._require_admin():
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            rows = store.connection.execute(
+                "SELECT timestamp, actor, action, project_id, details FROM audit_log ORDER BY id DESC LIMIT 100"
+            ).fetchall()
+            text = "\n".join(
+                f"{row['timestamp']} | {row['actor']} | {row['action']} | "
+                f"proyecto={row['project_id'] or '-'} | {row['details']}" for row in rows
+            ) or t("No hay actividad registrada.")
+            QMessageBox.information(self, t("Registro de Actividad"), text)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Registro de Actividad"), str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+    def show_alerts(self):
+        if not self._require_admin():
+            return
+        store = None
+        try:
+            store = self._open_admin_store()
+            rows = store.connection.execute(
+                "SELECT timestamp, actor, action, details FROM audit_log "
+                "WHERE action LIKE '%denied%' OR action LIKE '%override%' OR action LIKE '%blocked%' "
+                "ORDER BY id DESC LIMIT 50"
+            ).fetchall()
+            text = "\n".join(f"{row['timestamp']} | {row['action']} | {row['details']}" for row in rows)
+            QMessageBox.information(self, t("Alertas"), text or t("No hay alertas administrativas."))
+        except (OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Alertas"), str(exc))
+        finally:
+            if store is not None:
+                store.close()
+
+    def manage_backup(self):
+        if not self._require_admin():
+            return
+        action, accepted = QInputDialog.getItem(
+            self, t("Backup y restauracion"), t("Operacion"),
+            [t("Crear respaldo"), t("Restaurar respaldo")], 0, False,
+        )
+        if not accepted:
+            return
+        if action == t("Crear respaldo"):
+            destination, _ = QFileDialog.getSaveFileName(self, t("Guardar respaldo"), "", "SQLite (*.sqlite3 *.bak)")
+            if not destination:
+                return
+            store = None
+            try:
+                store = self._open_admin_store()
+                store.backup(destination)
+                QMessageBox.information(self, t("Backup y restauracion"), t("Respaldo creado correctamente."))
+            except (OSError, PermissionError, sqlite3.DatabaseError) as exc:
+                QMessageBox.warning(self, t("Backup y restauracion"), str(exc))
+            finally:
+                if store is not None:
+                    store.close()
+            return
+        source, _ = QFileDialog.getOpenFileName(self, t("Restaurar respaldo"), "", "SQLite (*.sqlite3 *.bak)")
+        if not source:
+            return
+        if QMessageBox.question(self, t("Restaurar respaldo"), t("La base actual sera reemplazada. ¿Continuar?")) != QMessageBox.Yes:
+            return
+        thread = DatabaseRestoreThread(writable_path("semaforo.sqlite3"), source, self)
+        thread.completed.connect(lambda: QMessageBox.information(self, t("Backup y restauracion"), t("Respaldo restaurado. Reinicia la aplicacion.")))
+        thread.failed.connect(lambda error: QMessageBox.warning(self, t("Backup y restauracion"), error))
+        self._admin_restore_thread = thread
+        thread.start()
+
+    def manage_integrations(self):
+        if not self._require_admin():
+            return
+        config = load_config()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Integraciones"))
+        form = QFormLayout(dialog)
+        billing_url = QLineEdit(str(config.get("billing_url", "")))
+        carbon_url = QLineEdit(str(config.get("carbon_factors_url", "")))
+        telemetry = QComboBox()
+        telemetry.addItems(["Simulado", "SNMP", "Modbus TCP"])
+        telemetry.setCurrentText(str(config.get("telemetry_protocol", "Simulado")))
+        form.addRow(t("URL billing"), billing_url)
+        form.addRow(t("URL factores CO2"), carbon_url)
+        form.addRow(t("Telemetria"), telemetry)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        config.update({"billing_url": billing_url.text().strip(), "carbon_factors_url": carbon_url.text().strip(), "telemetry_protocol": telemetry.currentText()})
+        try:
+            with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=True, indent=2)
+        except OSError as exc:
+            QMessageBox.warning(self, t("Integraciones"), str(exc))
+            return
+        QMessageBox.information(self, t("Integraciones"), t("Configuracion de integraciones guardada."))
+
+    def manage_global_parameters(self):
+        if not self._require_admin():
+            return
+        config = load_config()
+        thresholds = config.get("thresholds", {"green": 50, "yellow": 90, "red": 100})
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Parametros globales"))
+        form = QFormLayout(dialog)
+        fields = {name: QLineEdit(str(thresholds.get(name, default))) for name, default in (("green", 50), ("yellow", 90), ("red", 100))}
+        for name, field in fields.items():
+            form.addRow(name.capitalize(), field)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            values = tuple(float(fields[name].text()) for name in ("green", "yellow", "red"))
+            validate_thresholds(*values)
+            config["thresholds"] = dict(zip(("green", "yellow", "red"), values))
+            with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=True, indent=2)
+        except (ValueError, ValidationError, OSError) as exc:
+            QMessageBox.warning(self, t("Parametros globales"), str(exc))
+            return
+        QMessageBox.information(self, t("Parametros globales"), t("Parametros globales guardados."))
 
     def create_user(self):
         if not self._require_admin():
@@ -5127,6 +5967,7 @@ class LoginWindow(QMainWindow):
             auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
             authenticated = auth_store.authenticate(username, password)
             is_locked = auth_store.is_user_locked(username)
+            force_change = bool(authenticated and authenticated["force_password_change"])
             auth_store.close()
             if not authenticated:
                 self.failed_attempts += 1
@@ -5145,6 +5986,9 @@ class LoginWindow(QMainWindow):
                     self._set_error(t("Acceso denegado: Demasiados intentos fallidos. Contacte a un administrador."))
                 else:
                     self._set_error(t("Contraseña incorrecta."))
+                return
+            if force_change and not self._force_password_change(username):
+                self._set_error(t("Debes definir una contraseña nueva antes de continuar."))
                 return
         else:
             # Server Mode
@@ -5193,6 +6037,53 @@ class LoginWindow(QMainWindow):
     def _set_error(self, message):
         self.error_label.setText(message)
         self.error_label.setVisible(True)
+
+    def _force_password_change(self, username):
+        """RF59: a temporary password must be replaced before entering the dashboard."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Cambio de contraseña obligatorio"))
+        layout = QVBoxLayout(dialog)
+        info = make_label(
+            t("Tu contraseña es temporal. Define una nueva (8+ caracteres, mayúscula, número y @ - _)."),
+            "infoText",
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        form = QFormLayout()
+        new_password = QLineEdit()
+        new_password.setEchoMode(QLineEdit.Password)
+        confirm_password = QLineEdit()
+        confirm_password.setEchoMode(QLineEdit.Password)
+        form.addRow(t("Nueva contraseña"), new_password)
+        form.addRow(t("Confirmar contraseña"), confirm_password)
+        layout.addLayout(form)
+        feedback = make_label("", "loginError")
+        feedback.setVisible(False)
+        layout.addWidget(feedback)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        buttons.rejected.connect(dialog.reject)
+
+        def try_save():
+            if new_password.text() != confirm_password.text():
+                feedback.setText(t("Las contraseñas no coinciden."))
+                feedback.setVisible(True)
+                mark_required_field(confirm_password, False)
+                return
+            store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
+            try:
+                store.set_user_password(username, new_password.text())
+            except ValidationError as exc:
+                feedback.setText(str(exc))
+                feedback.setVisible(True)
+                mark_required_field(new_password, False)
+                return
+            finally:
+                store.close()
+            dialog.accept()
+
+        buttons.accepted.connect(try_save)
+        return dialog.exec() == QDialog.Accepted
 
     def handle_recover_access(self):
         username = self._locked_admin_username
@@ -5366,9 +6257,15 @@ class HardwareCatalogView(QWidget):
         self.add_hardware_btn = QPushButton(t("Nuevo hardware personalizado"))
         self.add_hardware_btn.setObjectName("secondaryButton")
         self.add_hardware_btn.clicked.connect(self._add_custom_hardware)
+        self.edit_hardware_btn = QPushButton(t("Editar personalizado"))
+        self.edit_hardware_btn.setObjectName("secondaryButton")
+        self.edit_hardware_btn.clicked.connect(self._edit_custom_hardware)
         self.delete_hardware_btn = QPushButton(t("Eliminar personalizado"))
         self.delete_hardware_btn.setObjectName("dangerButton")
         self.delete_hardware_btn.clicked.connect(self._delete_custom_hardware)
+        self.refresh_catalog_btn = QPushButton(t("Actualizar catálogo"))
+        self.refresh_catalog_btn.setObjectName("secondaryButton")
+        self.refresh_catalog_btn.clicked.connect(self._refresh_catalog_and_detect)
         self.template_btn = QPushButton(t("Administrar plantillas"))
         self.template_btn.setObjectName("secondaryButton")
         self.template_btn.clicked.connect(self._manage_templates)
@@ -5378,7 +6275,9 @@ class HardwareCatalogView(QWidget):
         search_row.addWidget(self.autoselect_btn)
         search_row.addWidget(self.rightsize_btn)
         search_row.addWidget(self.add_hardware_btn)
+        search_row.addWidget(self.edit_hardware_btn)
         search_row.addWidget(self.delete_hardware_btn)
+        search_row.addWidget(self.refresh_catalog_btn)
         search_row.addWidget(self.template_btn)
 
         self.hardware_tabs = QTabWidget()
@@ -5474,6 +6373,20 @@ class HardwareCatalogView(QWidget):
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+        ok_button = buttons.button(QDialogButtonBox.Ok)
+
+        def validate_live():
+            name_ok = bool(name.text().strip())
+            tdp_ok = (parse_number(tdp.text()) or 0) > 0
+            cost_ok = parse_number(acquisition_cost.text()) is not None and parse_number(acquisition_cost.text()) >= 0
+            mark_required_field(name, name_ok)
+            mark_required_field(tdp, tdp_ok)
+            mark_required_field(acquisition_cost, cost_ok)
+            ok_button.setEnabled(name_ok and tdp_ok and cost_ok)
+
+        for field in (name, tdp, acquisition_cost):
+            field.textChanged.connect(validate_live)
+        validate_live()
         if dialog.exec() != QDialog.Accepted:
             return
         store = None
@@ -5491,6 +6404,80 @@ class HardwareCatalogView(QWidget):
                 store.close()
         self._reload_catalog_rows()
         self._apply_hardware_filters()
+
+    def _edit_custom_hardware(self):
+        """RF27: edit metadata of a selected custom (non-factory) component."""
+        row = self.selected_by_type.get(self._current_component_type())
+        if not row or not row.get("_hardware_id") or row.get("_factory"):
+            QMessageBox.warning(self, t("Hardware"), t("Seleccione hardware personalizado primero."))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Editar personalizado"))
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        name = QLineEdit(str(row.get("Modelo", "")))
+        tdp = QLineEdit(str(row.get("TDP_Max_Watts", "")))
+        metadata = dict(row.get("_metadata") or {})
+        acquisition_cost = QLineEdit(str(metadata.get("acquisition_cost", "0")))
+        form.addRow(t("Nombre"), name)
+        form.addRow("TDP (W)", tdp)
+        form.addRow(t("Costo de adquisición USD"), acquisition_cost)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        save_button = buttons.button(QDialogButtonBox.Save)
+
+        def validate_live():
+            name_ok = bool(name.text().strip())
+            tdp_ok = (parse_number(tdp.text()) or 0) > 0
+            mark_required_field(name, name_ok)
+            mark_required_field(tdp, tdp_ok)
+            save_button.setEnabled(name_ok and tdp_ok)
+
+        for field in (name, tdp):
+            field.textChanged.connect(validate_live)
+        validate_live()
+        if dialog.exec() != QDialog.Accepted:
+            return
+        store = None
+        try:
+            metadata["acquisition_cost"] = float(acquisition_cost.text() or 0)
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.update_hardware(
+                int(row["_hardware_id"]), name.text(), row.get("Categoria", self._current_component_type()),
+                float(tdp.text()), metadata,
+            )
+            self.selected_by_type[self._current_component_type()] = None
+        except (ValueError, ValidationError, PermissionError, OSError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Hardware"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self._reload_catalog_rows()
+        self._apply_hardware_filters()
+        self._refresh_breakdown()
+
+    def _refresh_catalog_and_detect(self):
+        """RF43: manual catalog refresh plus notification of detected-but-uncataloged hardware."""
+        self._reload_catalog_rows()
+        self._apply_hardware_filters()
+        detected = getattr(self, "detected_info", {}) or {}
+        names = []
+        for row in self.hardware_rows or []:
+            label = f"{row.get('Fabricante', '')} {row.get('Modelo', '')}".strip()
+            if label:
+                names.append(label)
+        unknown = detect_new_hardware(detected, names)
+        if unknown:
+            QMessageBox.information(
+                self, t("Actualizar catálogo"),
+                t("Hardware detectado sin registrar en el catálogo: {items}. Puede agregarlo como personalizado.").format(items=", ".join(unknown)),
+            )
+        else:
+            QMessageBox.information(self, t("Actualizar catálogo"), t("Catálogo actualizado; no se detectó hardware nuevo."))
 
     def _delete_custom_hardware(self):
         row = self.selected_by_type.get(self._current_component_type())
@@ -5535,7 +6522,19 @@ class HardwareCatalogView(QWidget):
                 if not accepted or not selected:
                     return
                 template = next(item for item in templates if item["name"] == selected)
-                store.delete_template(template["id"])
+                linked = store.template_linked_projects(template["id"])
+                if linked:
+                    answer = QMessageBox.warning(
+                        self, t("Plantilla en uso"),
+                        t("La plantilla está vinculada a {count} proyecto(s): {names}. Se ocultará sin borrar datos. ¿Continuar?").format(
+                            count=len(linked), names=", ".join(linked)
+                        ),
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                    )
+                    if answer != QMessageBox.Yes:
+                        return
+                store.soft_delete_template(template["id"])
+                QMessageBox.information(self, t("Plantillas"), t("Plantilla ocultada (soft-delete); recuperable desde la base local."))
         except (json.JSONDecodeError, ValidationError, PermissionError, OSError, sqlite3.DatabaseError) as exc:
             QMessageBox.warning(self, t("Plantillas"), str(exc))
         finally:
@@ -6230,6 +7229,7 @@ class DashboardWindow(QMainWindow):
         if user_profile is None:
             config = load_config()
             user_profile = get_default_user(config)
+        self.user_profile = user_profile
 
         sidebar = Sidebar(user_profile, self._handle_logout)
         self.sidebar = sidebar
@@ -6262,6 +7262,7 @@ class DashboardWindow(QMainWindow):
             "model_energy": None,
             "hardware": "",
             "hardware_tdp": None,
+            "cloud_locked": False,
         }
         self.current_score = None
         self.current_green_score = None
@@ -6304,12 +7305,16 @@ class DashboardWindow(QMainWindow):
             sidebar,
             t("Comparativas"),
             make_bars_icon(),
-            CarbonDetailView(on_apply_recommendation=self._apply_recommendation),
+            CarbonDetailView(
+                on_apply_recommendation=self._apply_recommendation,
+                on_abort_simulation=self._abort_simulation,
+            ),
         )
         self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), self.hardware_view)
         self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), self.cloud_view)
         self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), HistoryView())
-        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), SettingsView(main_window=self))
+        self.settings_view = SettingsView(main_window=self)
+        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), self.settings_view)
 
         self._add_nav_item(
             sidebar,
@@ -6405,12 +7410,16 @@ class DashboardWindow(QMainWindow):
             view.shutdown()
         super().closeEvent(event)
 
-    def _handle_cloud_selection(self, provider=None, region=None, region_intensity=None):
+    def _handle_cloud_selection(self, provider=None, region=None, region_intensity=None, cloud_enabled=None):
         if provider is not None:
             self.selection_state["provider"] = provider
         if region is not None:
             self.selection_state["region"] = region
         self.selection_state["region_intensity"] = region_intensity
+        if cloud_enabled is not None:
+            self.selection_state["cloud_locked"] = bool(cloud_enabled)
+            if hasattr(self, "settings_view"):
+                self.settings_view.set_local_factors_locked(bool(cloud_enabled))
         self._update_semaforo()
 
     def _handle_model_selection(self, model=None, model_energy=None):
@@ -6425,7 +7434,41 @@ class DashboardWindow(QMainWindow):
         self.selection_state["hardware_tdp"] = hardware_tdp
         self._update_semaforo()
 
+    def _abort_simulation(self):
+        """Cancel any active local inference/telemetry work and reset the evaluation state."""
+        cancelled = []
+        chat_window = getattr(self.home_view, "_chat_window", None)
+        worker = getattr(chat_window, "_worker", None) if chat_window else None
+        if worker is not None:
+            try:
+                worker.cancel()
+                cancelled.append("Ollama")
+            except RuntimeError:
+                pass
+        telemetry = getattr(self.settings_view, "_telemetry_thread", None) if hasattr(self, "settings_view") else None
+        if telemetry is not None and telemetry.isRunning():
+            telemetry.requestInterruption()
+            cancelled.append(t("Sensor"))
+        self.current_evaluation = None
+        self._update_semaforo()
+        if cancelled:
+            QMessageBox.information(
+                self, t("Simulación Abortada"),
+                t("Procesos cancelados: {items}. Variables reiniciadas.").format(items=", ".join(cancelled)),
+            )
+        else:
+            QMessageBox.information(
+                self, t("Simulación Abortada"),
+                t("No había procesos activos; la evaluación actual fue reiniciada."),
+            )
+
     def _apply_recommendation(self):
+        try:
+            locked = ["hardware"] if self.selection_state.get("cloud_locked") else []
+            assert_parameters_unlocked(locked, ["hardware"])
+        except ValidationError:
+            show_guided_error(self, "ERR_LOCKED_PARAM", t("El hardware local no puede cambiarse mientras el entorno Cloud está activo."))
+            return
         current_tdp = self.selection_state.get("hardware_tdp")
         if current_tdp is None:
             QMessageBox.warning(self, t("Recomendación"), t("Selecciona primero un hardware válido."))

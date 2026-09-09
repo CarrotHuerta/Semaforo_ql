@@ -3,7 +3,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -40,6 +40,27 @@ class AdvancedFeatureTests(unittest.TestCase):
             self.assertTrue(cached)
             self.assertEqual(fallback, rates)
 
+    def test_billing_sync_retries_transient_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            response = Mock()
+            response.json.return_value = {
+                "rates": [{"instance": "g5.xlarge", "region": "us-east-1", "hourly_usd": 1.2}]
+            }
+            response.raise_for_status.return_value = None
+            session = Mock()
+            session.get.side_effect = [requests.Timeout("transient"), response]
+            client = BillingCloudClient(
+                Path(directory) / "billing.json",
+                timeout=0.25,
+                session=session,
+                retries=1,
+                backoff_seconds=0,
+            )
+            rates, cached = client.sync("aws", "https://billing.example/rates")
+            self.assertFalse(cached)
+            self.assertEqual(rates[0]["hourly_usd"], 1.2)
+            self.assertEqual(session.get.call_count, 2)
+
     def test_carbon_sync_rejects_bad_network_and_cache_data(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "carbon.json"
@@ -49,6 +70,20 @@ class AdvancedFeatureTests(unittest.TestCase):
             client = CarbonFactorClient(cache, session=session)
             with self.assertRaises(ExternalServiceError):
                 client.sync("https://carbon.example/factors")
+
+    def test_placeholder_external_adapters_return_demo_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            billing = BillingCloudClient(Path(directory) / "billing.json")
+            rates, cached = billing.sync("aws", "placeholder://aws/rates")
+            self.assertFalse(cached)
+            self.assertTrue(rates)
+            self.assertEqual(rates[0]["provider"], "aws")
+
+            carbon = CarbonFactorClient(Path(directory) / "carbon.json")
+            factors, cached = carbon.sync("placeholder://carbon/factors")
+            self.assertFalse(cached)
+            self.assertTrue(factors)
+            self.assertIn("gco2eq_kwh", factors[0])
 
     def test_simulated_telemetry_loss_factor_and_cancel(self):
         client = SimulatedTelemetryClient(100, 101, seed=7)
@@ -123,6 +158,45 @@ class AdvancedFeatureTests(unittest.TestCase):
         self.assertEqual(result["annual_cost_saving"], 800.0)
         no_saving = liquid_cooling_roi(10000, 1.1, 1.5, 0.2, 500)
         self.assertFalse(no_saving["viable"])
+
+    @patch.dict('os.environ', {'DB_MODE': 'sqlite', 'DB_PATH': 'C:/tmp/semaforo_fallback.sqlite3'}, clear=False)
+    def test_db_can_fallback_to_sqlite_when_postgres_is_unavailable(self):
+        import db
+        connection = db.get_connection()
+        self.assertEqual(connection.__class__.__module__, 'sqlite3')
+        connection.close()
+
+    def test_restore_fails_cleanly_when_database_is_locked(self):
+        """Windows: os.replace must fail without corrupting the live database."""
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "live.sqlite3"
+            store = LocalStore(db_path)
+            store.add_project("Base viva")
+            backup_path = Path(directory) / "backup.sqlite3"
+            store.backup(backup_path)
+            blocker = sqlite3.connect(db_path)
+            blocker.execute("BEGIN EXCLUSIVE")
+            try:
+                with self.assertRaises((PermissionError, DataIntegrityError)):
+                    store.restore(backup_path)
+            finally:
+                blocker.rollback()
+                blocker.close()
+            # La base activa sigue siendo usable tras el fallo controlado.
+            names = [row["name"] for row in store.list_projects()]
+            self.assertIn("Base viva", names)
+            store.close()
+
+    def test_export_records_reports_permission_error_on_unwritable_target(self):
+        from functional_core import export_records
+
+        with tempfile.TemporaryDirectory() as directory:
+            blocked = Path(directory) / "out.json"
+            blocked.mkdir()  # ocupa la ruta destino con un directorio
+            with self.assertRaises(PermissionError):
+                export_records([{"a": 1}], blocked)
 
 
 if __name__ == "__main__":

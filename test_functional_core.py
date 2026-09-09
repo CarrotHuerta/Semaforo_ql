@@ -13,6 +13,7 @@ import i18n
 from functional_core import (
     ApiKeyError,
     CircuitBreakerError,
+    DataIntegrityError,
     Execution,
     LocalStore,
     ValidationError,
@@ -42,6 +43,7 @@ from functional_core import (
     semaphore_level,
     sanitize_markdown,
     render_markdown,
+    software_efficiency_recommendations,
     validate_api_key_format,
     validate_password,
     validate_thresholds,
@@ -156,6 +158,38 @@ class FunctionalCoreTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             budget_percentage(-1, 100)
 
+    def test_software_efficiency_recommendations_are_conservative(self):
+        self.assertEqual(software_efficiency_recommendations(60_000, 70, 60, 8), [])
+        findings = software_efficiency_recommendations(700_000, 35, 95, 1)
+        self.assertEqual(
+            {item["code"] for item in findings},
+            {"LONG_RUNTIME", "LOW_CPU_UTILIZATION", "HIGH_MEMORY_PRESSURE", "SINGLE_ITEM_BATCH"},
+        )
+        with self.assertRaises(ValidationError):
+            software_efficiency_recommendations(1, 101)
+
+    def test_import_records_validates_declared_schema_and_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            valid = Path(directory) / "valid.json"
+            valid.write_text(json.dumps([{"model_id": 1, "cost": 2.5}]), encoding="utf-8")
+            self.assertEqual(
+                import_records(valid, required_fields=("model_id", "cost"))[0]["model_id"],
+                1,
+            )
+
+            missing = Path(directory) / "missing.csv"
+            missing.write_text("model_id\n1\n", encoding="utf-8")
+            with self.assertRaises(DataIntegrityError):
+                import_records(missing, required_fields=("model_id", "cost"))
+
+            inconsistent = Path(directory) / "inconsistent.json"
+            inconsistent.write_text(
+                json.dumps([{"model_id": 1, "cost": 2.5}, {"model_id": 2}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(DataIntegrityError):
+                import_records(inconsistent)
+
     def test_api_key_encryption_roundtrip_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             key_path = Path(tmp_dir) / "secrets" / "financial_api.key"
@@ -211,6 +245,34 @@ class FunctionalCoreTests(unittest.TestCase):
             self.assertEqual(actions, ["override_denied", "override_granted", "override_used"])
             store.close()
 
+    def test_admin_override_expiration_and_closed_project_block_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "closed.sqlite3")
+            project = store.add_project("Cerrado")
+            model = store.add_model(project, "Modelo")
+            store.add_user("admin", "ClaveSegura1@", "Administrador")
+            first = Execution(model, "2026-09-04 12:00:00", 1, 1, 1, 1, 10, "Verde")
+            store.add_execution(first)
+            store.close_project(project)
+            with self.assertRaises(CircuitBreakerError):
+                store.add_execution(first)
+
+            open_project = store.add_project("Override expirado")
+            open_model = store.add_model(open_project, "Modelo")
+            token = store.create_admin_override(
+                open_project, "admin", "ClaveSegura1@", "Prueba", ttl_seconds=1,
+            )
+            store.connection.execute(
+                "UPDATE admin_overrides SET expires_at = ? WHERE token = ?",
+                ("2000-01-01 00:00:00", token),
+            )
+            store.connection.commit()
+            expired = Execution(open_model, "2026-09-04 12:00:00", 2, 2, 1, 1, 10, "Rojo")
+            store.set_project_quotas(open_project, 1, None)
+            with self.assertRaises(CircuitBreakerError):
+                store.add_execution(expired, token)
+            store.close()
+
     def test_cpu_tier_classification_and_rightsizing_filter(self):
         self.assertEqual(classify_cpu_tier("Atom C2750"), 0)
         self.assertEqual(classify_cpu_tier("Core i5-10300H"), 2)
@@ -232,6 +294,17 @@ class FunctionalCoreTests(unittest.TestCase):
             "Sugerir hardware eficiente": "Suggest efficient hardware",
             "No hay ejecuciones registradas.": "No executions recorded.",
             "Usuario bloqueado": "User locked",
+            "Disyuntor: dentro de cuota": "Circuit breaker: within quota",
+            "Disyuntor activo: {reason}": "Circuit breaker active: {reason}",
+            "Fuente Primaria Operante": "Primary Operating Source",
+            "Mix Equilibrado": "Balanced Mix",
+            "Cuotas por usuario": "Per-user quotas",
+            "Modo Concentración (silencia avisos)": "Focus Mode (mutes notifications)",
+            "Usar entorno Cloud (bloquea factores locales)": "Use Cloud environment (locks local factors)",
+            "Catálogo paginado": "Paginated catalog",
+            "Copiar detalles": "Copy details",
+            "Cambio de contraseña obligatorio": "Mandatory password change",
+            "Importar CSV hidráulico": "Import hydraulic CSV",
         }
         for spanish, english in translations.items():
             self.assertEqual(i18n.t(spanish, "en"), english)
@@ -297,6 +370,20 @@ class FunctionalCoreTests(unittest.TestCase):
                 "SELECT failed_attempts, is_locked FROM users WHERE username = ?", ("admin",)
             ).fetchone()
             self.assertEqual((row["failed_attempts"], row["is_locked"]), (5, 1))
+            store.close()
+
+    def test_admin_can_reset_password_and_change_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "admin.sqlite3")
+            store.add_user("admin", "ClaveSegura1@", "Administrador")
+            store.add_user("user", "ClaveSegura1@", "Usuario")
+            store.set_user_password("user", "NuevaClave2_")
+            self.assertEqual(store.authenticate("user", "NuevaClave2_")["username"], "user")
+            store.set_user_role("user", "Administrador")
+            role = store.connection.execute("SELECT role FROM users WHERE username='user'").fetchone()["role"]
+            self.assertEqual(role, "Administrador")
+            with self.assertRaises(ValidationError):
+                store.set_user_password("user", "weak")
             store.close()
 
     def test_server_authentication_uses_shared_store_and_lockout(self):
@@ -420,6 +507,165 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertGreaterEqual(len(ram_rows), 5)
         self.assertTrue(all(row["Capacidad_GB"] for row in ram_rows))
         self.assertFalse(any("prueba" in row["Modelo"].lower() for row in rows))
+
+    def test_paginate_and_low_carbon_filter(self):
+        from functional_core import is_low_carbon_region, paginate
+
+        rows = [{"id": index} for index in range(23)]
+        page = paginate(rows, 3, 10)
+        self.assertEqual((page["page"], page["pages"], page["total"]), (3, 3, 23))
+        self.assertEqual(len(page["items"]), 3)
+        self.assertEqual(paginate(rows, 99, 10)["page"], 3)
+        self.assertEqual(paginate([], 1, 10)["total"], 0)
+        with self.assertRaises(ValidationError):
+            paginate(rows, 1, 0)
+        self.assertTrue(is_low_carbon_region(45.0))
+        self.assertFalse(is_low_carbon_region(250.0))
+        self.assertFalse(is_low_carbon_region(None))
+        self.assertFalse(is_low_carbon_region("corrupto"))
+
+    def test_guided_errors_and_locked_parameters(self):
+        from functional_core import assert_parameters_unlocked, describe_error
+
+        payload = describe_error("ERR_QUOTA_FIN", "detalle")
+        self.assertEqual(payload["code"], "ERR_QUOTA_FIN")
+        self.assertTrue(payload["cause"] and payload["action"])
+        self.assertEqual(describe_error("NO_EXISTE")["code"], "ERR_UNKNOWN")
+        assert_parameters_unlocked([], ["hardware"])
+        assert_parameters_unlocked(["pue"], ["hardware"])
+        with self.assertRaises(ValidationError):
+            assert_parameters_unlocked(["hardware"], ["hardware"])
+
+    def test_user_quotas_block_executions_and_report_codes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "user_quota.sqlite3")
+            store.add_user("operadora", "Segura-123")
+            project = store.add_project("Cuotas usuario")
+            model = store.add_model(project, "Modelo U")
+            store.set_user_quotas("operadora", 5.0, None)
+            first = Execution(model, "2026-09-01 10:00:00", 4.0, 1.0, 1.0, 1.0, 10, "Verde")
+            store.add_execution(first, username="operadora")
+            status = store.circuit_breaker_status(model, 2.0, 0.0, username="operadora")
+            self.assertFalse(status["allowed"])
+            self.assertIn("ERR_USER_QUOTA_FIN", status["codes"])
+            second = Execution(model, "2026-09-01 11:00:00", 2.0, 1.0, 1.0, 1.0, 10, "Verde")
+            with self.assertRaises(CircuitBreakerError):
+                store.add_execution(second, username="operadora")
+            # Otro usuario sin cuota no queda bloqueado por la cuota ajena.
+            store.add_execution(second, username="externa")
+            with self.assertRaises(ValidationError):
+                store.set_user_quotas("operadora", -1, None)
+            with self.assertRaises(ValidationError):
+                store.set_user_quotas("fantasma", 1, 1)
+            store.close()
+
+    def test_template_soft_delete_and_linked_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "templates.sqlite3")
+            project = store.add_project("Vinculado")
+            template = store.add_template("Plantilla A", {"project_id": project})
+            orphan = store.add_template("Plantilla B", {})
+            factory = store.add_template("Fabrica", {}, is_factory=True)
+            self.assertEqual(store.template_linked_projects(template), ["Vinculado"])
+            self.assertEqual(store.template_linked_projects(orphan), [])
+            store.soft_delete_template(template)
+            names = [item["name"] for item in store.list_templates()]
+            self.assertNotIn("Plantilla A", names)
+            all_names = [item["name"] for item in store.list_templates(include_deleted=True)]
+            self.assertIn("Plantilla A", all_names)
+            with self.assertRaises(PermissionError):
+                store.soft_delete_template(factory)
+            store.close()
+
+    def test_hydro_records_flow_meter_and_desync(self):
+        from functional_core import (
+            detect_hydro_desync, flow_meter_reading, hydro_total_litres, parse_hydro_records,
+        )
+
+        records = parse_hydro_records([
+            {"timestamp": "2026-09-01T10:00:00", "litres": "2.5"},
+            {"timestamp": "2026-09-01T11:00:00", "litros": 1.5},
+        ])
+        self.assertEqual(hydro_total_litres(records), 4.0)
+        self.assertEqual(detect_hydro_desync(records), [])
+        desynced = parse_hydro_records([
+            {"timestamp": "2026-09-01T10:00:00", "litres": 1},
+            {"timestamp": "2026-09-01T09:00:00", "litres": 1},
+            {"timestamp": "2026-09-02T09:00:00", "litres": 1},
+        ])
+        issues = detect_hydro_desync(desynced, max_gap_minutes=120)
+        self.assertEqual(len(issues), 2)
+        with self.assertRaises(DataIntegrityError):
+            parse_hydro_records([{"timestamp": "no-fecha", "litres": 1}])
+        with self.assertRaises(DataIntegrityError):
+            parse_hydro_records([{"timestamp": "2026-09-01T10:00:00", "litres": -1}])
+        with self.assertRaises(DataIntegrityError):
+            parse_hydro_records([])
+        reading = flow_meter_reading("simulador")
+        self.assertGreaterEqual(reading, 1.0)
+        with self.assertRaises(TimeoutError):
+            flow_meter_reading("10.0.0.99")
+
+    def test_primary_energy_source_and_balanced_mix(self):
+        from functional_core import primary_energy_source
+
+        dominant = primary_energy_source({"Renovable": 70, "Red": 30})
+        self.assertEqual(dominant["label"], "Renovable")
+        self.assertFalse(dominant["tied"])
+        tied = primary_energy_source({"Renovable": 50, "Red": 50})
+        self.assertEqual(tied["label"], "Mix Equilibrado")
+        self.assertTrue(tied["tied"])
+        with self.assertRaises(ValidationError):
+            primary_energy_source({"Renovable": -1})
+        with self.assertRaises(ValidationError):
+            primary_energy_source({})
+
+    def test_immersion_fluid_compatibility(self):
+        from functional_core import check_immersion_compatibility
+
+        self.assertEqual(check_immersion_compatibility(("CPU", "GPU"), "aceite mineral"), [])
+        self.assertEqual(check_immersion_compatibility(("CPU", "GPU", "RAM"), "aceite mineral"), ["RAM"])
+        self.assertEqual(check_immersion_compatibility(("CPU", "GPU", "RAM"), "fluido sintetico"), [])
+        with self.assertRaises(ValidationError):
+            check_immersion_compatibility(("CPU",), "agua")
+
+    def test_normative_dates_and_local_offset(self):
+        from functional_core import clock_is_trusted, format_local_timestamp, normative_date
+
+        self.assertTrue(clock_is_trusted(datetime(2026, 9, 8, tzinfo=timezone.utc)))
+        self.assertFalse(clock_is_trusted(datetime(1980, 1, 1, tzinfo=timezone.utc)))
+        self.assertEqual(normative_date(datetime(2026, 9, 8, 23, 0, tzinfo=timezone.utc)), "2026-09-08")
+        with self.assertRaises(ValidationError):
+            normative_date(datetime(1970, 1, 1, tzinfo=timezone.utc))
+        formatted = format_local_timestamp("2026-09-08 12:00:00")
+        self.assertIn("UTC", formatted)
+        self.assertRegex(formatted, r"UTC[+-]\d{2}:\d{2}")
+        self.assertEqual(format_local_timestamp("corrupto"), "corrupto")
+
+    def test_detect_new_hardware_reports_unknown_components(self):
+        from functional_core import detect_new_hardware
+
+        catalog = ["Intel Core i9-14900K", "NVIDIA RTX 4090"]
+        detected = {"cpu": "Core i9-14900K", "gpu": "Radeon RX 9700", "ram": "No detectado"}
+        self.assertEqual(detect_new_hardware(detected, catalog), ["Radeon RX 9700"])
+        self.assertEqual(detect_new_hardware({}, catalog), [])
+
+    def test_temporary_password_forces_change_and_clears_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "temp_pass.sqlite3")
+            store.add_user("temporal", "Inicial-123")
+            store.reset_password_temporary("temporal", "Temporal-123")
+            user = store.authenticate("temporal", "Temporal-123")
+            self.assertIsNotNone(user)
+            self.assertEqual(user["force_password_change"], 1)
+            store.set_user_password("temporal", "Definitiva-123")
+            user = store.authenticate("temporal", "Definitiva-123")
+            self.assertEqual(user["force_password_change"], 0)
+            with self.assertRaises(ValidationError):
+                store.reset_password_temporary("fantasma", "Temporal-123")
+            with self.assertRaises(ValidationError):
+                store.reset_password_temporary("temporal", "corta")
+            store.close()
 
 
 if __name__ == "__main__":

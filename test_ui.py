@@ -6,7 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy
 
-from main import AdminMenuView, FinOpsView, HardwareCatalogView, HomeView, ResponsiveStackedWidget, SettingsView
+import main as main_module
+from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, ResponsiveStackedWidget, SettingsView
 
 
 class FakeMainWindow:
@@ -56,6 +57,39 @@ class UiFunctionalTests(unittest.TestCase):
             self.assertEqual(card.sizePolicy().verticalPolicy(), QSizePolicy.Fixed)
         self.assertEqual(view.project_summary_panel.objectName(), "finopsSummaryPanel")
         self.assertEqual(view.budget_bar.height(), 18)
+        self.assertTrue(hasattr(view, "circuit_status_label"))
+        view.deleteLater()
+
+    def test_finops_shows_circuit_breaker_reason(self):
+        class FakeStore:
+            def list_models(self, project_id):
+                return [{"id": 7}]
+
+            def circuit_breaker_status(self, model_id):
+                return {"allowed": False, "reasons": ["Se superaria la cuota financiera."]}
+
+            def close(self):
+                pass
+
+        with patch.object(FinOpsView, "_refresh_exchange_rates"), patch.object(
+            main_module, "load_config", return_value={"current_project_id": 3}
+        ), patch.object(main_module, "bootstrap_store", return_value=FakeStore()):
+            view = FinOpsView(main_window=FakeMainWindow())
+        self.assertIn("cuota financiera", view.circuit_status_label.text().lower())
+        view.deleteLater()
+
+    def test_carbon_shifting_requires_24_factors(self):
+        view = CarbonDetailView()
+        view.shifting_input.setText("0.5, 0.4")
+        view.shifting_result.setText("")
+        view.shifting_button.click()
+        self.assertIn("24", view.shifting_result.text())
+        view.deleteLater()
+
+    def test_software_efficiency_panel_reports_normal_usage(self):
+        view = CarbonDetailView()
+        view.efficiency_button.click()
+        self.assertIn("No se detectaron", view.efficiency_result.text())
         view.deleteLater()
 
     def test_home_cards_are_compact_and_settings_scroll(self):
@@ -82,10 +116,103 @@ class UiFunctionalTests(unittest.TestCase):
         admin.show()
         self.app.processEvents()
         self.assertGreater(admin.admin_scroll.verticalScrollBar().maximum(), 0)
-        unavailable = [button for button in admin.findChildren(QPushButton) if button.text() == "Roles y permisos"]
-        self.assertEqual(len(unavailable), 1)
-        self.assertFalse(unavailable[0].isEnabled())
+        admin_buttons = {
+            button.text(): button for button in admin.findChildren(QPushButton)
+        }
+        for label in (
+            "Resetear contrasena", "Editar roles", "Roles y permisos", "Grupos",
+            "Accesos temporales", "Registro de Actividad", "Alertas",
+            "Backup y restauracion", "Integraciones", "Parametros globales",
+        ):
+            self.assertIn(label, admin_buttons)
+            self.assertTrue(admin_buttons[label].isEnabled(), label)
         admin.deleteLater()
+
+    def test_models_view_pagination_controls(self):
+        from main import ModelsView
+
+        view = ModelsView()
+        total = len(view.models_data)
+        if total == 0:
+            self.assertTrue(view.table_empty_label.isVisibleTo(view))
+        else:
+            expected_pages = max(1, -(-total // view.page_size))
+            self.assertIn(f"{expected_pages}", view.page_label.text())
+            self.assertFalse(view.prev_page_btn.isEnabled())
+            if expected_pages > 1:
+                self.assertTrue(view.next_page_btn.isEnabled())
+                view.next_page_btn.click()
+                self.assertEqual(view.current_page, 2)
+                self.assertTrue(view.prev_page_btn.isEnabled())
+                view.prev_page_btn.click()
+                self.assertEqual(view.current_page, 1)
+        view.deleteLater()
+
+    def test_cloud_view_low_carbon_filter_and_lock_signal(self):
+        from main import CloudView
+
+        events = []
+
+        def capture(**kwargs):
+            events.append(kwargs)
+
+        view = CloudView(on_selection=capture)
+        self.assertFalse(view.cloud_mode_checkbox.isChecked())
+        view.cloud_mode_checkbox.setChecked(True)
+        self.assertTrue(any(event.get("cloud_enabled") for event in events))
+        view.renewable_checkbox.setChecked(True)
+        remaining = [view.region_combo.itemText(i) for i in range(view.region_combo.count())]
+        for region in remaining:
+            intensity = view.region_intensity_map.get(region)
+            if intensity is not None:
+                self.assertLess(intensity, 100)
+        view.deleteLater()
+
+    def test_finops_budget_can_be_saved_and_validated(self):
+        import json as json_module
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            saved = {}
+
+            def fake_writable(*parts):
+                return str(Path(directory, *parts))
+
+            with patch.object(FinOpsView, "_refresh_exchange_rates"), patch.object(
+                main_module, "writable_path", side_effect=fake_writable
+            ):
+                view = FinOpsView(main_window=FakeMainWindow())
+                # invalido: negativo -> feedback y sin persistencia
+                view.budget_input.setText("-5")
+                view._save_budget()
+                self.assertIn("positivo", view.budget_feedback_label.text())
+                self.assertNotIn("budget_usd", json_module.loads(config_path.read_text(encoding="utf-8")))
+                # valido: persiste y refresca la tarjeta
+                view.budget_input.setText("250.5")
+                view._save_budget()
+                saved = json_module.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved.get("budget_usd"), 250.5)
+                # vacio: elimina el limite
+                view.budget_input.setText("")
+                view._save_budget()
+                saved = json_module.loads(config_path.read_text(encoding="utf-8"))
+                self.assertNotIn("budget_usd", saved)
+                view.deleteLater()
+
+    def test_settings_local_factors_lock_and_energy_source(self):
+        settings = SettingsView()
+        settings.set_local_factors_locked(True)
+        for widget in settings._local_factor_inputs:
+            self.assertFalse(widget.isEnabled())
+        self.assertTrue(settings.local_lock_label.isVisibleTo(settings))
+        settings.set_local_factors_locked(False)
+        for widget in settings._local_factor_inputs:
+            self.assertTrue(widget.isEnabled())
+        self.assertIn("Fuente Primaria Operante", settings.energy_source_label.text())
+        settings.deleteLater()
 
 
 if __name__ == "__main__":

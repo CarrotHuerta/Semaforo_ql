@@ -1,8 +1,13 @@
 import csv
 import os
+import sqlite3
 
-import psycopg2
-import psycopg2.extras
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:  # pragma: no cover - graceful fallback for minimal environments
+    psycopg2 = None
+    psycopg2_extras = None
 
 DB_CONFIG = {
     "dbname": os.environ.get("DB_NAME", "greenops"),
@@ -13,6 +18,14 @@ DB_CONFIG = {
 }
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _sqlite_path():
+    path = os.environ.get("DB_PATH", os.path.join(_BASE_DIR, "semaforo.sqlite3"))
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory, exist_ok=True)
+    return path
 
 
 def _csv_fallback_rows(table_name):
@@ -33,13 +46,24 @@ def _csv_fallback_rows(table_name):
 
 
 def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+    mode = str(os.environ.get("DB_MODE", "sqlite")).strip().lower()
+    if mode == "postgres" and psycopg2 is not None:
+        try:
+            return psycopg2.connect(**DB_CONFIG)
+        except Exception:
+            pass
+    return sqlite3.connect(_sqlite_path())
 
 
 def load_db_rows(table_name):
     try:
         with get_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            if isinstance(conn, sqlite3.Connection):
+                return _csv_fallback_rows(table_name)
+            cursor_factory = getattr(psycopg2.extras, "DictCursor", None)
+            if cursor_factory is None:
+                return _csv_fallback_rows(table_name)
+            with conn.cursor(cursor_factory=cursor_factory) as cursor:
                 cleaned_rows = []
 
                 if table_name == "hardware_csv":
