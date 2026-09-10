@@ -87,6 +87,19 @@ def make_label(text, object_name=None, alignment=Qt.AlignLeft):
     return label
 
 
+def resize_to_available_screen(window, preferred_width, preferred_height):
+    """Fit initial windows to the logical desktop after OS DPI scaling."""
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen is None:
+        window.resize(preferred_width, preferred_height)
+        return
+    available = screen.availableGeometry()
+    window.resize(
+        min(preferred_width, max(1, int(available.width() * 0.94))),
+        min(preferred_height, max(1, int(available.height() * 0.92))),
+    )
+
+
 def load_config():
     config_path = writable_path("config.json")
     data = {
@@ -5818,7 +5831,7 @@ class LoginWindow(QMainWindow):
 
         self.config = load_config()
         self.setWindowTitle(t("Semáforo IA - Login"))
-        self.resize(1100, 640)
+        resize_to_available_screen(self, 1100, 640)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -6235,19 +6248,18 @@ class HardwareCatalogView(QWidget):
         panel_layout.setContentsMargins(16, 14, 16, 14)
         panel_layout.setSpacing(12)
 
-        search_row = QHBoxLayout()
+        search_row = QGridLayout()
         search_row.setSpacing(16)
 
         self.search_input = QLineEdit()
         self.search_input.setObjectName("searchInput")
         self.search_input.setPlaceholderText(t("Buscar componente..."))
-        self.search_input.setFixedHeight(42)
+        self.search_input.setMinimumHeight(42)
 
         self.filter_combo = ChevronComboBox()
         self.filter_combo.setObjectName("filterCombo")
         self.filter_combo.addItems([t("TDP máx: todos"), t("TDP máx: 125W"), t("TDP máx: 225W"), t("TDP máx: 400W")])
-        self.filter_combo.setFixedHeight(42)
-        self.filter_combo.setMinimumWidth(220)
+        self.filter_combo.setMinimumHeight(42)
 
         self.autoselect_btn = QPushButton(t("Autoseleccionar detectado"))
         self.autoselect_btn.setObjectName("secondaryButton")
@@ -6274,15 +6286,26 @@ class HardwareCatalogView(QWidget):
         self.template_btn.setObjectName("secondaryButton")
         self.template_btn.clicked.connect(self._manage_templates)
 
-        search_row.addWidget(self.search_input, 3)
-        search_row.addWidget(self.filter_combo, 1)
-        search_row.addWidget(self.autoselect_btn)
-        search_row.addWidget(self.rightsize_btn)
-        search_row.addWidget(self.add_hardware_btn)
-        search_row.addWidget(self.edit_hardware_btn)
-        search_row.addWidget(self.delete_hardware_btn)
-        search_row.addWidget(self.refresh_catalog_btn)
-        search_row.addWidget(self.template_btn)
+        toolbar_buttons = (
+            self.autoselect_btn, self.rightsize_btn, self.add_hardware_btn,
+            self.edit_hardware_btn, self.delete_hardware_btn,
+            self.refresh_catalog_btn, self.template_btn,
+        )
+        for button in toolbar_buttons:
+            button.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+            button.setMinimumHeight(38)
+
+        search_row.setColumnStretch(0, 1)
+        search_row.setColumnStretch(1, 1)
+        search_row.addWidget(self.search_input, 0, 0)
+        search_row.addWidget(self.filter_combo, 0, 1)
+        search_row.addWidget(self.autoselect_btn, 1, 0)
+        search_row.addWidget(self.rightsize_btn, 1, 1)
+        search_row.addWidget(self.add_hardware_btn, 2, 0)
+        search_row.addWidget(self.edit_hardware_btn, 2, 1)
+        search_row.addWidget(self.delete_hardware_btn, 3, 0)
+        search_row.addWidget(self.refresh_catalog_btn, 3, 1)
+        search_row.addWidget(self.template_btn, 4, 0, 1, 2)
 
         self.hardware_tabs = QTabWidget()
         self.hardware_tabs.setObjectName("hardwareTabs")
@@ -7214,13 +7237,28 @@ class ResponsiveStackedWidget(QStackedWidget):
         return QSize(600, 420)
 
 
+class ResponsivePageScrollArea(QScrollArea):
+    """Keep dense pages readable when DPI scaling reduces the usable viewport."""
+
+    def __init__(self, page, parent=None):
+        super().__init__(parent)
+        self.setObjectName("pageScroll")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setWidgetResizable(True)
+        self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        self.setWidget(page)
+
+
 class DashboardWindow(QMainWindow):
     def __init__(self, user_profile=None):
         super().__init__()
 
         self.setWindowTitle(t("Semáforo IA"))
         self.setWindowIcon(QIcon(make_leaf_pixmap(64)))
-        self.resize(1024, 640)
+        resize_to_available_screen(self, 1024, 640)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -7391,7 +7429,8 @@ class DashboardWindow(QMainWindow):
 
     def _add_nav_item(self, sidebar, label, icon, widget):
         button = sidebar.add_nav_button(label, icon)
-        index = self.stack.addWidget(widget)
+        page_scroll = ResponsivePageScrollArea(widget)
+        index = self.stack.addWidget(page_scroll)
         def on_click(checked=False, idx=index):
             if self.stack.currentIndex() != idx:
                 self.fade_effect.setEnabled(True)
@@ -8316,6 +8355,7 @@ def apply_stylesheet(app, theme="dark"):
         "QScrollBar::handle:vertical:hover { background: #59655b; }"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
         "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        "QScrollArea#pageScroll { background: transparent; border: none; }"
         "QScrollArea#settingsScroll, QWidget#settingsContent { background: transparent; border: none; }"
         "QScrollArea#adminScroll, QWidget#adminContent { background: transparent; border: none; }"
         "QToolTip { background-color: #1b211c; color: #f4f7f4; border: 1px solid #465147; padding: 5px 8px; }"

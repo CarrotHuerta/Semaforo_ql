@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy
 
 import main as main_module
-from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, LoginWindow, ProjectsView, ResponsiveStackedWidget, SettingsView
+from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, LoginWindow, ProjectsView, ResponsivePageScrollArea, ResponsiveStackedWidget, SettingsView
 
 
 class FakeMainWindow:
@@ -111,6 +111,13 @@ class UiFunctionalTests(unittest.TestCase):
         self.assertEqual((stack.minimumSizeHint().width(), stack.minimumSizeHint().height()), (600, 420))
         stack.deleteLater()
 
+        comparison_scroll = ResponsivePageScrollArea(CarbonDetailView())
+        comparison_scroll.resize(800, 420)
+        comparison_scroll.show()
+        self.app.processEvents()
+        self.assertGreater(comparison_scroll.verticalScrollBar().maximum(), 0)
+        comparison_scroll.deleteLater()
+
         admin = AdminMenuView({"display_name": "Nacha", "role": "Administrador", "username": "nacha"})
         admin.resize(800, 480)
         admin.show()
@@ -127,6 +134,20 @@ class UiFunctionalTests(unittest.TestCase):
             self.assertIn(label, admin_buttons)
             self.assertTrue(admin_buttons[label].isEnabled(), label)
         admin.deleteLater()
+
+    def test_hardware_toolbar_keeps_button_labels_visible(self):
+        view = HardwareCatalogView()
+        page_scroll = ResponsivePageScrollArea(view)
+        page_scroll.resize(800, 600)
+        page_scroll.show()
+        self.app.processEvents()
+        buttons = (
+            view.autoselect_btn, view.rightsize_btn, view.add_hardware_btn,
+            view.edit_hardware_btn, view.delete_hardware_btn,
+            view.refresh_catalog_btn, view.template_btn,
+        )
+        self.assertTrue(all(button.width() >= button.sizeHint().width() for button in buttons))
+        page_scroll.deleteLater()
 
     def test_models_view_pagination_controls(self):
         from main import ModelsView
