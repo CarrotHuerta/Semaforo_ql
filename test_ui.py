@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy
 
 import main as main_module
-from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, ResponsiveStackedWidget, SettingsView
+from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, LoginWindow, ProjectsView, ResponsiveStackedWidget, SettingsView
 
 
 class FakeMainWindow:
@@ -213,6 +213,28 @@ class UiFunctionalTests(unittest.TestCase):
             self.assertTrue(widget.isEnabled())
         self.assertIn("Fuente Primaria Operante", settings.energy_source_label.text())
         settings.deleteLater()
+
+    def test_projects_defers_mlflow_during_dashboard_construction(self):
+        with patch.object(ProjectsView, "_mlflow_run_items") as load_mlflow:
+            view = ProjectsView(profile={"username": "nacha", "role": "Administrador"})
+        load_mlflow.assert_not_called()
+        view.deleteLater()
+
+    def test_remote_login_uses_a_bounded_network_timeout(self):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"user":{"username":"nacha","role":"Administrador"},"token":"token"}'
+        )
+        with patch("urllib.request.urlopen", return_value=response) as urlopen, patch.object(
+            main_module, "DashboardWindow"
+        ):
+            window = LoginWindow()
+            window.connection_combo.setCurrentIndex(1)
+            window.username_input.setText("nacha")
+            window.password_input.setText("ClaveSegura1@")
+            window.handle_login()
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 5)
+        window.deleteLater()
 
 
 if __name__ == "__main__":

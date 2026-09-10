@@ -38,5 +38,5 @@
   ],
   "mlflow_tracking_uri": "http://127.0.0.1:5000",
   "current_project_id": 1,
-  "budget_usd": 2.0
+  "budget_usd": 10.0
 }

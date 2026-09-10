@@ -3446,7 +3446,9 @@ class ProjectsView(QWidget):
         self.history_container.setSpacing(12)
         layout.addWidget(self.history_region, 1)
 
-        self._load_projects()
+        # MLflow has a large import graph; defer it until this view is opened so
+        # successful authentication can transition immediately to the dashboard.
+        self._load_projects(include_mlflow=False)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -6003,9 +6005,11 @@ class LoginWindow(QMainWindow):
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req) as response:
+                with urllib.request.urlopen(req, timeout=5) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     profile = res_data.get("user")
+                    if not isinstance(profile, dict) or not res_data.get("token"):
+                        raise ValueError("Respuesta de autenticacion incompleta")
                     profile["server_token"] = res_data.get("token")
             except urllib.error.HTTPError as e:
                 self.failed_attempts += 1
@@ -6021,7 +6025,7 @@ class LoginWindow(QMainWindow):
                 else:
                     self._set_error(error_msg)
                 return
-            except urllib.error.URLError:
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
                 self._set_error(t("No se pudo conectar al servidor."))
                 return
 
