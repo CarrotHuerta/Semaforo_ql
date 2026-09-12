@@ -241,7 +241,7 @@ def load_model_records():
     model_file = writable_path("models.json")
     if os.path.isfile(model_file):
         try:
-            records.extend(import_records(model_file))
+            records.extend(import_records(model_file, require_uniform_columns=False))
         except (OSError, ValueError):
             records = records
     merged = {}
@@ -2492,7 +2492,7 @@ class ModelsView(QWidget):
             existing = []
             if os.path.isfile(model_file):
                 try:
-                    existing = import_records(model_file)
+                    existing = import_records(model_file, require_uniform_columns=False)
                 except ValueError:
                     existing = []
             merged = existing + [row for row in imported if isinstance(row, dict)]
@@ -2687,7 +2687,7 @@ class ModelsView(QWidget):
             model_file = writable_path("models.json")
             if os.path.isfile(model_file):
                 try:
-                    rows = import_records(model_file)
+                    rows = import_records(model_file, require_uniform_columns=False)
                     for row in rows:
                         if row.get("Nombre_Modelo") == model_name or row.get("name") == model_name:
                             row["is_active"] = False
@@ -2721,7 +2721,11 @@ class ModelsView(QWidget):
                 model_file = writable_path("models.json")
                 if os.path.isfile(model_file):
                     try:
-                        rows = [row for row in import_records(model_file) if row.get("Nombre_Modelo") != model_name and row.get("name") != model_name]
+                        rows = [
+                            row
+                            for row in import_records(model_file, require_uniform_columns=False)
+                            if row.get("Nombre_Modelo") != model_name and row.get("name") != model_name
+                        ]
                         export_records(rows, model_file)
                     except (OSError, ValueError) as exc:
                         QMessageBox.critical(self, t("Borrado Físico"), str(exc))

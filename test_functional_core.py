@@ -189,6 +189,10 @@ class FunctionalCoreTests(unittest.TestCase):
             )
             with self.assertRaises(DataIntegrityError):
                 import_records(inconsistent)
+            self.assertEqual(
+                len(import_records(inconsistent, require_uniform_columns=False)),
+                2,
+            )
 
     def test_api_key_encryption_roundtrip_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

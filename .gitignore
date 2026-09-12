@@ -37,3 +37,6 @@ secrets/
 
 # Local MLflow tracking server data (sqlite backend + artifacts)
 mlflow_data/
+ 
+# Backup folder
+backup/

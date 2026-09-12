@@ -1556,6 +1556,7 @@ class LocalStore:
 def import_records(
     path: str | os.PathLike[str],
     required_fields: Iterable[str] | None = None,
+    require_uniform_columns: bool = True,
 ) -> list[dict[str, Any]]:
     """Read JSON/CSV records and optionally enforce a declared import schema."""
     file_path = Path(path)
@@ -1587,7 +1588,7 @@ def import_records(
                         f"El registro {index} no contiene los campos requeridos: {', '.join(missing)}."
                     )
         keys = set(records[0]) if records else set()
-        if any(set(record) != keys for record in records):
+        if require_uniform_columns and any(set(record) != keys for record in records):
             raise DataIntegrityError("Todos los registros deben usar las mismas columnas.")
         return records
     except (OSError, UnicodeError, json.JSONDecodeError, csv.Error) as exc:

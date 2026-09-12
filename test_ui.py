@@ -1,10 +1,12 @@
+import json
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QSizePolicy
 
 import main as main_module
 from main import AdminMenuView, CarbonDetailView, FinOpsView, HardwareCatalogView, HomeView, LoginWindow, ProjectsView, ResponsivePageScrollArea, ResponsiveStackedWidget, SettingsView
@@ -168,6 +170,37 @@ class UiFunctionalTests(unittest.TestCase):
                 view.prev_page_btn.click()
                 self.assertEqual(view.current_page, 1)
         view.deleteLater()
+
+    def test_models_view_hard_delete_accepts_optional_columns(self):
+        from main import ModelsView
+
+        with tempfile.TemporaryDirectory() as directory:
+            model_file = os.path.join(directory, "models.json")
+            with open(model_file, "w", encoding="utf-8") as handle:
+                json.dump([
+                    {"Nombre_Modelo": "Eliminar", "is_active": True},
+                    {"Nombre_Modelo": "Conservar"},
+                ], handle)
+            with patch.object(
+                main_module,
+                "load_model_records",
+                return_value=[{"Nombre_Modelo": "Eliminar"}, {"Nombre_Modelo": "Conservar"}],
+            ), patch.object(
+                main_module, "writable_path", return_value=model_file
+            ), patch.object(
+                QMessageBox, "question", return_value=QMessageBox.Yes
+            ), patch.object(QMessageBox, "information"), patch.object(
+                QMessageBox, "critical"
+            ) as critical:
+                view = ModelsView()
+                view.model_combo.setCurrentText("Eliminar")
+                view._handle_hard_delete()
+
+            with open(model_file, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), [{"Nombre_Modelo": "Conservar"}])
+            critical.assert_not_called()
+            self.assertEqual(view.model_combo.findText("Eliminar"), -1)
+            view.deleteLater()
 
     def test_cloud_view_low_carbon_filter_and_lock_signal(self):
         from main import CloudView
