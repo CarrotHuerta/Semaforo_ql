@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import random
 import tempfile
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
@@ -44,6 +46,36 @@ def _read_cache(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ExternalServiceError(f"La cache local no esta disponible o esta corrupta: {exc}") from exc
+
+
+def _snapshot_cache(path: Path) -> Path | None:
+    if not path.is_file():
+        return None
+    payload = _read_cache(path)
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    snapshot = path.parent / f"{path.stem}_history" / f"{stamp}_{hashlib.sha256(encoded).hexdigest()[:8]}.json"
+    if not snapshot.exists():
+        _atomic_json_write(snapshot, payload)
+    return snapshot
+
+
+def list_cache_snapshots(path: str | os.PathLike[str]) -> list[Path]:
+    cache = Path(path)
+    history = cache.parent / f"{cache.stem}_history"
+    return sorted(history.glob("*.json"), reverse=True) if history.is_dir() else []
+
+
+def restore_cache_snapshot(path: str | os.PathLike[str], snapshot_name: str) -> Any:
+    cache = Path(path)
+    snapshots = {item.name: item for item in list_cache_snapshots(cache)}
+    snapshot = snapshots.get(Path(snapshot_name).name)
+    if snapshot is None:
+        raise ExternalServiceError("La versión histórica seleccionada no existe.")
+    payload = _read_cache(snapshot)
+    _snapshot_cache(cache)
+    _atomic_json_write(cache, payload)
+    return payload
 
 
 def _placeholder_payload(url: str, *, provider: str | None = None) -> Any:
@@ -89,6 +121,7 @@ class CachedJsonClient:
             payload = _placeholder_payload(url, provider=(headers or {}).get("X-Provider") or None)
             parsed = parser(payload)
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            _snapshot_cache(self.cache_path)
             _atomic_json_write(self.cache_path, parsed)
             return parsed, False
 
@@ -98,6 +131,7 @@ class CachedJsonClient:
                 response = self.session.get(url, timeout=self.timeout, headers=headers or {"Accept": "application/json"})
                 response.raise_for_status()
                 parsed = parser(response.json())
+                _snapshot_cache(self.cache_path)
                 _atomic_json_write(self.cache_path, parsed)
                 return parsed, False
             except (requests.RequestException, ValueError, TypeError, KeyError, PermissionError) as exc:

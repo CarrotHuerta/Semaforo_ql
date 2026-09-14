@@ -4,13 +4,14 @@ import json
 import base64
 import hashlib
 import hmac
+import sqlite3
 import time
 from urllib.parse import urlparse
 
 from hardware_info import get_hardware_info
 import os
 from app_paths import writable_path
-from functional_core import bootstrap_store
+from functional_core import ValidationError, bootstrap_store
 
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -41,9 +42,9 @@ def _token_secret():
     return hashlib.sha256("|".join(hashes).encode("utf-8")).digest()
 
 
-def create_session_token(username):
+def create_session_token(username, scope="session"):
     payload = json.dumps(
-        {"username": username, "expires": int(time.time()) + SESSION_TTL_SECONDS},
+        {"username": username, "scope": scope, "expires": int(time.time()) + SESSION_TTL_SECONDS},
         separators=(",", ":"),
     ).encode("utf-8")
     encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
@@ -51,7 +52,7 @@ def create_session_token(username):
     return f"{encoded}.{signature}"
 
 
-def validate_session_token(token):
+def validate_session_token(token, required_scope="session"):
     if not isinstance(token, str) or "." not in token:
         return False
     encoded, signature = token.split(".", 1)
@@ -61,9 +62,13 @@ def validate_session_token(token):
     try:
         padding = "=" * (-len(encoded) % 4)
         payload = json.loads(base64.urlsafe_b64decode((encoded + padding).encode("ascii")))
-        return isinstance(payload, dict) and int(payload["expires"]) > int(time.time())
+        if not isinstance(payload, dict) or int(payload["expires"]) <= int(time.time()):
+            return None
+        if payload.get("scope", "session") != required_scope:
+            return None
+        return payload
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-        return False
+        return None
 
 
 def authenticate_request(username, password):
@@ -122,11 +127,45 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                 if error:
                     self._send_json(status, {"error": error})
                     return
-                self._send_json(status, {"status": "ok", "user": user, "token": create_session_token(user["username"])})
+                if user["force_password_change"]:
+                    self._send_json(status, {
+                        "status": "password_change_required", "user": user,
+                        "password_change_token": create_session_token(user["username"], "password_change"),
+                    })
+                else:
+                    self._send_json(status, {"status": "ok", "user": user, "token": create_session_token(user["username"])})
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send_json(400, {"error": "JSON invalido"})
             except OSError:
                 self._send_json(503, {"error": "Servicio de autenticacion no disponible"})
+        elif parsed_path.path == '/change-password':
+            authorization = self.headers.get("Authorization", "")
+            token = authorization.removeprefix("Bearer ").strip()
+            payload = validate_session_token(token, "password_change")
+            if not payload:
+                self._send_json(401, {"error": "Token de cambio invalido o expirado"})
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                if content_length <= 0 or content_length > MAX_REQUEST_BYTES:
+                    self._send_json(413, {"error": "Solicitud demasiado grande"})
+                    return
+                data = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                password = data.get("password") if isinstance(data, dict) else None
+                store = get_store()
+                try:
+                    store.set_user_password(payload["username"], password)
+                finally:
+                    store.close()
+                self._send_json(200, {
+                    "status": "ok", "token": create_session_token(payload["username"]),
+                })
+            except ValidationError as exc:
+                self._send_json(400, {"error": str(exc)})
+            except (OSError, sqlite3.DatabaseError):
+                self._send_json(503, {"error": "No se pudo guardar la nueva contraseña"})
+            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                self._send_json(400, {"error": "Solicitud invalida"})
         else:
             self._send_json(404, {"error": "Ruta no encontrada"})
 
@@ -135,7 +174,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
         if parsed_path.path == '/hardware':
             authorization = self.headers.get("Authorization", "")
             token = authorization.removeprefix("Bearer ").strip()
-            if not validate_session_token(token):
+            if not validate_session_token(token, "session"):
                 self._send_json(401, {"error": "Autenticacion requerida"})
                 return
             try:

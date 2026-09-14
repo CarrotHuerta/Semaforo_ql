@@ -1,3 +1,4 @@
+import csv
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,25 @@ except Exception as exc:
 
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
 _active_exports = []
+
+
+def _create_csv_report(report_type, data, file_path):
+    """Export report sections as portable, auditable tabular data."""
+    rows = []
+    for kpi in data.get("kpis", []):
+        rows.append(["kpi", kpi[2], kpi[3], kpi[4]])
+    for detail in data.get("details", []):
+        rows.append(["detail", detail[0], detail[1], ""])
+    for component in data.get("components", []):
+        rows.append(["component", component[0], component[1], component[2]])
+    for log in data.get("logs", []):
+        rows.append(["activity", log[0], "", ""])
+
+    with open(file_path, "w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["report_type", report_type, "exported_by", data.get("exported_by", "")])
+        writer.writerow(["section", "label", "value", "unit"])
+        writer.writerows(rows)
 
 
 def _create_xlsx_report(report_type, data, file_path):
@@ -185,6 +205,9 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
     if export_format == "json":
         ext = ".json"
         file_filter = t("Archivo JSON (*.json);;Todos los archivos (*)", lang)
+    elif export_format == "csv":
+        ext = ".csv"
+        file_filter = t("Archivo CSV (*.csv);;Todos los archivos (*)", lang)
     elif export_format == "xlsx":
         ext = ".xlsx"
         file_filter = t("Archivo Excel (*.xlsx);;Todos los archivos (*)", lang)
@@ -214,6 +237,8 @@ def _pick_export_target(parent_widget, report_type, export_format, lang=None):
 
     if export_format == "json" and not selected_path.lower().endswith(".json"):
         selected_path += ".json"
+    elif export_format == "csv" and not selected_path.lower().endswith(".csv"):
+        selected_path += ".csv"
     elif export_format == "xlsx" and not selected_path.lower().endswith(".xlsx"):
         selected_path += ".xlsx"
     elif export_format in {"pdf", "both"} and not selected_path.lower().endswith(".pdf"):
@@ -247,6 +272,10 @@ def _apply_report_data(report_type, data, file_path, export_format, lang):
             "progress": 0,
         }
         report_type = "eco"
+
+    if export_format == "csv":
+        _create_csv_report(report_type, data, file_path)
+        return
 
     if export_format == "xlsx":
         _create_xlsx_report(report_type, data, file_path)
@@ -351,7 +380,7 @@ class _ExportController(QObject):
     QObject (en vez de a una funcion Python suelta) es lo que permite a Qt detectar
     la diferencia de hilo y encolar la llamada correctamente en el hilo de la UI."""
 
-    def __init__(self, parent_widget, thread, worker, trigger_widget, lang, export_entry):
+    def __init__(self, parent_widget, thread, worker, trigger_widget, lang, export_entry, retry_args):
         super().__init__()
         self.parent_widget = parent_widget
         self.thread = thread
@@ -359,6 +388,7 @@ class _ExportController(QObject):
         self.trigger_widget = trigger_widget
         self.lang = lang
         self.export_entry = export_entry
+        self.retry_args = retry_args
 
     @Slot(bool, str)
     def on_finished(self, success, error_message):
@@ -373,11 +403,13 @@ class _ExportController(QObject):
                 t("El reporte ha sido generado y guardado exitosamente.", self.lang)
             )
         else:
-            QMessageBox.critical(
+            retry = QMessageBox.warning(
                 self.parent_widget,
                 t("Error", self.lang),
-                t("Ocurrió un error al generar el archivo:\n{error}", self.lang).format(error=error_message)
-            )
+                t("No se pudo escribir el informe:\n{error}\n\nSeleccione Reintentar para elegir otra ubicación.", self.lang).format(error=error_message),
+                QMessageBox.Retry | QMessageBox.Cancel,
+                QMessageBox.Retry,
+            ) == QMessageBox.Retry
 
         if success:
             _send_os_notification()
@@ -386,6 +418,8 @@ class _ExportController(QObject):
         self.thread.wait()
         if self.export_entry in _active_exports:
             _active_exports.remove(self.export_entry)
+        if not success and retry:
+            generate_and_save_report(*self.retry_args)
 
 
 def generate_and_save_report(parent_widget, report_type, data, export_format="pdf", lang=None, trigger_widget=None):
@@ -396,8 +430,8 @@ def generate_and_save_report(parent_widget, report_type, data, export_format="pd
     trigger_widget: boton que dispara la exportacion; se deshabilita mientras se genera
     el reporte en segundo plano para evitar que la UI se congele o se dispare dos veces.
     """
-    if export_format not in {"pdf", "json", "xlsx", "both"}:
-        raise ValueError("export_format debe ser 'pdf', 'json', 'xlsx' o 'both'")
+    if export_format not in {"pdf", "json", "csv", "xlsx", "both"}:
+        raise ValueError("export_format debe ser 'pdf', 'json', 'csv', 'xlsx' o 'both'")
 
     lang = lang or i18n.get_language()
 
@@ -420,7 +454,8 @@ def generate_and_save_report(parent_widget, report_type, data, export_format="pd
 
     # El controller se crea (y se queda) en el hilo principal: eso es lo que hace que
     # la conexion de abajo se encole automaticamente en vez de ejecutarse en el hilo worker.
-    controller = _ExportController(parent_widget, thread, worker, trigger_widget, lang, export_entry)
+    retry_args = (parent_widget, report_type, data, export_format, lang, trigger_widget)
+    controller = _ExportController(parent_widget, thread, worker, trigger_widget, lang, export_entry, retry_args)
     export_entry["controller"] = controller
     worker.finished.connect(controller.on_finished)
     thread.finished.connect(thread.deleteLater)

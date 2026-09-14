@@ -3,7 +3,7 @@
   "server_ip": "127.0.0.1",
   "server_port": 6767,
   "language": "es",
-  "notifications_os": true,
+  "notifications_os": false,
   "theme": "dark",
   "users": [
     {
@@ -34,9 +34,23 @@
       "profile_photo": "img/maxine.jpg",
       "password_hash": "pbkdf2_sha256$260000$ac95afa719aaacd1f7c819b68936f308$74ba6a1be746a1322728cc890b406a339a0bf6560e0b200a46d8e2f6b5296d93",
       "security_questions": []
+    },
+    {
+      "username": "test",
+      "display_name": "test",
+      "role": "Usuario",
+      "profile_photo": "",
+      "password_hash": "pbkdf2_sha256$260000$0b2aa03de603d012f5e5088f20a266ad$11057dc0df4c466fec3f009e02f860a3644c1ab0fc5d352cd5fd4e87f71291d3",
+      "security_questions": []
     }
   ],
   "mlflow_tracking_uri": "http://127.0.0.1:5000",
-  "current_project_id": 1,
-  "budget_usd": 1000.0
+  "current_project_id": 4,
+  "budget_usd": 100.0,
+  "local_metrics": {
+    "pue": 1.0,
+    "green_energy_percent": 0.0,
+    "manual_litres": 11.4
+  },
+  "diesel_generator_enabled": false
 }

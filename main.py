@@ -1,14 +1,19 @@
-from functional_core import best_shifting_hour, hash_password, liquid_cooling_roi, predict_limit_breach, software_efficiency_recommendations, validate_password, ValidationError
+from functional_core import carbon_shifting_recommendation, compare_cooling_scenarios, hash_password, liquid_cooling_roi, predict_limit_breach, sanitize_markdown, software_efficiency_recommendations, validate_password, ValidationError
 import csv
 import json
 import math
 import multiprocessing
 import os
+import platform
 import re
+import secrets
 import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
+import traceback
+from datetime import datetime, timezone
 from html import escape as html_escape
 from difflib import SequenceMatcher
 from PySide6.QtCore import QDateTime, QDir, QEvent, QLockFile, QObject, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
@@ -69,13 +74,86 @@ from functional_core import classify_cpu_tier
 from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_security_answer
 from functional_core import CircuitBreakerError, hash_password, predict_limit_breach, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
-from functional_core import calculate_energy, Execution, utc_iso
+from functional_core import calculate_energy, Execution, format_carbon, utc_iso
 from functional_core import (
-    assert_parameters_unlocked, calculate_water, check_immersion_compatibility, describe_error,
+    assert_hardware_upgrade_allowed, assert_parameters_unlocked, calculate_water,
+    check_immersion_compatibility, describe_error,
     detect_hydro_desync, detect_new_hardware, flow_meter_reading, format_local_timestamp,
-    hydro_total_litres, is_low_carbon_region, paginate, parse_hydro_records, primary_energy_source,
+    hydro_total_litres, is_low_carbon_region, paginate, parse_hydro_records, predict_execution_duration,
+    primary_energy_source,
 )
-from external_services import BillingCloudClient, CarbonFactorClient, ModbusTelemetryClient, SimulatedTelemetryClient, SnmpTelemetryClient
+from external_services import BillingCloudClient, CarbonFactorClient, ExternalServiceError, ModbusTelemetryClient, SimulatedTelemetryClient, SnmpTelemetryClient, list_cache_snapshots, restore_cache_snapshot
+
+
+DEFAULT_DIESEL_FACTOR = 850.0
+DEFAULT_WUE = 2.5
+HARDWARE_FALLBACK_ROWS = [
+    {
+        "ID_Hardware": f"HW_FALLBACK_{component_type}",
+        "Fabricante": "Contingencia local",
+        "Modelo": f"Hardware Mínimo Fallback/Caído ({component_type})",
+        "Categoria": component_type,
+        "Tipo_Componente": component_type,
+        "TDP_Max_Watts": "0",
+        "_factory": True,
+        "_fallback": True,
+    }
+    for component_type in ("GPU", "CPU", "RAM")
+]
+
+
+def load_diesel_factor():
+    """Load the local diesel factor, falling back safely when its matrix is unavailable."""
+    try:
+        with open(resource_path("data", "environmental_factors.json"), "r", encoding="utf-8") as handle:
+            factor = float(json.load(handle)["diesel_gco2eq_kwh"])
+        if factor <= 0 or not math.isfinite(factor):
+            raise ValueError
+        return factor, False
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return DEFAULT_DIESEL_FACTOR, True
+
+
+def load_water_factors(region, config=None):
+    """Resolve regional WUE/WSI, preferring a measured private WUE when configured."""
+    config = config or load_config()
+    manual_wue = config.get("local_metrics", {}).get("wue")
+    try:
+        with open(resource_path("data", "water_factors.json"), "r", encoding="utf-8") as handle:
+            matrix = json.load(handle)
+        default_wue = float(matrix.get("default_wue_l_kwh", DEFAULT_WUE))
+        if default_wue < 0 or not math.isfinite(default_wue):
+            raise ValueError
+        region_text = str(region or "").casefold()
+        match = next(
+            (values for name, values in matrix.get("regions", {}).items() if region_text and (name.casefold() in region_text or region_text in name.casefold())),
+            None,
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        default_wue, match = DEFAULT_WUE, None
+    if manual_wue is not None:
+        try:
+            wue = float(manual_wue)
+            if wue < 0 or not math.isfinite(wue):
+                raise ValueError
+        except (TypeError, ValueError):
+            wue = default_wue
+            wue_fallback = True
+        else:
+            wue_fallback = False
+    elif match:
+        wue = float(match.get("wue", default_wue))
+        wue_fallback = False
+    else:
+        wue = default_wue
+        wue_fallback = True
+    try:
+        wsi = float(match.get("wsi", 1.0)) if match else 1.0
+        if not 1 <= wsi <= 3:
+            raise ValueError
+    except (TypeError, ValueError):
+        wsi = 1.0
+    return {"wue": wue, "wsi": wsi, "wue_fallback": wue_fallback, "wsi_severe": wsi >= 2.5}
 
 
 def make_label(text, object_name=None, alignment=Qt.AlignLeft):
@@ -273,6 +351,25 @@ def load_finops_demo():
     return metrics, services
 
 
+def load_recommendation_rules(path=None):
+    """Load the local recommendation manual, retaining a usable fallback."""
+    source = path or resource_path("data", "recommendation_rules.json")
+    try:
+        with open(source, "r", encoding="utf-8") as handle:
+            rules = json.load(handle)
+        if not isinstance(rules, dict) or not isinstance(rules.get("moderate", {}).get("recommendations"), list):
+            raise ValueError("invalid rule catalog")
+        return rules, False
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return {
+            "moderate": {
+                "title": t("Huella de Carbono Moderada"),
+                "summary": t("Revise región, tiempo de procesamiento y hardware antes de repetir la evaluación."),
+                "recommendations": [t("Consulte la documentación técnica externa para este estado.")],
+            },
+        }, True
+
+
 class ExchangeRateThread(QThread):
     rates_ready = Signal(dict)
     failed = Signal(str)
@@ -324,14 +421,14 @@ class TelemetryThread(QThread):
     completed = Signal(float)
     failed = Signal(str)
 
-    def __init__(self, protocol, host, identifier, parent=None):
+    def __init__(self, protocol, host, identifier, credential="", parent=None):
         super().__init__(parent)
-        self.protocol, self.host, self.identifier = protocol, host, identifier
+        self.protocol, self.host, self.identifier, self.credential = protocol, host, identifier, credential
 
     def run(self):
         try:
             if self.protocol == "SNMP":
-                client = SnmpTelemetryClient(self.host, self.identifier)
+                client = SnmpTelemetryClient(self.host, self.identifier, community=self.credential or "public")
             elif self.protocol == "Modbus TCP":
                 client = ModbusTelemetryClient(self.host, int(self.identifier))
             else:
@@ -486,6 +583,62 @@ def request_admin_override(parent, store, project_id):
     )
 
 
+def save_diagnostic_fallback(text, directory=None):
+    filename = f"semaforo-error-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.txt"
+    destination = os.path.join(directory, filename) if directory else writable_path("error_reports", filename)
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    with open(destination, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return destination
+
+
+def build_diagnostic_report(payload):
+    metadata = {
+        "incident_id": secrets.token_hex(8),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "application": "Semaforo IA",
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "process_id": os.getpid(),
+    }
+    sections = ["SEMAFORO IA - INCIDENT DIAGNOSTIC", "=" * 40]
+    sections.extend(f"{key}: {value}" for key, value in metadata.items())
+    sections.append("-" * 40)
+    sections.extend(
+        f"{key}: {value}" for key, value in payload.items()
+        if value
+    )
+    return "\n".join(sections)
+
+
+def deliver_diagnostic_report(text, clipboard=None, fallback_directory=None):
+    try:
+        target = clipboard if clipboard is not None else QApplication.clipboard()
+        if target is None:
+            raise RuntimeError("clipboard unavailable")
+        target.setText(text)
+        return {"channel": "clipboard", "path": None}
+    except (RuntimeError, OSError):
+        destination = save_diagnostic_fallback(text, fallback_directory)
+        return {"channel": "file", "path": destination}
+
+
+def handle_uncaught_exception(exc_type, exc_value, exc_traceback, native_hook=None, dialog_handler=None):
+    """Route recoverable failures to guided recovery and fatal failures to the native hook."""
+    native = native_hook or sys.__excepthook__
+    if issubclass(exc_type, (MemoryError, SystemExit, KeyboardInterrupt)):
+        native(exc_type, exc_value, exc_traceback)
+        return "delegated"
+    detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)).strip()
+    handler = dialog_handler or show_guided_error
+    handler(None, "ERR_IO" if issubclass(exc_type, OSError) else "ERR_UNKNOWN", detail)
+    return "guided"
+
+
+def install_global_exception_handler():
+    sys.excepthook = handle_uncaught_exception
+
+
 def show_guided_error(parent, code, detail=""):
     """Guided recovery dialog: error code, cause, suggested action and copy-to-clipboard."""
     payload = describe_error(code, detail)
@@ -500,32 +653,75 @@ def show_guided_error(parent, code, detail=""):
     action.setWordWrap(True)
     layout.addWidget(action)
     if payload["detail"]:
-        detail_label = make_label(t("Detalle") + f": {payload['detail']}", "infoText")
-        detail_label.setWordWrap(True)
-        layout.addWidget(detail_label)
+        layout.addWidget(make_label(t("Detalle técnico"), "infoText"))
+        detail_view = QTextEdit()
+        detail_view.setReadOnly(True)
+        detail_view.setPlainText(payload["detail"])
+        detail_view.setMinimumHeight(140)
+        detail_view.setMaximumHeight(240)
+        layout.addWidget(detail_view)
     button_row = QHBoxLayout()
     copy_btn = QPushButton(t("Copiar detalles"))
     copy_btn.setObjectName("secondaryButton")
+    export_txt_btn = QPushButton(t("Exportar diagnóstico .txt"))
+    export_txt_btn.setObjectName("secondaryButton")
+    delivery_status = make_label("", "infoText")
+    delivery_status.setWordWrap(True)
+    report_text = build_diagnostic_report(payload)
 
     def copy_to_clipboard():
-        text = "\n".join(f"{key}: {value}" for key, value in payload.items() if value)
         try:
-            clipboard = QApplication.clipboard()
-            if clipboard is None:
-                raise RuntimeError("clipboard unavailable")
-            clipboard.setText(text)
-            copy_btn.setText(t("Copiado"))
-        except (RuntimeError, OSError):
-            copy_btn.setText(t("Portapapeles bloqueado"))
+            result = deliver_diagnostic_report(report_text)
+            if result["channel"] == "clipboard":
+                copy_btn.setText(t("Copiado"))
+                delivery_status.setText(t("Diagnóstico completo copiado al portapapeles."))
+            else:
+                copy_btn.setText(t("Guardado en archivo"))
+                copy_btn.setToolTip(result["path"])
+                delivery_status.setText(t("Portapapeles no disponible. Diagnóstico guardado en: {path}").format(path=result["path"]))
+        except OSError:
+            copy_btn.setText(t("Portapapeles y archivo no disponibles"))
+            delivery_status.setText(t("No fue posible copiar ni guardar el diagnóstico."))
+
+    def export_text_file():
+        try:
+            destination = save_diagnostic_fallback(report_text)
+        except OSError as exc:
+            delivery_status.setText(t("No fue posible guardar el diagnóstico: {error}").format(error=exc))
+            return
+        export_txt_btn.setText(t("Archivo guardado"))
+        export_txt_btn.setToolTip(destination)
+        delivery_status.setText(t("Diagnóstico guardado en: {path}").format(path=destination))
 
     copy_btn.clicked.connect(copy_to_clipboard)
+    export_txt_btn.clicked.connect(export_text_file)
     close_btn = QPushButton(t("Cerrar"))
     close_btn.setObjectName("primaryButton")
     close_btn.clicked.connect(dialog.accept)
     button_row.addWidget(copy_btn)
+    button_row.addWidget(export_txt_btn)
     button_row.addWidget(close_btn)
     layout.addLayout(button_row)
+    layout.addWidget(delivery_status)
     dialog.exec()
+
+
+def report_circuit_breaker(parent, store, project_id, username, code, detail):
+    """Report a hard quota stop, with an auditable OS-level fallback."""
+    try:
+        show_guided_error(parent, code, detail)
+        return True
+    except Exception as exc:
+        try:
+            QApplication.beep()
+        except Exception:
+            pass
+        try:
+            store._audit(username or "system", "circuit_notification_failed", project_id, str(exc))
+            store.connection.commit()
+        except (OSError, sqlite3.DatabaseError):
+            pass
+        return False
 
 
 def mark_required_field(field, valid):
@@ -623,6 +819,18 @@ def format_energy_value(kwh):
     return f"{kwh:.2f} kWh"
 
 
+def format_duration_value(duration_ms):
+    """Use a readable unit for accumulated execution time."""
+    seconds = max(0.0, float(duration_ms)) / 1000
+    if seconds < 1:
+        return f"{seconds * 1000:.0f} ms"
+    if seconds < 60:
+        return f"{seconds:.2f} s"
+    if seconds < 3600:
+        return f"{seconds / 60:.2f} min"
+    return f"{seconds / 3600:.2f} h"
+
+
 def make_line_icon(size, color, draw_fn):
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
@@ -676,6 +884,23 @@ def make_leaf_pixmap(size=18, color="#66bb22"):
     painter.drawLine(int(size * 0.35), int(size * 0.7), int(size * 0.7), int(size * 0.35))
     painter.end()
 
+    return pixmap
+
+
+def make_drop_pixmap(size=18, color="#3b82f6"):
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor(color))
+    painter.setPen(Qt.NoPen)
+    path = QPainterPath()
+    path.moveTo(size * 0.5, size * 0.08)
+    path.cubicTo(size * 0.35, size * 0.32, size * 0.18, size * 0.52, size * 0.18, size * 0.68)
+    path.cubicTo(size * 0.18, size * 0.91, size * 0.82, size * 0.91, size * 0.82, size * 0.68)
+    path.cubicTo(size * 0.82, size * 0.52, size * 0.65, size * 0.32, size * 0.5, size * 0.08)
+    painter.drawPath(path)
+    painter.end()
     return pixmap
 
 
@@ -941,7 +1166,7 @@ class SummaryCard(QFrame):
 
 
 class PerformanceCard(QFrame):
-    def __init__(self, title, value, parent=None):
+    def __init__(self, title, value, parent=None, icon_pixmap=None):
         super().__init__(parent)
         self.setObjectName("performanceCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -950,7 +1175,14 @@ class PerformanceCard(QFrame):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        layout.addWidget(make_label(title, "performanceTitle"))
+        title_row = QHBoxLayout()
+        if icon_pixmap is not None:
+            self.icon_label = QLabel()
+            self.icon_label.setPixmap(icon_pixmap)
+            self.icon_label.setFixedSize(icon_pixmap.size())
+            title_row.addWidget(self.icon_label)
+        title_row.addWidget(make_label(title, "performanceTitle"), 1)
+        layout.addLayout(title_row)
         layout.addStretch()
 
         value_label = make_label(value, "performanceValue")
@@ -1474,6 +1706,13 @@ class HomeView(QWidget):
         header_layout.addWidget(header_icon)
         header_layout.addWidget(header_title, 1)
 
+        self.alert_snooze_indicator = QLabel()
+        self.alert_snooze_indicator.setObjectName("alertSnoozeIndicator")
+        self.alert_snooze_indicator.setFixedSize(10, 10)
+        self.alert_snooze_indicator.setToolTip(t("Advertencia silenciada temporalmente"))
+        self.alert_snooze_indicator.setVisible(False)
+        header_layout.addWidget(self.alert_snooze_indicator)
+
         # CU 57.2
         self.export_home_btn = QPushButton(t("Exportar"))
         self.export_home_btn.setObjectName("secondaryButton")
@@ -1607,14 +1846,20 @@ class HomeView(QWidget):
         if level is None or score is None:
             self.alert_bar.setVisible(False)
             self._alert_snoozed = False
+            self.alert_snooze_indicator.setVisible(False)
         else:
             alert_level = t("Advertencia amarilla") if level == "moderado" else t("Alerta crítica") if level == "alto" else ""
             if alert_level:
                 self.alert_text.setText(t("{level}: impacto de carbono {score:.1f} gCO2eq.").format(level=alert_level, score=score))
                 self.alert_bar.setProperty("level", level)
                 self.alert_bar.setStyleSheet("background-color: #b60f0f; border-radius: 8px;" if level == "alto" else "background-color: #8c7600; border-radius: 8px;")
+                self._set_snooze_indicator(level)
                 if not self._alert_snoozed:
                     self.alert_bar.setVisible(True)
+            else:
+                self.alert_bar.setVisible(False)
+                self._alert_snoozed = False
+                self.alert_snooze_indicator.setVisible(False)
         for key, card in self.status_cards.items():
             card.set_selected(level == key)
             if level == key and score is not None:
@@ -1646,14 +1891,23 @@ class HomeView(QWidget):
             else:
                 card.update_description(card.default_description)
 
+    def _set_snooze_indicator(self, level):
+        color = "#ef4444" if level == "alto" else "#f59e0b"
+        self.alert_snooze_indicator.setStyleSheet(
+            f"background-color: {color}; border: 1px solid rgba(255, 255, 255, 90); border-radius: 5px;"
+        )
+        self.alert_snooze_indicator.setVisible(self._alert_snoozed)
+
     def _snooze_alert(self):
         self._alert_snoozed = True
         self.alert_bar.setVisible(False)
+        self._set_snooze_indicator(self.alert_bar.property("level"))
         self.alert_snooze_btn.setText(t("Mostrar Advertencia"))
         QTimer.singleShot(120000, self._restore_alert)
 
     def _restore_alert(self):
         self._alert_snoozed = False
+        self.alert_snooze_indicator.setVisible(False)
         if self.main_window and self.main_window.current_semaphore_level in {"Amarillo", "Rojo"}:
             self.alert_bar.setVisible(True)
         self.alert_snooze_btn.setText(t("Silenciar Advertencia por Tiempo Limitado"))
@@ -1685,7 +1939,12 @@ class HomeView(QWidget):
                 store.add_execution(execution, username=username)
             except CircuitBreakerError as exc:
                 status = store.circuit_breaker_status(model_id, cost, carbon, username=username)
-                show_guided_error(self, (status.get("codes") or ["ERR_QUOTA_FIN"])[0], str(exc))
+                reported = report_circuit_breaker(
+                    self, store, project_id, username,
+                    (status.get("codes") or ["ERR_QUOTA_FIN"])[0], str(exc),
+                )
+                if not reported:
+                    raise
                 token = request_admin_override(self, store, project_id)
                 if not token:
                     raise
@@ -1798,8 +2057,18 @@ class HomeView(QWidget):
         dialogos: devuelve los valores calculados para que el llamador decida como mostrarlos."""
         duration_ms = metrics["total_duration_ms"]
         hours = duration_ms / 3_600_000.0
-        kwh = calculate_energy(tdp, hours, 1.0)
-        carbon = calculate_carbon(tdp, hours, 1.0, intensity) if intensity is not None else None
+        config = load_config()
+        local_metrics = config.get("local_metrics", {})
+        pue = float(local_metrics.get("pue", 1.0))
+        immersion = bool(config.get("immersion_enabled", False))
+        effective_pue = max(1.0, pue * 0.8) if immersion else pue
+        water_factors = load_water_factors(region, config)
+        kwh = calculate_energy(tdp, hours, effective_pue)
+        carbon = calculate_carbon(tdp, hours, effective_pue, intensity) if intensity is not None else None
+        water = calculate_water(
+            kwh, water_factors["wue"], water_factors["wsi"], immersion=immersion,
+            manual_litres=local_metrics.get("manual_litres"),
+        )
 
         result = {"kwh": kwh, "carbon": carbon, "registered": False, "error": None}
 
@@ -1809,13 +2078,13 @@ class HomeView(QWidget):
             try:
                 project_name = self._save_execution_locally(
                     project_id=project_id, model=model, cost=0.0, carbon=carbon,
-                    kwh=kwh, water=0.0, duration_ms=duration_ms, semaphore=semaphore_value,
+                    kwh=kwh, water=water, duration_ms=duration_ms, semaphore=semaphore_value,
                 )
                 if self.main_window:
                     self.main_window.refresh_projects_view()
                 self._log_execution_to_mlflow(
                     project_name=project_name, model=model, hardware=hardware, provider=provider or "",
-                    region=region or "", cost=0.0, carbon=carbon, kwh=kwh, water=0.0,
+                    region=region or "", cost=0.0, carbon=carbon, kwh=kwh, water=water,
                     duration_ms=duration_ms, semaphore=semaphore_value,
                 )
                 result["registered"] = True
@@ -2001,8 +2270,10 @@ class EnvironmentalPerformanceView(QWidget):
         emissions_layout.setSpacing(12)
         self.emisiones_entrenamiento_card = PerformanceCard(t("Emisiones entrenamiento"), "0.00 gCO2eq")
         self.emisiones_ejecucion_card = PerformanceCard(t("Emisiones ejecución"), "0.00 gCO2eq")
+        self.water_impact_card = PerformanceCard(t("Impacto hídrico"), "0.00 L", icon_pixmap=make_drop_pixmap())
         emissions_layout.addWidget(self.emisiones_entrenamiento_card, 1)
         emissions_layout.addWidget(self.emisiones_ejecucion_card, 1)
+        emissions_layout.addWidget(self.water_impact_card, 1)
 
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(12)
@@ -2037,19 +2308,28 @@ class EnvironmentalPerformanceView(QWidget):
         eco_limit_layout = QHBoxLayout()
         eco_limit_layout.setSpacing(12)
 
-        eco_panel = QFrame()
-        eco_panel.setObjectName("detailsPanel")
-        eco_panel_layout = QVBoxLayout(eco_panel)
+        self.eco_panel = QFrame()
+        self.eco_panel.setObjectName("detailsPanel")
+        eco_panel_layout = QVBoxLayout(self.eco_panel)
         eco_panel_layout.setContentsMargins(14, 10, 14, 10)
 
         eco_title_row = QHBoxLayout()
         eco_title_row.addWidget(make_label(t("% Límite Ecológico Utilizado"), "kpiTitle"))
 
-        insignia_label = make_label(t("⭐ Insignia eficiencia: Uso < 50%"), "infoText")
-        insignia_label.setStyleSheet("color: #4eb541;")
-        eco_title_row.addWidget(insignia_label, 0, Qt.AlignRight)
+        self.eco_status_label = make_label(t("Insignia eficiencia: Uso < 50%"), "infoText")
+        self.eco_status_label.setStyleSheet("color: #4eb541;")
+        eco_title_row.addWidget(self.eco_status_label, 0, Qt.AlignRight)
 
         eco_panel_layout.addLayout(eco_title_row)
+
+        self.contingency_status_label = make_label("", "infoText")
+        self.contingency_status_label.setWordWrap(True)
+        self.contingency_status_label.setVisible(False)
+        eco_panel_layout.addWidget(self.contingency_status_label)
+        self.water_status_label = make_label("", "infoText")
+        self.water_status_label.setWordWrap(True)
+        self.water_status_label.setVisible(False)
+        eco_panel_layout.addWidget(self.water_status_label)
 
         self.eco_bar = QProgressBar()
         self.eco_bar.setRange(0, 100)
@@ -2059,7 +2339,7 @@ class EnvironmentalPerformanceView(QWidget):
         self.eco_bar.setFixedHeight(12)
         eco_panel_layout.addWidget(self.eco_bar)
 
-        eco_limit_layout.addWidget(eco_panel, 1)
+        eco_limit_layout.addWidget(self.eco_panel, 1)
 
         main_layout.addLayout(header_layout)
         main_layout.addWidget(make_separator("separator"))
@@ -2070,26 +2350,88 @@ class EnvironmentalPerformanceView(QWidget):
         self.refresh_project_data()
 
     def refresh_project_data(self):
+        self.refresh_contingency_state()
         metrics = self.main_window.get_active_project_metrics() if self.main_window else None
         if not metrics:
             return
         self.emisiones_entrenamiento_card.set_value("0.00 gCO2eq")
-        self.emisiones_ejecucion_card.set_value(f"{metrics['carbon']:.4f} gCO2eq")
+        self.emisiones_ejecucion_card.set_value(format_carbon(metrics["carbon"]))
+        evaluation = getattr(self.main_window, "current_evaluation", None) or {}
+        self.water_impact_card.set_value(f"{float(evaluation.get('water', metrics.get('water', 0))):.2f} L")
+        water_messages = []
+        if evaluation.get("immersion"):
+            water_messages.append(t("Inmersión activa: evaporación estimada en 0 L."))
+        elif evaluation.get("water_source") == "measured":
+            water_messages.append(t("Medición hídrica empírica aplicada; proyección WUE omitida."))
+        elif evaluation.get("wue_fallback"):
+            water_messages.append(t("Advertencia: región sin WUE; aplicado peor caso general."))
+        if evaluation.get("wsi_severe"):
+            water_messages.append(t("Alerta de estrés hídrico extremo (WSI x{wsi:.1f}).").format(wsi=evaluation["wsi"]))
+        self.water_status_label.setText(" ".join(water_messages))
+        self.water_status_label.setVisible(bool(water_messages))
+        self.water_status_label.setStyleSheet(
+            "color: #ef4444; font-weight: 700;" if evaluation.get("wsi_severe") else "color: #f59e0b;"
+        )
+        try:
+            self.water_impact_card.icon_label.setPixmap(
+                make_drop_pixmap(color="#ef4444" if evaluation.get("wsi_severe") else "#3b82f6")
+            )
+        except (AttributeError, RuntimeError):
+            if evaluation.get("wsi_severe"):
+                self.water_status_label.setText(
+                    (self.water_status_label.text() + " " + t("Alerta visual hídrica no disponible.")).strip()
+                )
+                self.water_status_label.setVisible(True)
         self.consumo_energetico_card.set_value(format_energy_value(metrics["kwh"]))
-        self.tiempo_proceso_card.set_value(f"{metrics['duration_ms'] / 1000:.2f} s")
+        self.tiempo_proceso_card.set_value(format_duration_value(metrics["duration_ms"]))
         self.details_panel.set_values([
             metrics["project_name"],
             str(metrics["count"]),
             metrics["latest_timestamp"] or t("Sin datos"),
             t("Finalizado") if metrics["count"] else t("Sin datos"),
         ])
-        self.eco_bar.setValue(max(0, min(100, round(metrics["carbon"]))))
+        ecological_usage = budget_percentage(
+            float(metrics["carbon"]), float(metrics.get("carbon_limit") or 0)
+        )
+        self.eco_panel.setVisible(ecological_usage is not None)
+        if ecological_usage is None:
+            return
+        self.eco_bar.setValue(ecological_usage)
+        self.eco_bar.setFormat(f"{ecological_usage}%")
+        if ecological_usage >= 90:
+            self.eco_status_label.setText(t("Límite ecológico excedido"))
+            self.eco_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+        elif ecological_usage >= 50:
+            self.eco_status_label.setText(t("Límite ecológico en advertencia"))
+            self.eco_status_label.setStyleSheet("color: #f59e0b; font-weight: 700;")
+        else:
+            self.eco_status_label.setText(t("Insignia eficiencia: Uso < 50%"))
+            self.eco_status_label.setStyleSheet("color: #4eb541;")
+
+    def refresh_contingency_state(self):
+        selection = getattr(self.main_window, "selection_state", {}) if self.main_window else {}
+        enabled = bool(selection.get("diesel_generator_enabled"))
+        self.contingency_status_label.setVisible(enabled)
+        if not enabled:
+            return
+        factor = float(selection.get("diesel_factor", DEFAULT_DIESEL_FACTOR))
+        fallback = bool(selection.get("diesel_factor_fallback"))
+        suffix = t(" Matriz local no disponible; se aplicó el factor predeterminado.") if fallback else ""
+        evaluation = getattr(self.main_window, "current_evaluation", None) or {}
+        impact = format_carbon(float(evaluation.get("carbon", 0)))
+        self.contingency_status_label.setText(
+            t("Contingencia severa: generadores diésel activos ({factor:.0f} gCO2eq/kWh). Impacto simulado: {impact}.").format(
+                factor=factor, impact=impact
+            ) + suffix
+        )
+        self.contingency_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
 
 
 
     def show_export_eco_menu(self):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
+        export_csv_action = menu.addAction("CSV")
         export_json_action = menu.addAction("JSON")
         export_both_action = menu.addAction("PDF + JSON")
         export_xlsx_action = menu.addAction("XLSX")
@@ -2097,6 +2439,8 @@ class EnvironmentalPerformanceView(QWidget):
         chosen_action = menu.exec(self.export_eco_btn.mapToGlobal(self.export_eco_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
             self.export_eco_report("pdf")
+        elif chosen_action == export_csv_action:
+            self.export_eco_report("csv")
         elif chosen_action == export_json_action:
             self.export_eco_report("json")
         elif chosen_action == export_xlsx_action:
@@ -2108,26 +2452,44 @@ class EnvironmentalPerformanceView(QWidget):
         import export_handler
 
         consumo_val = self.consumo_energetico_card.findChild(QLabel, "performanceValue").text() if self.consumo_energetico_card.findChild(QLabel, "performanceValue") else "0 Wh"
+        water_val = self.water_impact_card.get_value()
         tiempo_val = self.tiempo_proceso_card.findChild(QLabel, "performanceValue").text() if self.tiempo_proceso_card.findChild(QLabel, "performanceValue") else "0 s"
 
         entrenamiento_text = self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue").text() if self.emisiones_entrenamiento_card.findChild(QLabel, "performanceValue") else "98"
         ejecucion_text = self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue").text() if self.emisiones_ejecucion_card.findChild(QLabel, "performanceValue") else "44"
 
-        def extract_emission_value(raw_text, default_value):
-            cleaned = (raw_text or "").replace("gCO2eq", "").replace("gCO₂eq", "").strip()
-            cleaned = cleaned.replace(",", ".")
-            try:
-                return int(round(float(cleaned)))
-            except ValueError:
-                match = re.search(r"\d+(?:[\.,]\d+)?", raw_text or "")
-                if not match:
-                    return default_value
-                return int(round(float(match.group(0).replace(",", "."))))
+        def extract_metric_value(raw_text, metric_name):
+            match = re.search(r"-?\d+(?:[\.,]\d+)?", raw_text or "")
+            if not match:
+                raise ValueError(t("Dato ambiental inválido en {metric}: {value}").format(metric=metric_name, value=raw_text))
+            value = float(match.group(0).replace(",", "."))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(t("Dato ambiental inválido en {metric}: {value}").format(metric=metric_name, value=raw_text))
+            return value
 
-        entrenamiento_val = extract_emission_value(entrenamiento_text, 0)
-        ejecucion_val = extract_emission_value(ejecucion_text, 0)
+        try:
+            entrenamiento_val = int(round(extract_metric_value(entrenamiento_text, t("Emisiones entrenamiento"))))
+            ejecucion_val = int(round(extract_metric_value(ejecucion_text, t("Emisiones ejecución"))))
+            extract_metric_value(consumo_val, t("Consumo Energético"))
+            extract_metric_value(water_val, t("Impacto hídrico"))
+            extract_metric_value(tiempo_val, t("Tiempo Proceso"))
+        except ValueError as exc:
+            show_guided_error(self, "ERR_DATA", str(exc))
+            return
         progress_val = self.eco_bar.value() if hasattr(self, "eco_bar") else 0
         detail_values = [label.text() for label in self.details_panel.value_labels]
+        contingency_text = (
+            self.contingency_status_label.text()
+            if self.contingency_status_label.isVisible()
+            else t("Generadores de respaldo inactivos")
+        )
+        immersion_comparison = load_config().get("latest_immersion_comparison", {})
+        immersion_detail = t("Sin comparación")
+        if immersion_comparison:
+            immersion_detail = t("Ahorro anual USD {usd:.2f}; agua {water:.2f} L").format(
+                usd=float(immersion_comparison.get("annual_cost_saving", 0)),
+                water=float(immersion_comparison.get("annual_water_saving_litres", 0)),
+            )
 
         user_profile = getattr(self.window(), 'sidebar', None)
         if user_profile:
@@ -2147,13 +2509,17 @@ class EnvironmentalPerformanceView(QWidget):
                 [15, 60, t("Emisiones entrenamiento"), str(entrenamiento_val), "gCO2eq", "emerald_500"],
                 [60, 60, t("Emisiones ejecución"), str(ejecucion_val), "gCO2eq", "cyan_500"],
                 [105, 60, t("Consumo Energético"), consumo_val, "kWh", "emerald_500"],
-                [150, 60, t("Tiempo Proceso"), tiempo_val, "mins", "cyan_500"]
+                [150, 60, t("Tiempo Proceso"), tiempo_val, "mins", "cyan_500"],
+                [195, 60, t("Impacto hídrico"), water_val, "L", "cyan_500"]
             ],
             "details": [
                 [t("Proyecto activo"), detail_values[0], "emerald_600"],
                 [t("Ejecuciones"), detail_values[1], "gray_800"],
                 [t("Última ejecución"), detail_values[2], "gray_800"],
-                [t("Estado del cálculo"), detail_values[3], "emerald_600"]
+                [t("Estado del cálculo"), detail_values[3], "emerald_600"],
+                [t("Contingencia eléctrica"), contingency_text, "logo_orange"],
+                [t("Estado hídrico"), self.water_status_label.text() or t("Normal"), "cyan_500"],
+                [t("Comparación refrigeración"), immersion_detail, "emerald_600"],
             ],
             "logs": [
                 [t("Cálculo Ambiental finalizado correctamente."), "emerald_500"],
@@ -2161,6 +2527,7 @@ class EnvironmentalPerformanceView(QWidget):
                 [t("Variables aún no inicializadas -- mostrando aviso de cálculo en curso"), "logo_orange"],
                 [t("Sesión iniciada. Hardware detectado."), "gray_500"],
                 [t("Excepción 1: datos no disponibles al iniciar."), "logo_pink"]
+                , [contingency_text, "logo_orange"]
             ],
             "progress": progress_val
         }
@@ -2249,25 +2616,58 @@ class CarbonDetailView(QWidget):
         shifting_button = QPushButton(t("Buscar mejor hora"))
         shifting_button.setObjectName("secondaryButton")
         shifting_result = make_label(t("Sin matriz horaria cargada."), "infoText")
+        shifting_result.setWordWrap(True)
+        shifting_comparison = QWidget()
+        shifting_comparison_layout = QFormLayout(shifting_comparison)
+        shifting_now_bar = QProgressBar()
+        shifting_recommended_bar = QProgressBar()
+        for bar in (shifting_now_bar, shifting_recommended_bar):
+            bar.setRange(0, 100)
+            bar.setTextVisible(True)
+        shifting_comparison_layout.addRow(t("Ahora"), shifting_now_bar)
+        shifting_comparison_layout.addRow(t("Recomendado"), shifting_recommended_bar)
+        shifting_comparison.setVisible(False)
 
         def calculate_shifting():
             try:
                 factors = [float(value.strip()) for value in shifting_input.text().split(",") if value.strip()]
-                hour, factor = best_shifting_hour(factors)
+                recommendation = carbon_shifting_recommendation(
+                    factors, datetime.now(timezone.utc).hour,
+                )
             except (TypeError, ValueError, ValidationError) as exc:
+                shifting_comparison.setVisible(False)
                 shifting_result.setText(t("No se pudo calcular shifting: {error}").format(error=exc))
                 return
+            if recommendation is None:
+                shifting_comparison.setVisible(False)
+                shifting_result.setText(t("Matriz estable: no se recomienda postergar la ejecución."))
+                return
+            current_factor = recommendation["current_factor"]
+            factor = recommendation["recommended_factor"]
+            hour = recommendation["recommended_hour"]
+            maximum = max(factors) or 1
+            shifting_now_bar.setValue(round(current_factor / maximum * 100))
+            shifting_now_bar.setFormat(f"{current_factor:.4f}")
+            shifting_recommended_bar.setValue(round(factor / maximum * 100))
+            shifting_recommended_bar.setFormat(f"{factor:.4f}")
+            shifting_comparison.setVisible(True)
             shifting_result.setText(
-                t("Mejor hora: {hour:02d}:00 UTC | Factor: {factor:.4f}").format(hour=hour, factor=factor)
+                t("Mejor hora: {hour:02d}:00 UTC | Factor: {factor:.4f} | Ahorro estimado: {saving:.2f}%").format(
+                    hour=hour, factor=factor, saving=recommendation["saving_percent"],
+                )
             )
 
         shifting_button.clicked.connect(calculate_shifting)
         shifting_layout.addWidget(shifting_input)
         shifting_layout.addWidget(shifting_button, 0, Qt.AlignLeft)
         shifting_layout.addWidget(shifting_result)
+        shifting_layout.addWidget(shifting_comparison)
         self.shifting_input = shifting_input
         self.shifting_button = shifting_button
         self.shifting_result = shifting_result
+        self.shifting_comparison = shifting_comparison
+        self.shifting_now_bar = shifting_now_bar
+        self.shifting_recommended_bar = shifting_recommended_bar
         layout.addWidget(shifting_panel)
 
         efficiency_panel = QFrame()
@@ -2287,6 +2687,15 @@ class CarbonDetailView(QWidget):
         efficiency_button.setObjectName("secondaryButton")
         efficiency_result = make_label(t("Sin analisis ejecutado."), "infoText")
         efficiency_result.setWordWrap(True)
+        efficiency_manual_combo = QComboBox()
+        efficiency_manual_combo.setVisible(False)
+        efficiency_manual_button = QPushButton(t("Abrir manual local"))
+        efficiency_manual_button.setObjectName("secondaryButton")
+        efficiency_manual_button.setEnabled(False)
+        efficiency_manual_view = QTextBrowser()
+        efficiency_manual_view.setMaximumHeight(110)
+        efficiency_manual_view.setVisible(False)
+        recommendation_rules, recommendation_rules_fallback = load_recommendation_rules()
 
         def analyze_efficiency():
             try:
@@ -2302,18 +2711,50 @@ class CarbonDetailView(QWidget):
                 efficiency_result.setText(t("No se pudo analizar: {error}").format(error=exc))
                 return
             if not findings:
+                efficiency_manual_combo.clear()
+                efficiency_manual_combo.setVisible(False)
+                efficiency_manual_button.setEnabled(False)
+                efficiency_manual_view.setVisible(False)
                 efficiency_result.setText(t("No se detectaron ineficiencias con los datos ingresados."))
                 return
             efficiency_result.setText("\n".join(
                 f"{item['title']}: {item['recommendation']}" for item in findings
             ))
+            efficiency_manual_combo.clear()
+            for item in findings:
+                efficiency_manual_combo.addItem(item["title"], item["code"])
+            efficiency_manual_combo.setVisible(True)
+            efficiency_manual_button.setEnabled(True)
+
+        def open_efficiency_manual():
+            code = efficiency_manual_combo.currentData()
+            rule = recommendation_rules.get(code)
+            if recommendation_rules_fallback or not isinstance(rule, dict):
+                text = t("Manual local no disponible. Busque el código {code} en la documentación técnica externa.").format(code=code)
+            else:
+                text = f"<b>{rule.get('title', code)}</b><br>{rule.get('manual', '')}"
+            efficiency_manual_view.setHtml(text)
+            efficiency_manual_view.setVisible(True)
 
         efficiency_button.clicked.connect(analyze_efficiency)
+        efficiency_manual_button.clicked.connect(open_efficiency_manual)
         efficiency_layout.addLayout(efficiency_form)
         efficiency_layout.addWidget(efficiency_button, 0, Qt.AlignLeft)
         efficiency_layout.addWidget(efficiency_result)
+        efficiency_manual_row = QHBoxLayout()
+        efficiency_manual_row.addWidget(efficiency_manual_combo, 1)
+        efficiency_manual_row.addWidget(efficiency_manual_button)
+        efficiency_layout.addLayout(efficiency_manual_row)
+        efficiency_layout.addWidget(efficiency_manual_view)
         self.efficiency_button = efficiency_button
         self.efficiency_result = efficiency_result
+        self.efficiency_runtime_input = runtime_input
+        self.efficiency_cpu_input = cpu_input
+        self.efficiency_memory_input = memory_input
+        self.efficiency_batch_input = batch_input
+        self.efficiency_manual_combo = efficiency_manual_combo
+        self.efficiency_manual_button = efficiency_manual_button
+        self.efficiency_manual_view = efficiency_manual_view
         layout.addWidget(efficiency_panel)
 
         panel = QFrame()
@@ -2326,30 +2767,14 @@ class CarbonDetailView(QWidget):
         icon.setPixmap(make_warning_icon(36))
         icon.setFixedSize(36, 36)
 
-        title = make_label(t("Huella de Carbono Moderada"), "modalTitle", alignment=Qt.AlignCenter)
-        body = make_label(
-            t("Tu nivel de huella de carbono se encuentra en un rango de advertencia. "
-            "Si bien el sistema opera dentro de márgenes aceptables, se han detectado "
-            "parámetros que incrementan innecesariamente las emisiones de CO2 y el consumo energético. "
-            "Es recomendable tomar acción antes de que el nivel escale a rango crítico."),
-            "modalBody",
-        )
+        moderate_rule = recommendation_rules["moderate"]
+        title = make_label(t(moderate_rule.get("title", "Huella de Carbono Moderada")), "modalTitle", alignment=Qt.AlignCenter)
+        body = make_label(t(moderate_rule.get("summary", "")), "modalBody")
         body.setWordWrap(True)
 
-        bullet_1 = QLabel(
-            t("• <b>Región de ejecución:</b> Migrar las cargas de trabajo a regiones con menor factor de emisión, "
-            "como Europa del Norte o Canada Central, puede reducir significativamente las emisiones sin afectar "
-            "el rendimiento.")
-        )
-        bullet_2 = QLabel(
-            t("• <b>Tiempo de procesamiento:</b> Optimizar los hiperparámetros del modelo o aplicar técnicas de early "
-            "stopping puede disminuir el tiempo de cómputo y, con ello, el consumo energético asociado.")
-        )
-        bullet_3 = QLabel(
-            t("• <b>Hardware:</b> Considerar el uso de aceleradores más eficientes energéticamente o ajustar la asignación "
-            "de recursos para evitar capacidad ociosa durante la ejecución.")
-        )
-        for bullet in (bullet_1, bullet_2, bullet_3):
+        moderate_recommendations = moderate_rule.get("recommendations", [])[:3]
+        bullets = [QLabel(f"• {t(text)}") for text in moderate_recommendations]
+        for bullet in bullets:
             bullet.setObjectName("modalBullet")
             bullet.setWordWrap(True)
             bullet.setTextFormat(Qt.RichText)
@@ -2359,6 +2784,21 @@ class CarbonDetailView(QWidget):
             "modalBody",
         )
         footer.setWordWrap(True)
+
+        recommendations_content = QWidget()
+        recommendations_layout = QVBoxLayout(recommendations_content)
+        recommendations_layout.setContentsMargins(0, 0, 0, 0)
+        recommendations_layout.setSpacing(10)
+        recommendations_layout.addWidget(body)
+        for bullet in bullets:
+            recommendations_layout.addWidget(bullet)
+        recommendations_layout.addWidget(footer)
+        self.recommendations_scroll = QScrollArea()
+        self.recommendations_scroll.setObjectName("recommendationsBook")
+        self.recommendations_scroll.setWidgetResizable(True)
+        self.recommendations_scroll.setFrameShape(QFrame.NoFrame)
+        self.recommendations_scroll.setMaximumHeight(260)
+        self.recommendations_scroll.setWidget(recommendations_content)
 
         button = QPushButton(t("Continuar"))
         button.setObjectName("primaryButton")
@@ -2387,24 +2827,22 @@ class CarbonDetailView(QWidget):
         minimize_btn = QPushButton(t("Minimizar consejo"))
         minimize_btn.setObjectName("secondaryButton")
         minimize_btn.setCursor(Qt.PointingHandCursor)
+        self.recommendations_minimize_btn = minimize_btn
+        self._recommendations_minimized = False
 
         def toggle_minimize():
-            is_visible = body.isVisible()
-            body.setVisible(not is_visible)
-            bullet_1.setVisible(not is_visible)
-            bullet_2.setVisible(not is_visible)
-            bullet_3.setVisible(not is_visible)
-            footer.setVisible(not is_visible)
-            button.setVisible(not is_visible)
-            apply_btn.setVisible(not is_visible)
-            abort_btn.setVisible(not is_visible)
-
-            if is_visible:
-                minimize_btn.setText(t("Maximizar consejo"))
-                panel_layout.setContentsMargins(32, 14, 32, 14)
-            else:
-                minimize_btn.setText(t("Minimizar consejo"))
-                panel_layout.setContentsMargins(32, 28, 32, 28)
+            try:
+                self._recommendations_minimized = not self._recommendations_minimized
+                expanded = not self._recommendations_minimized
+                self.recommendations_scroll.setVisible(expanded)
+                button.setVisible(expanded)
+                apply_btn.setVisible(expanded)
+                abort_btn.setVisible(expanded)
+                minimize_btn.setText(t("Minimizar consejo") if expanded else t("Maximizar consejo"))
+                panel_layout.setContentsMargins(32, 28 if expanded else 14, 32, 28 if expanded else 14)
+            except RuntimeError:
+                minimize_btn.setEnabled(False)
+                minimize_btn.setToolTip(t("El consejo permanece visible, pero no bloquea el cálculo."))
 
         minimize_btn.clicked.connect(toggle_minimize)
 
@@ -2421,11 +2859,7 @@ class CarbonDetailView(QWidget):
 
         panel_layout.addWidget(icon, 0, Qt.AlignHCenter)
         panel_layout.addWidget(title)
-        panel_layout.addWidget(body)
-        panel_layout.addWidget(bullet_1)
-        panel_layout.addWidget(bullet_2)
-        panel_layout.addWidget(bullet_3)
-        panel_layout.addWidget(footer)
+        panel_layout.addWidget(self.recommendations_scroll)
         panel_layout.addLayout(btn_row)
         panel_layout.addLayout(min_btn_layout)
 
@@ -2585,6 +3019,19 @@ class ModelsView(QWidget):
         self.description_view.setMaximumHeight(130)
         self.description_view.setPlaceholderText(t("Sin descripción disponible."))
 
+        description_editor_row = QHBoxLayout()
+        self.description_editor = QTextEdit()
+        self.description_editor.setPlaceholderText(t("Descripción Markdown del modelo (máximo 5000 caracteres)"))
+        self.description_editor.setMaximumHeight(100)
+        self.description_counter = make_label("0 / 5000", "infoText")
+        self.save_description_button = QPushButton(t("Guardar descripción"))
+        self.save_description_button.setObjectName("secondaryButton")
+        self.save_description_button.clicked.connect(self._save_model_description)
+        self.description_editor.textChanged.connect(self._update_description_counter)
+        description_editor_row.addWidget(self.description_editor, 1)
+        description_editor_row.addWidget(self.description_counter)
+        description_editor_row.addWidget(self.save_description_button)
+
         self.model_combo.currentTextChanged.connect(self._handle_model_change)
         if self.model_combo.count():
             self._handle_model_change(self.model_combo.currentText())
@@ -2612,6 +3059,7 @@ class ModelsView(QWidget):
         layout.addLayout(cards)
         layout.addWidget(selector_panel)
         layout.addWidget(self.description_view)
+        layout.addLayout(description_editor_row)
         layout.addWidget(list_panel)
 
         # RF08: paginated, sortable model table with explicit empty state
@@ -2747,14 +3195,44 @@ class ModelsView(QWidget):
     def _handle_model_change(self, model_name):
         if model_name == t("Sin modelos disponibles"):
             self.description_view.clear()
+            self.description_editor.clear()
             return
         row = self.model_map.get(model_name, {})
         description = row.get("description_markdown") or row.get("Descripcion") or row.get("Descripción") or ""
         self.description_view.setHtml(render_markdown(description) if description else "")
+        self.description_editor.setPlainText(description)
         if not self.on_selection:
             return
         energy = parse_number(row.get("Consumo_Energetico_Base") or row.get("energy"))
         self.on_selection(model=model_name, model_energy=energy)
+
+    def _update_description_counter(self):
+        length = len(self.description_editor.toPlainText())
+        valid = length <= 5000
+        self.description_counter.setText(f"{length} / 5000")
+        self.description_counter.setStyleSheet("" if valid else "color: #ef4444; font-weight: 700;")
+        self.save_description_button.setEnabled(valid)
+
+    def _save_model_description(self):
+        model_name = self.model_combo.currentText()
+        try:
+            description = self.description_editor.toPlainText()
+            sanitize_markdown(description)
+            model_path = writable_path("models.json")
+            rows = import_records(model_path, require_uniform_columns=False) if os.path.isfile(model_path) else []
+            row = next((item for item in rows if (item.get("Nombre_Modelo") or item.get("name")) == model_name), None)
+            if row is None:
+                row = dict(self.model_map.get(model_name, {}))
+                row["Nombre_Modelo"] = model_name
+                rows.append(row)
+            row["description_markdown"] = description
+            export_records(rows, model_path)
+        except (OSError, ValueError, ValidationError) as exc:
+            QMessageBox.warning(self, t("Guardar descripción"), str(exc))
+            return
+        self.model_map.setdefault(model_name, {})["description_markdown"] = description
+        self.description_view.setHtml(render_markdown(description))
+        QMessageBox.information(self, t("Guardar descripción"), t("Descripción guardada correctamente."))
 
 
 class FinOpsView(QWidget):
@@ -2847,7 +3325,7 @@ class FinOpsView(QWidget):
             summary_rows = [
                 (t("Ejecuciones registradas"), str(project_metrics["count"])),
                 (t("Energía acumulada"), format_energy_value(project_metrics["kwh"])),
-                (t("Carbono acumulado"), f"{project_metrics['carbon']:.2f} gCO2eq"),
+                (t("Carbono acumulado"), format_carbon(project_metrics["carbon"])),
             ]
         self.project_summary_panel = DetailsPanel(t("Resumen del proyecto"), summary_rows)
         self.project_summary_panel.setObjectName("finopsSummaryPanel")
@@ -2874,6 +3352,12 @@ class FinOpsView(QWidget):
         self.budget_bar.setObjectName("standardProgressBar")
         self.budget_bar.setFixedHeight(18)
         budget_layout.addWidget(self.budget_bar)
+        self.budget_forecast_label = make_label(
+            t("Fondo estimado a agotarse en: Sin datos históricos suficientes"),
+            "finopsMetricHint",
+        )
+        self.budget_forecast_label.setWordWrap(True)
+        budget_layout.addWidget(self.budget_forecast_label)
 
         # RF22: fijar/quitar el límite mensual USD desde la propia vista FinOps
         budget_input_row = QHBoxLayout()
@@ -2899,6 +3383,11 @@ class FinOpsView(QWidget):
         lower_row.addWidget(budget_panel, 2)
         lower_row.addWidget(self.project_summary_panel, 1)
         layout.addLayout(lower_row)
+        self.component_cost_panel = DetailsPanel(
+            t("Gasto por componente"),
+            [(service, "0.00") for service, _percentage in self.finops_services],
+        )
+        layout.addWidget(self.component_cost_panel)
         layout.addStretch(1)
         self.refresh_project_data()
         self._update_currency(self.currency_combo.currentText())
@@ -2944,15 +3433,20 @@ class FinOpsView(QWidget):
             presupuesto, _ = convert_clp(presupuesto_clp, currency_code, self.exchange_rates)
             ahorro, _ = convert_clp(self.base_ahorro_clp, currency_code, self.exchange_rates)
         except (KeyError, TypeError, ValueError) as exc:
-            error = t("Tasa no disponible: {error}").format(error=exc)
+            error = t("Tasa no disponible: {error}. Seleccione otra moneda o actualice las tasas.").format(error=exc)
             self.card_actual.set_value("N/A")
             self.card_presupuesto.set_value("N/A")
             self.card_ahorro.set_value("N/A")
+            self.component_cost_panel.set_values(["N/A"] * len(self.finops_services))
             self.exchange_rate_label.setText(error)
             return
         self.card_actual.set_value(f"{symbol} {actual:,.2f}")
         self.card_presupuesto.set_value(t("No definido") if not self.base_presupuesto_usd else f"{symbol} {presupuesto:,.2f}")
         self.card_ahorro.set_value(t("No calculado") if not self.base_ahorro_clp else f"{symbol} {ahorro:,.2f}")
+        self.component_cost_panel.set_values([
+            f"{symbol} {actual * percentage / 100:,.2f} ({percentage:g}%)"
+            for _service, percentage in self.finops_services
+        ])
         self.exchange_rate_label.setText(
             t("1 CLP = {rate:.4f} {currency} | 1 {currency} = {inverse:.4f} CLP").format(
                 rate=self.exchange_rates[currency_code], currency=currency_code, inverse=inverse
@@ -2971,6 +3465,9 @@ class FinOpsView(QWidget):
             self.budget_input.setText("" if not self.base_presupuesto_usd else f"{self.base_presupuesto_usd:g}")
         if not metrics:
             self.circuit_status_label.setText(t("Disyuntor sin proyecto"))
+            self.budget_forecast_label.setText(
+                t("Fondo estimado a agotarse en: Sin datos históricos suficientes")
+            )
             self._update_currency(self.currency_combo.currentText())
             return
         self.active_project_label.setText(
@@ -2984,13 +3481,40 @@ class FinOpsView(QWidget):
         self.budget_state_label.setText(
             t("Sin límite configurado") if percentage is None else t("{percentage}% utilizado").format(percentage=percentage)
         )
+        self._refresh_budget_forecast()
         self._refresh_circuit_status()
         self.project_summary_panel.set_values([
             str(metrics["count"]),
             format_energy_value(metrics["kwh"]),
-            f"{metrics['carbon']:.2f} gCO2eq",
+            format_carbon(metrics["carbon"]),
         ])
         self._update_currency(self.currency_combo.currentText())
+
+    def _refresh_budget_forecast(self):
+        prefix = t("Fondo estimado a agotarse en")
+        if not self.base_presupuesto_usd:
+            self.budget_forecast_label.setText(f"{prefix}: {t('Sin presupuesto configurado')}")
+            return
+        project_id = load_config().get("current_project_id")
+        if project_id is None:
+            self.budget_forecast_label.setText(f"{prefix}: {t('Sin datos históricos suficientes')}")
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            history = [dict(row) for row in store.list_history(project_id=project_id)]
+            breach = predict_limit_breach(history, self.base_presupuesto_usd, "cost")
+            if breach is None:
+                value = t("Sin datos históricos suficientes")
+            else:
+                days = max(0, (breach.date() - datetime.now(timezone.utc).date()).days)
+                value = t("{days} días ({date})").format(days=days, date=breach.date().isoformat())
+            self.budget_forecast_label.setText(f"{prefix}: {value}")
+        except (OSError, ValueError, sqlite3.DatabaseError):
+            self.budget_forecast_label.setText(f"{prefix}: {t('Sin datos históricos suficientes')}")
+        finally:
+            if store is not None:
+                store.close()
 
     def _save_budget(self):
         """RF22: persist the monthly USD budget; empty clears the limit."""
@@ -3057,6 +3581,7 @@ class FinOpsView(QWidget):
     def show_export_finops_menu(self):
         menu = QMenu(self)
         export_pdf_action = menu.addAction("PDF")
+        export_csv_action = menu.addAction("CSV")
         export_json_action = menu.addAction("JSON")
         export_xlsx_action = menu.addAction("XLSX")
         export_both_action = menu.addAction("PDF + JSON")
@@ -3064,6 +3589,8 @@ class FinOpsView(QWidget):
         chosen_action = menu.exec(self.export_finops_btn.mapToGlobal(self.export_finops_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
             self.export_finops_report("pdf")
+        elif chosen_action == export_csv_action:
+            self.export_finops_report("csv")
         elif chosen_action == export_json_action:
             self.export_finops_report("json")
         elif chosen_action == export_xlsx_action:
@@ -3080,12 +3607,29 @@ class FinOpsView(QWidget):
         ahorro = self.card_ahorro.get_value() if hasattr(self, "card_ahorro") else "$1.120.000"
 
         currency_code = self.currency_combo.currentText().split(" - ", 1)[0]
+        rate = self.exchange_rates.get(currency_code)
+        usd_rate = self.exchange_rates.get("USD")
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0 for value in (rate, usd_rate)):
+            QMessageBox.warning(
+                self,
+                t("Tasa no disponible"),
+                t("No se puede exportar con la moneda seleccionada. Seleccione otra moneda o actualice las tasas."),
+            )
+            return
         currency_label = next(
             (label for code, label in self.currency_options if code == currency_code),
             currency_code,
         )
         currency_symbol = currency_label[currency_label.find("(") + 1:-1]
         report_currency_unit = f"{currency_code} ({currency_symbol})"
+        try:
+            cost_clp = self.base_cost_actual_usd / self.exchange_rates["USD"]
+            component_rows = [
+                [service, f"{convert_clp(cost_clp * percentage / 100, currency_code, self.exchange_rates)[0]:.2f}", report_currency_unit]
+                for service, percentage in self.finops_services
+            ]
+        except (KeyError, TypeError, ValueError):
+            component_rows = []
 
         progress_val = self.budget_bar.value()
 
@@ -3115,7 +3659,11 @@ class FinOpsView(QWidget):
                 [t("Costo real registrado"), costo_actual, "cyan_600"],
                 [t("Presupuesto"), presupuesto, "gray_800"],
                 [t("Ahorro"), ahorro, "emerald_500"]
+            ] + [
+                [f"{t('Componente')}: {service}", f"{value} {unit}", "cyan_600"]
+                for service, value, unit in component_rows
             ],
+            "components": component_rows,
             "logs": [
                 [t("Costos FinOps calculados exitosamente."), "emerald_500"]
             ],
@@ -3206,6 +3754,8 @@ class CloudView(QWidget):
         options_row.addStretch()
         self.region_empty_label = make_label("", "infoText")
         self.region_empty_label.setVisible(False)
+        self.region_factor_status = make_label("", "infoText")
+        self.region_factor_status.setWordWrap(True)
 
         self.provider_combo.currentTextChanged.connect(self._update_regions)
         self.region_combo.currentTextChanged.connect(self._sync_cards)
@@ -3218,6 +3768,7 @@ class CloudView(QWidget):
         layout.addWidget(selector_panel)
         layout.addLayout(options_row)
         layout.addWidget(self.region_empty_label)
+        layout.addWidget(self.region_factor_status)
         layout.addWidget(list_panel)
 
     def _build_selector(self, label_text, combo):
@@ -3230,6 +3781,18 @@ class CloudView(QWidget):
         layout.addWidget(make_label(label_text, "cloudLabel"))
         layout.addWidget(combo)
         return wrapper
+
+    def apply_synced_carbon_factors(self, rows):
+        """Apply normalized official factors to matching visible cloud regions."""
+        for row in rows if isinstance(rows, list) else ():
+            region = str(row.get("region", "")).strip().lower()
+            factor = parse_number(row.get("gco2eq_kwh"))
+            if not region or factor is None:
+                continue
+            for label in tuple(self.region_intensity_map):
+                if region in label.lower():
+                    self.region_intensity_map[label] = factor
+        self._sync_cards()
 
     def _update_regions(self, provider):
         regions = list(self.region_map.get(provider, []))
@@ -3254,6 +3817,15 @@ class CloudView(QWidget):
     def _sync_cards(self, _state=None):
         self.provider_card.set_value(self.provider_combo.currentText())
         self.region_card.set_value(self.region_combo.currentText() or t("Sin región"))
+        intensity = self.region_intensity_map.get(self.region_combo.currentText())
+        if intensity is None:
+            self.region_factor_status.setText(t("Factor regional no disponible; cálculo ambiental bloqueado."))
+            self.region_factor_status.setStyleSheet("color: #ef4444; font-weight: 700;")
+        else:
+            self.region_factor_status.setText(
+                t("Factor regional activo: {factor:.2f} gCO2eq/kWh").format(factor=intensity)
+            )
+            self.region_factor_status.setStyleSheet("color: #4eb541; font-weight: 700;")
         if self.on_selection:
             region_label = self.region_combo.currentText()
             intensity = self.region_intensity_map.get(region_label)
@@ -3272,6 +3844,10 @@ class TimeSeriesChart(QWidget):
     def __init__(self, rows, parent=None):
         super().__init__(parent)
         self.rows = list(reversed(rows))
+        self.fallback_message = (
+            t("Datos históricos insuficientes para trazar una evolución.")
+            if len(self.rows) < 2 else ""
+        )
         self.setMinimumHeight(220)
 
     def paintEvent(self, event):
@@ -3279,8 +3855,8 @@ class TimeSeriesChart(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#ffffff"))
         try:
-            if not self.rows:
-                raise ValueError(t("No hay ejecuciones registradas."))
+            if len(self.rows) < 2:
+                raise ValueError(self.fallback_message)
             costs = [max(0.0, float(row["cost"])) for row in self.rows]
             carbon = [max(0.0, float(row["carbon"])) for row in self.rows]
             bounds = self.rect().adjusted(46, 22, -20, -36)
@@ -3321,7 +3897,7 @@ class HistoryView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
-        layout.addWidget(make_label(t("Historial"), "pageTitle"))
+        layout.addWidget(make_label(t("Auditorías ambientales"), "pageTitle"))
         layout.addWidget(make_separator("separator"))
 
         items = []
@@ -3331,7 +3907,7 @@ class HistoryView(QWidget):
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
             history = store.list_history()
             items = [
-                f"{format_local_timestamp(row['timestamp'])} — {row['model_name']} — {row['semaphore']} — "
+                f"{format_local_timestamp(row['timestamp'])} — {row['project_name']} / {row['model_name']} — {row['semaphore']} — "
                 f"{row['carbon']:.2f} gCO2eq — {row['cost']:.2f}"
                 for row in history
             ]
@@ -3341,11 +3917,113 @@ class HistoryView(QWidget):
             if store is not None:
                 store.close()
         if not items:
-            items = [t("No hay ejecuciones registradas.")]
-        list_panel = ListPanel(t("Últimas ejecuciones"), items)
+            items = [t("No hay auditorías ambientales registradas.")]
+        self.audit_list_panel = ListPanel(t("Auditorías recientes"), items)
+        self.history_chart = TimeSeriesChart(history)
 
-        layout.addWidget(TimeSeriesChart(history))
-        layout.addWidget(list_panel)
+        layout.addWidget(self.history_chart)
+        layout.addWidget(self.audit_list_panel)
+
+
+def build_headless_export_command(database_path, project_id, output_path):
+    if getattr(sys, "frozen", False):
+        executable = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "SemaforoCLI.exe")
+        arguments = [executable]
+    else:
+        executable = sys.executable
+        arguments = [executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")]
+    arguments.extend([
+        "--database", os.path.abspath(database_path), "export",
+        "--project-id", str(int(project_id)), "--output", os.path.abspath(output_path),
+    ])
+    return subprocess.list2cmdline(arguments)
+
+
+class HeadlessExportDialog(QDialog):
+    def __init__(self, project_id, project_name, database_path, parent=None):
+        super().__init__(parent)
+        self.project_id = int(project_id)
+        self.database_path = os.path.abspath(database_path)
+        self.setWindowTitle(t("Automatización CLI / CSV puro"))
+        self.setMinimumWidth(820)
+        layout = QVBoxLayout(self)
+        layout.addWidget(make_label(t("Exportación autónoma para scripts corporativos"), "pageTitle"))
+        layout.addWidget(make_label(
+            t("El comando no inicia PySide6 y devuelve control al shell al finalizar."), "infoText",
+        ))
+        form = QFormLayout()
+        form.addRow(t("Proyecto"), make_label(f"{project_name} (ID {self.project_id})", "infoText"))
+        self.output_input = QLineEdit(writable_path("exports", f"project_{self.project_id}.csv"))
+        browse_button = QPushButton(t("Elegir destino"))
+        browse_button.setObjectName("secondaryButton")
+        browse_button.clicked.connect(self._browse_output)
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_input, 1)
+        output_row.addWidget(browse_button)
+        form.addRow(t("Archivo CSV"), output_row)
+        self.command_input = QLineEdit()
+        self.command_input.setReadOnly(True)
+        form.addRow(t("Comando PowerShell"), self.command_input)
+        layout.addLayout(form)
+        self.output_input.textChanged.connect(self._refresh_command)
+        self._refresh_command()
+
+        self.status_label = make_label(t("Listo para exportar."), "infoText")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        buttons = QHBoxLayout()
+        copy_button = QPushButton(t("Copiar comando"))
+        copy_button.setObjectName("secondaryButton")
+        copy_button.clicked.connect(self._copy_command)
+        export_button = QPushButton(t("Exportar CSV puro ahora"))
+        export_button.setObjectName("primaryButton")
+        export_button.clicked.connect(self.run_export)
+        close_button = QPushButton(t("Cerrar"))
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(copy_button)
+        buttons.addWidget(export_button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def _refresh_command(self):
+        self.command_input.setText(build_headless_export_command(
+            self.database_path, self.project_id, self.output_input.text().strip()
+        ))
+
+    def _browse_output(self):
+        destination, _ = QFileDialog.getSaveFileName(
+            self, t("Exportar CSV puro"), self.output_input.text(), "CSV (*.csv)",
+        )
+        if destination:
+            self.output_input.setText(destination if destination.lower().endswith(".csv") else destination + ".csv")
+
+    def _copy_command(self):
+        QApplication.clipboard().setText(self.command_input.text())
+        self.status_label.setText(t("Comando copiado. Puede ejecutarlo en PowerShell sin abrir la interfaz."))
+
+    def run_export(self):
+        output_path = self.output_input.text().strip()
+        if not output_path:
+            self.status_label.setText(t("Seleccione un archivo CSV de destino."))
+            self.status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        store = None
+        try:
+            store = bootstrap_store(load_config(), self.database_path)
+            rows = [dict(row) for row in store.list_history(project_id=self.project_id)]
+            export_records(rows, output_path)
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            self.status_label.setText(t("Exportación interrumpida sin publicar un archivo parcial: {error}").format(error=exc))
+            self.status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self.status_label.setText(
+            t("Exportación completada: {count} registros en {path}").format(count=len(rows), path=os.path.abspath(output_path))
+        )
+        self.status_label.setStyleSheet("color: #4eb541; font-weight: 700;")
 
 
 class ProjectsView(QWidget):
@@ -3439,6 +4117,43 @@ class ProjectsView(QWidget):
         self.quota_forecast_label = make_label("", "infoText")
         quota_row.addWidget(self.quota_forecast_label, 1)
         layout.addLayout(quota_row)
+
+        reassignment_row = QHBoxLayout()
+        reassignment_row.addWidget(make_label(t("Reasignar modelo"), "infoText"))
+        self.reassignment_model_combo = QComboBox()
+        self.reassignment_model_combo.setPlaceholderText(t("Modelo del proyecto activo"))
+        self.reassignment_target_combo = QComboBox()
+        self.reassignment_target_combo.setPlaceholderText(t("Proyecto destino"))
+        self.reassignment_button = QPushButton(t("Transferir y recalcular"))
+        self.reassignment_button.setObjectName("primaryButton")
+        self.reassignment_button.clicked.connect(self._reassign_selected_model)
+        reassignment_row.addWidget(self.reassignment_model_combo, 1)
+        reassignment_row.addWidget(self.reassignment_target_combo, 1)
+        reassignment_row.addWidget(self.reassignment_button)
+        layout.addLayout(reassignment_row)
+
+        self.reassignment_result_label = make_label(t("Sin transferencias en esta sesión."), "infoText")
+        self.reassignment_result_label.setWordWrap(True)
+        layout.addWidget(self.reassignment_result_label)
+
+        forecast_row = QHBoxLayout()
+        forecast_row.addWidget(make_label(t("Pronóstico pre-vuelo"), "infoText"))
+        self.capacity_model_combo = QComboBox()
+        self.capacity_model_combo.setPlaceholderText(t("Modelo con historial"))
+        self.capacity_forecast_button = QPushButton(t("Calcular pronóstico"))
+        self.capacity_forecast_button.setObjectName("primaryButton")
+        self.capacity_forecast_button.clicked.connect(self._calculate_capacity_forecast)
+        self.capacity_reset_button = QPushButton(t("Invalidar pronóstico"))
+        self.capacity_reset_button.setObjectName("secondaryButton")
+        self.capacity_reset_button.clicked.connect(self._invalidate_capacity_forecast)
+        forecast_row.addWidget(self.capacity_model_combo, 1)
+        forecast_row.addWidget(self.capacity_forecast_button)
+        forecast_row.addWidget(self.capacity_reset_button)
+        layout.addLayout(forecast_row)
+        self.capacity_forecast_label = make_label(t("Cálculo por determinarse"), "infoText")
+        self.capacity_forecast_label.setWordWrap(True)
+        layout.addWidget(self.capacity_forecast_label)
+        self._capacity_forecast_cache = {}
 
         if self.is_admin:
             self.global_checkbox = QCheckBox(t("Vista global (todos los proyectos) — solo admin"))
@@ -3552,6 +4267,132 @@ class ProjectsView(QWidget):
                 self.main_window.environmental_view.refresh_project_data()
                 self.main_window.finops_view.refresh_project_data()
         self._load_quotas()
+        self._load_reassignment_options()
+        self._load_capacity_options()
+
+    def _load_capacity_options(self):
+        project_id = self.project_combo.currentData()
+        selected_id = self.capacity_model_combo.currentData()
+        self.capacity_model_combo.clear()
+        store = None
+        try:
+            store = self._open_store()
+            for model in store.list_models(project_id) if project_id is not None else ():
+                self.capacity_model_combo.addItem(model["name"], model["id"])
+        except (OSError, ValueError, sqlite3.DatabaseError):
+            pass
+        finally:
+            if store is not None:
+                store.close()
+        index = self.capacity_model_combo.findData(selected_id)
+        if index >= 0:
+            self.capacity_model_combo.setCurrentIndex(index)
+
+    def _calculate_capacity_forecast(self):
+        model_id = self.capacity_model_combo.currentData()
+        if model_id is None:
+            self.capacity_forecast_label.setText(t("Cálculo por determinarse"))
+            return
+        store = None
+        try:
+            store = self._open_store()
+            history = [dict(row) for row in store.list_history(model_id=model_id)]
+            forecast = predict_execution_duration(history)
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            self.capacity_forecast_label.setText(str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        if forecast is None:
+            self._capacity_forecast_cache.pop(model_id, None)
+            self.capacity_forecast_label.setText(
+                t("Cálculo por determinarse: se requieren al menos 3 sesiones históricas válidas.")
+            )
+            self.capacity_forecast_label.setStyleSheet("color: #9ca3af;")
+            return
+        self._capacity_forecast_cache[model_id] = forecast
+        self.capacity_forecast_label.setText(
+            t("Duración estimada: {duration}. Base: {samples} sesiones; dispersión: {deviation}.").format(
+                duration=format_duration_value(forecast["predicted_ms"]),
+                samples=forecast["sample_size"], deviation=format_duration_value(forecast["deviation_ms"]),
+            )
+        )
+        self.capacity_forecast_label.setStyleSheet("color: #4eb541; font-weight: 700;")
+
+    def _invalidate_capacity_forecast(self):
+        if self.main_window and self.main_window.is_simulation_running():
+            self.capacity_forecast_label.setText(
+                t("Invalidación rechazada: existe una simulación en curso; el pronóstico vigente se conserva.")
+            )
+            self.capacity_forecast_label.setStyleSheet("color: #f59e0b; font-weight: 700;")
+            return
+        model_id = self.capacity_model_combo.currentData()
+        if model_id is not None:
+            self._capacity_forecast_cache.pop(model_id, None)
+        self.capacity_forecast_label.setText(t("Cálculo por determinarse"))
+        self.capacity_forecast_label.setStyleSheet("color: #9ca3af;")
+
+    def _load_reassignment_options(self):
+        source_project_id = self.project_combo.currentData()
+        self.reassignment_model_combo.clear()
+        self.reassignment_target_combo.clear()
+        store = None
+        try:
+            store = self._open_store()
+            if source_project_id is not None:
+                for model in store.list_models(source_project_id):
+                    self.reassignment_model_combo.addItem(model["name"], model["id"])
+            for project in store.list_projects():
+                if project["id"] != source_project_id and project["state"] == "active":
+                    self.reassignment_target_combo.addItem(project["name"], project["id"])
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            self.reassignment_result_label.setText(t("No se pudieron cargar las opciones: {error}").format(error=exc))
+        finally:
+            if store is not None:
+                store.close()
+        enabled = bool(self.reassignment_model_combo.count() and self.reassignment_target_combo.count())
+        self.reassignment_button.setEnabled(enabled)
+
+    def _reassign_selected_model(self):
+        model_id = self.reassignment_model_combo.currentData()
+        target_project_id = self.reassignment_target_combo.currentData()
+        if model_id is None or target_project_id is None:
+            self.reassignment_result_label.setText(t("Seleccione un modelo y un proyecto destino."))
+            return
+        store = None
+        try:
+            store = self._open_store()
+            summary = store.reassign_model(model_id, target_project_id)
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            self.reassignment_result_label.setText(
+                t("Transferencia interrumpida. Recálculo pendiente para origen y destino: {error}").format(error=exc)
+            )
+            self.reassignment_result_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        finally:
+            if store is not None:
+                store.close()
+        source_before = summary["before"]["source"]
+        source_after = summary["after"]["source"]
+        target_before = summary["before"]["target"]
+        target_after = summary["after"]["target"]
+        self.reassignment_result_label.setText(
+            t("Transferencia completada: {model}. {source}: {source_cost_before:.2f} → {source_cost_after:.2f} USD, "
+              "{source_carbon_before:.2f} → {source_carbon_after:.2f} gCO2eq. {target}: "
+              "{target_cost_before:.2f} → {target_cost_after:.2f} USD, {target_carbon_before:.2f} → "
+              "{target_carbon_after:.2f} gCO2eq.").format(
+                model=summary["model_name"], source=summary["source_project_name"],
+                source_cost_before=source_before["cost"], source_cost_after=source_after["cost"],
+                source_carbon_before=source_before["carbon"], source_carbon_after=source_after["carbon"],
+                target=summary["target_project_name"], target_cost_before=target_before["cost"],
+                target_cost_after=target_after["cost"], target_carbon_before=target_before["carbon"],
+                target_carbon_after=target_after["carbon"],
+            )
+        )
+        self.reassignment_result_label.setStyleSheet("color: #4eb541; font-weight: 700;")
+        self._refresh(include_mlflow=False)
+        self._load_reassignment_options()
 
     def _load_quotas(self):
         project_id = self.project_combo.currentData()
@@ -3703,7 +4544,7 @@ class ProjectsView(QWidget):
                 overview = store.global_totals()
                 totals = overview["totals"]
                 history_items = [
-                    f"{row['name']} — {row['carbon']:.2f} gCO2eq — "
+                    f"{row['name']} — {format_carbon(row['carbon'])} — "
                     f"{format_energy_value(row['kwh'])} — {row['cost']:.2f} USD"
                     for row in overview["by_project"]
                 ] or [t("No hay proyectos registrados.")]
@@ -3713,7 +4554,7 @@ class ProjectsView(QWidget):
                 history_rows = store.list_history(project_id=project_id)
                 history_items = [
                     f"{row['timestamp']} — {row['model_name']} — {row['semaphore']} — "
-                    f"{row['carbon']:.2f} gCO2eq — {format_energy_value(row['kwh'])} — "
+                    f"{format_carbon(row['carbon'])} — {format_energy_value(row['kwh'])} — "
                     f"{row['cost']:.2f} USD"
                     for row in history_rows
                 ] or [t("No hay ejecuciones registradas para este proyecto.")]
@@ -3735,7 +4576,7 @@ class ProjectsView(QWidget):
                 store.close()
 
         self.cost_card.set_value(f"{totals['cost']:.2f} USD")
-        self.carbon_card.set_value(f"{totals['carbon']:.2f} gCO2eq")
+        self.carbon_card.set_value(format_carbon(totals["carbon"]))
         self.kwh_card.set_value(format_energy_value(totals["kwh"]))
         self.water_card.set_value(f"{totals['water']:.2f} L")
 
@@ -3782,6 +4623,7 @@ class ProjectsView(QWidget):
         export_both_action = menu.addAction("PDF + JSON")
         export_xlsx_action = menu.addAction("XLSX")
         export_esg_action = menu.addAction(t("Certificado ESG"))
+        export_cli_action = menu.addAction(t("Automatización CLI / CSV puro"))
 
         chosen_action = menu.exec(self.export_btn.mapToGlobal(self.export_btn.rect().bottomLeft()))
         if chosen_action == export_pdf_action:
@@ -3794,6 +4636,18 @@ class ProjectsView(QWidget):
             self._export_report("xlsx")
         elif chosen_action == export_esg_action:
             self._export_esg_certificate()
+        elif chosen_action == export_cli_action:
+            self._show_headless_export()
+
+    def _show_headless_export(self):
+        project_id = self.project_combo.currentData()
+        if project_id is None or self.global_view:
+            QMessageBox.warning(self, t("Automatización CLI / CSV puro"), t("Seleccione un proyecto individual."))
+            return
+        self._headless_export_dialog = HeadlessExportDialog(
+            project_id, self.project_combo.currentText(), writable_path("semaforo.sqlite3"), self,
+        )
+        self._headless_export_dialog.exec()
 
     def _export_esg_certificate(self):
         project_id = self.project_combo.currentData()
@@ -4068,12 +4922,14 @@ class SettingsView(QWidget):
                 return
             sync_env_btn.setEnabled(False)
             self._carbon_thread = CarbonSyncThread(source_url, writable_path("carbon_factors.json"), self)
-            self._carbon_thread.completed.connect(
-                lambda _data, cached: QMessageBox.information(
+            def complete_environment_sync(data, cached):
+                if self.main_window and hasattr(self.main_window, "cloud_view"):
+                    self.main_window.cloud_view.apply_synced_carbon_factors(data)
+                QMessageBox.information(
                     self, t("Sincronización"),
                     t("Factores ambientales sincronizados y guardados localmente.") if not cached else t("Se usó el respaldo ambiental local."),
                 )
-            )
+            self._carbon_thread.completed.connect(complete_environment_sync)
             self._carbon_thread.failed.connect(
                 lambda error: QMessageBox.critical(self, t("Sincronización"), t("No se pudieron actualizar los factores: {error}").format(error=error))
             )
@@ -4087,18 +4943,29 @@ class SettingsView(QWidget):
 
         def restore_environment_factors():
             fallback_path = writable_path("carbon_factors.json")
-            if not os.path.isfile(fallback_path):
-                QMessageBox.warning(self, t("Reversión"), t("No existe un respaldo ambiental local para restaurar."))
+            snapshots = list_cache_snapshots(fallback_path)
+            if not snapshots:
+                QMessageBox.warning(self, t("Reversión"), t("No existen versiones ambientales históricas para restaurar."))
                 return
             try:
-                with open(fallback_path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if not isinstance(data, (dict, list)):
-                    raise ValueError(t("El respaldo ambiental no tiene un formato válido."))
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                names = [snapshot.name for snapshot in snapshots]
+                selected, accepted = QInputDialog.getItem(
+                    self, t("Reversión"), t("Seleccione la versión histórica"), names, 0, False,
+                )
+                if not accepted:
+                    return
+                data = restore_cache_snapshot(fallback_path, selected)
+                if self.main_window and hasattr(self.main_window, "cloud_view"):
+                    self.main_window.cloud_view.apply_synced_carbon_factors(data)
+                if self.main_window and hasattr(self.main_window, "environmental_view"):
+                    self.main_window.environmental_view.refresh_project_data()
+            except (ExternalServiceError, OSError, ValueError, json.JSONDecodeError) as exc:
                 QMessageBox.critical(self, t("Reversión"), t("No se pudo restaurar el respaldo: {error}").format(error=exc))
                 return
-            QMessageBox.information(self, t("Reversión"), t("Respaldo ambiental local restaurado correctamente."))
+            QMessageBox.information(
+                self, t("Reversión"),
+                t("Versión ambiental {version} restaurada y métricas recalculadas.").format(version=selected),
+            )
 
         revert_env_btn.clicked.connect(restore_environment_factors)
 
@@ -4111,6 +4978,15 @@ class SettingsView(QWidget):
         sensor_host.setPlaceholderText(t("Host del sensor"))
         sensor_identifier = QLineEdit()
         sensor_identifier.setPlaceholderText(t("OID o registro"))
+        sensor_community = QLineEdit()
+        sensor_community.setPlaceholderText(t("Community SNMP"))
+        sensor_community.setEchoMode(QLineEdit.Password)
+
+        def update_sensor_fields():
+            sensor_community.setEnabled(protocol_combo.currentText() == "SNMP")
+
+        protocol_combo.currentTextChanged.connect(update_sensor_fields)
+        update_sensor_fields()
 
         def test_sensor():
             protocol = protocol_combo.currentText()
@@ -4122,7 +4998,7 @@ class SettingsView(QWidget):
                 QMessageBox.warning(self, t("Sondeo Sensor"), t("Host y OID o registro son obligatorios."))
                 return
             ping_hw_btn.setEnabled(False)
-            self._telemetry_thread = TelemetryThread(protocol, host, identifier, self)
+            self._telemetry_thread = TelemetryThread(protocol, host, identifier, sensor_community.text(), self)
             self._telemetry_thread.completed.connect(
                 lambda watts: QMessageBox.information(self, t("Sondeo Activo"), t("Lectura del sensor: {watts} W").format(watts=f"{watts:.1f}"))
             )
@@ -4139,9 +5015,43 @@ class SettingsView(QWidget):
         env_btn_row.addWidget(protocol_combo)
         env_btn_row.addWidget(sensor_host)
         env_btn_row.addWidget(sensor_identifier)
+        env_btn_row.addWidget(sensor_community)
         env_btn_row.addWidget(ping_hw_btn)
         env_btn_row.addStretch()
         env_hw_layout.addLayout(env_btn_row)
+
+        factor_title = make_label(t("Catálogo de factores de emisión"), "kpiTitle")
+        env_hw_layout.addWidget(factor_title)
+        self.emission_factor_table = QTableWidget(0, 3)
+        self.emission_factor_table.setHorizontalHeaderLabels([
+            t("Fuente energética"), t("gCO2eq/kWh"), t("Origen"),
+        ])
+        self.emission_factor_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.emission_factor_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.emission_factor_table.setAlternatingRowColors(True)
+        self.emission_factor_table.setFixedHeight(150)
+        env_hw_layout.addWidget(self.emission_factor_table)
+
+        factor_input_row = QHBoxLayout()
+        self.emission_factor_name_input = QLineEdit()
+        self.emission_factor_name_input.setPlaceholderText(t("Nueva fuente experimental"))
+        self.emission_factor_value_input = QLineEdit()
+        self.emission_factor_value_input.setPlaceholderText(t("Factor gCO2eq/kWh"))
+        self.emission_factor_value_input.setFixedWidth(170)
+        self.add_emission_factor_button = QPushButton(t("Agregar factor"))
+        self.add_emission_factor_button.setObjectName("primaryButton")
+        self.add_emission_factor_button.clicked.connect(self._add_emission_factor)
+        self.apply_emission_factor_button = QPushButton(t("Aplicar factor seleccionado"))
+        self.apply_emission_factor_button.setObjectName("secondaryButton")
+        self.apply_emission_factor_button.clicked.connect(self._apply_selected_emission_factor)
+        self.emission_factor_status_label = make_label("", "infoText")
+        factor_input_row.addWidget(self.emission_factor_name_input, 1)
+        factor_input_row.addWidget(self.emission_factor_value_input)
+        factor_input_row.addWidget(self.add_emission_factor_button)
+        factor_input_row.addWidget(self.apply_emission_factor_button)
+        factor_input_row.addWidget(self.emission_factor_status_label, 1)
+        env_hw_layout.addLayout(factor_input_row)
+        self._refresh_emission_factor_catalog()
 
         local_metrics_row = QHBoxLayout()
         local_metrics_row.setSpacing(10)
@@ -4156,14 +5066,20 @@ class SettingsView(QWidget):
         saved_metrics = load_config().get("local_metrics", {})
         pue_input.setText(str(saved_metrics.get("pue", "1.0")))
         green_energy_input.setText(str(saved_metrics.get("green_energy_percent", "0")))
+        self.wue_input = QLineEdit()
+        self.wue_input.setPlaceholderText(t("WUE medido L/kWh"))
+        self.wue_input.setFixedWidth(140)
+        self.wue_input.setText("" if saved_metrics.get("wue") is None else str(saved_metrics.get("wue")))
 
         save_metrics_btn = QPushButton(t("Guardar Métricas"))
         save_metrics_btn.setObjectName("primaryButton")
+        self.save_metrics_btn = save_metrics_btn
         def save_metrics():
             try:
                 pue = float(pue_input.text())
                 green_energy = float(green_energy_input.text())
-                if pue < 1 or not 0 <= green_energy <= 100:
+                wue = float(self.wue_input.text()) if self.wue_input.text().strip() else None
+                if pue < 1 or not 0 <= green_energy <= 100 or (wue is not None and wue < 0):
                     raise ValueError(t("PUE debe ser >= 1 y energía verde debe estar entre 0 y 100."))
             except (TypeError, ValueError) as exc:
                 QMessageBox.warning(self, t("Métricas Locales"), str(exc))
@@ -4171,41 +5087,102 @@ class SettingsView(QWidget):
             config_path = writable_path("config.json")
             try:
                 config = load_config()
-                config["local_metrics"] = {
-                    "pue": pue,
-                    "green_energy_percent": green_energy,
-                }
+                metrics = config.get("local_metrics", {})
+                metrics.update({"pue": pue, "green_energy_percent": green_energy})
+                if wue is None:
+                    metrics.pop("wue", None)
+                else:
+                    metrics["wue"] = wue
+                config["local_metrics"] = metrics
                 with open(config_path, "w", encoding="utf-8") as handle:
                     json.dump(config, handle, ensure_ascii=True, indent=2)
             except (OSError, TypeError) as exc:
                 QMessageBox.critical(self, t("Métricas Locales"), str(exc))
                 return
             QMessageBox.information(self, t("Métricas Locales"), t("Métricas PUE y Energía Verde sobrescritas localmente."))
+            if self.main_window:
+                self.main_window._update_semaforo()
 
         save_metrics_btn.clicked.connect(save_metrics)
 
         self.local_lock_label = make_label(t("🔒 Bloqueado por Cloud"), "infoText")
         self.local_lock_label.setVisible(False)
-        self._local_factor_inputs = (pue_input, green_energy_input, save_metrics_btn)
+        self._local_factor_inputs = (
+            pue_input, green_energy_input, self.wue_input, save_metrics_btn,
+            self.emission_factor_table, self.emission_factor_name_input,
+            self.emission_factor_value_input, self.add_emission_factor_button,
+            self.apply_emission_factor_button,
+        )
 
         local_metrics_row.addWidget(make_label(t("PUE Local:"), "infoText"))
         local_metrics_row.addWidget(pue_input)
         local_metrics_row.addWidget(make_label(t("% Verde:"), "infoText"))
         local_metrics_row.addWidget(green_energy_input)
+        local_metrics_row.addWidget(make_label(t("WUE:"), "infoText"))
+        local_metrics_row.addWidget(self.wue_input)
         local_metrics_row.addWidget(save_metrics_btn)
         local_metrics_row.addWidget(self.local_lock_label)
         local_metrics_row.addStretch()
 
         env_hw_layout.addLayout(local_metrics_row)
 
+        generator_row = QHBoxLayout()
+        self.generator_checkbox = QCheckBox(t("Generadores de respaldo (simular corte eléctrico)"))
+        self.generator_checkbox.setChecked(bool(load_config().get("diesel_generator_enabled", False)))
+        diesel_factor, diesel_factor_fallback = load_diesel_factor()
+        self.generator_status_label = make_label("", "infoText")
+        self.generator_status_label.setWordWrap(True)
+
+        def refresh_generator_status():
+            if diesel_factor_fallback:
+                self.generator_status_label.setText(
+                    t("Advertencia: matriz diésel no disponible; usando factor predeterminado de {factor:.0f} gCO2eq/kWh.").format(
+                        factor=diesel_factor
+                    )
+                )
+                self.generator_status_label.setStyleSheet("color: #f59e0b; font-weight: 700;")
+            elif self.generator_checkbox.isChecked():
+                self.generator_status_label.setText(
+                    t("Contingencia activa: impacto severo con factor diésel de {factor:.0f} gCO2eq/kWh.").format(
+                        factor=diesel_factor
+                    )
+                )
+                self.generator_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            else:
+                self.generator_status_label.setText(t("Generadores de respaldo inactivos."))
+                self.generator_status_label.setStyleSheet("")
+
+        def save_generator_setting(state):
+            enabled = bool(state)
+            try:
+                config_path = writable_path("config.json")
+                config = load_config()
+                config["diesel_generator_enabled"] = enabled
+                with open(config_path, "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except (OSError, TypeError) as exc:
+                QMessageBox.critical(self, t("Generadores"), str(exc))
+                return
+            refresh_generator_status()
+            if self.main_window:
+                self.main_window._handle_generator_toggle(enabled, diesel_factor, diesel_factor_fallback)
+
+        self.generator_checkbox.stateChanged.connect(save_generator_setting)
+        refresh_generator_status()
+        generator_row.addWidget(self.generator_checkbox)
+        generator_row.addWidget(self.generator_status_label, 1)
+        env_hw_layout.addLayout(generator_row)
+        self._local_factor_inputs = (*self._local_factor_inputs, self.generator_checkbox)
+
         # RF68: fuente primaria operante con desglose modal
         energy_source_row = QHBoxLayout()
-        self.energy_source_label = make_label("", "infoText")
-        energy_breakdown_btn = QPushButton(t("Ver desglose energético"))
-        energy_breakdown_btn.setObjectName("secondaryButton")
-        energy_breakdown_btn.clicked.connect(self._show_energy_breakdown)
+        self._energy_mix_snapshot = None
+        self.energy_source_label = QPushButton("")
+        self.energy_source_label.setObjectName("secondaryButton")
+        self.energy_source_label.setCursor(Qt.PointingHandCursor)
+        self.energy_source_label.setToolTip(t("Ver desglose energético"))
+        self.energy_source_label.clicked.connect(self._show_energy_breakdown)
         energy_source_row.addWidget(self.energy_source_label, 1)
-        energy_source_row.addWidget(energy_breakdown_btn)
         env_hw_layout.addLayout(energy_source_row)
         self._refresh_energy_source_label()
 
@@ -4247,6 +5224,8 @@ class SettingsView(QWidget):
         self.fluid_combo.addItems([t("Aceite mineral"), t("Fluido sintetico"), t("Fluorocarbono")])
         immersion_row.addWidget(self.fluid_combo)
         immersion_result = make_label("", "infoText")
+        self.immersion_checkbox = QCheckBox(t("Activar inmersión líquida"))
+        self.immersion_checkbox.setChecked(bool(load_config().get("immersion_enabled", False)))
         immersion_btn = QPushButton(t("Calcular ROI inmersión"))
         immersion_btn.setObjectName("secondaryButton")
 
@@ -4258,9 +5237,23 @@ class SettingsView(QWidget):
             }
             try:
                 values = [float(field.text()) for field in immersion_inputs]
-                result = liquid_cooling_roi(*values)
+                selected = getattr(getattr(self.main_window, "hardware_view", None), "selected_by_type", {})
+                components = tuple(name for name, row in selected.items() if row)
+                hardware_name = getattr(getattr(self.main_window, "selection_state", {}), "get", lambda *_: "")("hardware", "")
+                if not components or not hardware_name:
+                    raise ValidationError(t("Seleccione hardware antes de comparar refrigeración."))
+                result = compare_cooling_scenarios(
+                    {
+                        "hardware": hardware_name, "annual_kwh": values[0], "pue": values[1],
+                        "energy_price_per_kwh": values[3], "wue": load_water_factors("", load_config())["wue"],
+                    },
+                    {
+                        "hardware": hardware_name, "annual_kwh": values[0], "pue": values[2],
+                        "energy_price_per_kwh": values[3], "investment": values[4], "wue": 0.0,
+                    },
+                )
                 incompatible = check_immersion_compatibility(
-                    ("CPU", "GPU", "RAM"), fluid_map.get(self.fluid_combo.currentText(), ""),
+                    components, fluid_map.get(self.fluid_combo.currentText(), ""),
                 )
             except (ValueError, ValidationError) as exc:
                 immersion_result.setText(str(exc))
@@ -4268,14 +5261,55 @@ class SettingsView(QWidget):
             status = t("Viable") if result["viable"] else t("No viable")
             text = (
                 f"{status}: {result['annual_kwh_saving']:.2f} kWh/año, "
-                f"USD {result['annual_cost_saving']:.2f}/año, payback {result['payback_years']:.2f} años"
+                f"USD {result['annual_cost_saving']:.2f}/año, {result['annual_water_saving_litres']:.2f} L/año, "
+                f"payback {result['payback_years']:.2f} años"
             )
             if incompatible:
                 text += " | " + t("Incompatible con: {items}").format(items=", ".join(incompatible))
             immersion_result.setText(text)
+            config = load_config()
+            config["latest_immersion_comparison"] = result
+            try:
+                with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except OSError as exc:
+                immersion_result.setText(text + " | " + str(exc))
             self._show_immersion_roi_chart(result)
 
         immersion_btn.clicked.connect(calculate_immersion_roi)
+        def toggle_immersion(state):
+            enabled = bool(state)
+            fluid_map = {
+                t("Aceite mineral"): "aceite mineral",
+                t("Fluido sintetico"): "fluido sintetico",
+                t("Fluorocarbono"): "fluorocarbono",
+            }
+            if enabled:
+                selected = getattr(getattr(self.main_window, "hardware_view", None), "selected_by_type", {})
+                components = tuple(name for name, row in selected.items() if row)
+                incompatible = check_immersion_compatibility(components, fluid_map.get(self.fluid_combo.currentText(), ""))
+                if not components or incompatible:
+                    self.immersion_checkbox.blockSignals(True)
+                    self.immersion_checkbox.setChecked(False)
+                    self.immersion_checkbox.blockSignals(False)
+                    reason = t("Seleccione hardware compatible primero.") if not components else t("Incompatible con: {items}").format(items=", ".join(incompatible))
+                    QMessageBox.warning(self, t("Inmersión"), reason)
+                    return
+            config = load_config()
+            config["immersion_enabled"] = enabled
+            config["immersion_fluid"] = fluid_map.get(self.fluid_combo.currentText(), "")
+            try:
+                with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                    json.dump(config, handle, ensure_ascii=True, indent=2)
+            except OSError as exc:
+                QMessageBox.critical(self, t("Inmersión"), str(exc))
+                return
+            if self.main_window:
+                self.main_window._update_semaforo()
+
+        self.immersion_checkbox.stateChanged.connect(toggle_immersion)
+        self._local_factor_inputs = (*self._local_factor_inputs, self.immersion_checkbox)
+        immersion_row.addWidget(self.immersion_checkbox)
         immersion_row.addWidget(immersion_btn)
         immersion_row.addWidget(immersion_result, 1)
         env_hw_layout.addLayout(immersion_row)
@@ -4564,6 +5598,81 @@ class SettingsView(QWidget):
         thresh_fin_layout.addLayout(mlflow_row)
         layout.addLayout(thresh_fin_layout)
 
+    def _refresh_emission_factor_catalog(self):
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            factors = store.list_emission_factors()
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            self.emission_factor_status_label.setText(t("No se pudo cargar el catálogo: {error}").format(error=exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        self.emission_factor_table.setRowCount(len(factors))
+        for row_index, factor in enumerate(factors):
+            values = (
+                factor["name"], f"{float(factor['gco2eq_kwh']):.2f}",
+                t("Base certificada") if factor["is_factory"] else t("Experimental local"),
+            )
+            for column, value in enumerate(values):
+                self.emission_factor_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.emission_factor_table.resizeColumnsToContents()
+
+    def _add_emission_factor(self):
+        store = None
+        try:
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            store.add_emission_factor(
+                self.emission_factor_name_input.text(), self.emission_factor_value_input.text()
+            )
+        except (ValidationError, OSError, sqlite3.DatabaseError) as exc:
+            self.emission_factor_status_label.setText(str(exc))
+            self.emission_factor_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        finally:
+            if store is not None:
+                store.close()
+        name = self.emission_factor_name_input.text().strip()
+        self.emission_factor_name_input.clear()
+        self.emission_factor_value_input.clear()
+        self.emission_factor_status_label.setText(
+            t("Factor experimental guardado: {name}").format(name=name)
+        )
+        self.emission_factor_status_label.setStyleSheet("color: #4eb541; font-weight: 700;")
+        self._refresh_emission_factor_catalog()
+
+    def _apply_selected_emission_factor(self):
+        row = self.emission_factor_table.currentRow()
+        if row < 0:
+            self.emission_factor_status_label.setText(t("Seleccione una fuente del catálogo."))
+            self.emission_factor_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        name_item = self.emission_factor_table.item(row, 0)
+        factor_item = self.emission_factor_table.item(row, 1)
+        if name_item is None or factor_item is None:
+            return
+        try:
+            config = load_config()
+            metrics = dict(config.get("local_metrics", {}))
+            metrics["grid_factor"] = float(factor_item.text())
+            metrics["grid_factor_name"] = name_item.text()
+            config["local_metrics"] = metrics
+            with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=True, indent=2)
+        except (OSError, TypeError, ValueError) as exc:
+            self.emission_factor_status_label.setText(str(exc))
+            self.emission_factor_status_label.setStyleSheet("color: #ef4444; font-weight: 700;")
+            return
+        self.emission_factor_status_label.setText(
+            t("Factor activo: {name} ({factor:.2f} gCO2eq/kWh)").format(
+                name=name_item.text(), factor=float(factor_item.text())
+            )
+        )
+        self.emission_factor_status_label.setStyleSheet("color: #4eb541; font-weight: 700;")
+        if self.main_window:
+            self.main_window._update_semaforo()
+
     def set_local_factors_locked(self, locked):
         """RF49: gray-lock local PUE/green energy factors while a Cloud environment is active."""
         for widget in getattr(self, "_local_factor_inputs", ()):
@@ -4582,17 +5691,22 @@ class SettingsView(QWidget):
 
     def _refresh_energy_source_label(self):
         try:
-            summary = primary_energy_source(self._current_energy_mix())
+            mix = self._current_energy_mix()
+            summary = primary_energy_source(mix)
         except ValidationError:
+            self._energy_mix_snapshot = None
             self.energy_source_label.setText(t("Fuente Primaria Operante") + ": N/A")
             return
+        self._energy_mix_snapshot = dict(summary["breakdown"])
         self.energy_source_label.setText(
             t("Fuente Primaria Operante") + f": {t(summary['label'])} ({summary['percent']:.1f}%)"
         )
 
     def _show_energy_breakdown(self):
         try:
-            summary = primary_energy_source(self._current_energy_mix())
+            if not isinstance(self._energy_mix_snapshot, dict):
+                raise ValidationError(t("El desglose energético se perdió de la memoria temporal; recargue la vista."))
+            summary = primary_energy_source(self._energy_mix_snapshot)
         except ValidationError as exc:
             QMessageBox.warning(self, t("Desglose energético"), str(exc))
             return
@@ -4619,8 +5733,8 @@ class SettingsView(QWidget):
         raw = self.manual_litres_input.text().strip()
         try:
             litres = float(raw) if raw else None
-            if litres is not None and litres < 0:
-                raise ValueError(t("Los litros manuales no pueden ser negativos."))
+            if litres is not None and litres <= 0:
+                raise ValueError(t("Los litros medidos deben ser mayores que cero."))
             config_path = writable_path("config.json")
             config = load_config()
             metrics = config.get("local_metrics", {})
@@ -4639,6 +5753,8 @@ class SettingsView(QWidget):
         self.hydro_result_label.setText(
             t("Litros manuales guardados.") if litres is not None else t("Litros manuales eliminados.")
         )
+        if self.main_window:
+            self.main_window._update_semaforo()
 
     def _read_flow_meter(self):
         try:
@@ -4646,7 +5762,11 @@ class SettingsView(QWidget):
         except TimeoutError as exc:
             self.hydro_result_label.setText(str(exc))
             return
-        self.hydro_result_label.setText(t("Flujometro: {value} L/h (simulado)").format(value=f"{reading:.2f}"))
+        self.manual_litres_input.setText(f"{reading:.2f}")
+        self._save_manual_litres()
+        self.hydro_result_label.setText(
+            t("Flujometro: {value} L/h aplicado como medición empírica.").format(value=f"{reading:.2f}")
+        )
 
     def _import_hydro_csv(self):
         source, _ = QFileDialog.getOpenFileName(self, t("Importar CSV hidráulico"), "", "CSV (*.csv);;JSON (*.json)")
@@ -4655,17 +5775,25 @@ class SettingsView(QWidget):
         try:
             records = parse_hydro_records(import_records(source, required_fields=("timestamp",)))
             issues = detect_hydro_desync(records)
+            if issues:
+                raise ValidationError("\n".join(issues[:5]))
             total = hydro_total_litres(records)
+            project_id = load_config().get("current_project_id")
+            if project_id is None:
+                raise ValidationError(t("Selecciona un proyecto activo antes de importar."))
+            store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
+            try:
+                reconciled = store.reconcile_hydro_records(project_id, records, source=os.path.basename(source))
+            finally:
+                store.close()
         except (ValueError, OSError) as exc:
             show_guided_error(self, "ERR_DATA", str(exc))
             return
-        message = t("{count} registros hídricos válidos. Total: {total} L.").format(count=len(records), total=f"{total:.2f}")
-        if issues:
-            message += " " + t("Advertencias de desincronización: {count}.").format(count=len(issues))
-            QMessageBox.warning(self, t("Importar CSV hidráulico"), message + "\n" + "\n".join(issues[:5]))
-        else:
-            QMessageBox.information(self, t("Importar CSV hidráulico"), message)
+        message = t("{count} registros hídricos conciliados. Total: {total} L.").format(count=reconciled, total=f"{total:.2f}")
+        QMessageBox.information(self, t("Importar CSV hidráulico"), message)
         self.hydro_result_label.setText(message)
+        if self.main_window:
+            self.main_window.refresh_projects_view()
 
     def _show_immersion_roi_chart(self, result):
         """RF52: simple visual payback bar with textual fallback already in the row label."""
@@ -4873,6 +6001,85 @@ class UserMenuView(QWidget):
         )
 
 
+class BudgetAlertsDialog(QDialog):
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("Centro de alertas presupuestarias"))
+        self.setMinimumSize(900, 480)
+        layout = QVBoxLayout(self)
+        layout.addWidget(make_label(t("Centro de alertas presupuestarias"), "pageTitle"))
+        layout.addWidget(make_label(
+            t("Monitoreo pasivo de consumo frente a cuotas financieras y ambientales."),
+            "infoText",
+        ))
+
+        classified = [self._classify(row) for row in rows]
+        high_count = sum(item["severity"] in {t("CRÍTICA"), t("ALTA")} for item in classified)
+        preventive_count = sum(item["severity"] == t("PREVENTIVA") for item in classified)
+        summary = QHBoxLayout()
+        summary.addWidget(InfoCard(t("Eventos registrados"), str(len(classified))))
+        summary.addWidget(InfoCard(t("Prioridad alta"), str(high_count)))
+        summary.addWidget(InfoCard(t("Preventivas"), str(preventive_count)))
+        layout.addLayout(summary)
+
+        self.alerts_table = QTableWidget(len(classified), 5)
+        self.alerts_table.setHorizontalHeaderLabels([
+            t("Severidad"), t("Fecha"), t("Proyecto"), t("Umbral"), t("Detalle"),
+        ])
+        self.alerts_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.alerts_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.alerts_table.setAlternatingRowColors(True)
+        for row_index, alert in enumerate(classified):
+            values = (
+                alert["severity"], alert["timestamp"], alert["project"],
+                alert["threshold"], alert["details"],
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    color = "#ef4444" if alert["severity"] in {t("CRÍTICA"), t("ALTA")} else "#f59e0b"
+                    item.setForeground(QColor(color))
+                self.alerts_table.setItem(row_index, column, item)
+        self.alerts_table.resizeColumnsToContents()
+        self.alerts_table.setColumnWidth(4, 380)
+        layout.addWidget(self.alerts_table, 1)
+        if not classified:
+            layout.addWidget(make_label(t("No hay alertas presupuestarias registradas."), "infoText"))
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _classify(row):
+        details = str(row["details"])
+        action = str(row["action"])
+        threshold_match = re.search(r"(50|75)%", details)
+        threshold = f"{threshold_match.group(1)}%" if threshold_match else "—"
+        if "ambiental" in details.lower() or "co2" in details.lower():
+            metric = t("cuota ambiental")
+        else:
+            metric = t("cuota financiera")
+        if "75%" in details:
+            severity = t("ALTA")
+        elif "50%" in details:
+            severity = t("PREVENTIVA")
+        elif "denied" in action or "blocked" in action:
+            severity = t("CRÍTICA")
+        else:
+            severity = t("CONTROL")
+        if action == "quota_threshold_crossed" and threshold != "—":
+            details = t("Consumo acumulado alcanzó el {threshold} de la {metric}; se recomienda revisar la proyección mensual.").format(
+                threshold=threshold, metric=metric,
+            )
+        return {
+            "severity": severity,
+            "timestamp": str(row["timestamp"]),
+            "project": str(row["project_name"] or t("Sin proyecto")),
+            "threshold": threshold,
+            "details": details,
+        }
+
+
 class AdminMenuView(QWidget):
     def __init__(self, user_profile, on_logout=None, main_window=None, parent=None):
         super().__init__(parent)
@@ -4934,6 +6141,7 @@ class AdminMenuView(QWidget):
                 [
                     (t("Registro de Actividad"), "menuButton", self.show_activity_log),
                     (t("Alertas"), "menuButton", self.show_alerts),
+                    (t("Verificar canal de diagnóstico"), "menuButton", self.show_diagnostic_test),
                     (t("Exportar reporte"), "menuButton", self.export_html_report),
                 ],
             ),
@@ -5145,6 +6353,14 @@ class AdminMenuView(QWidget):
             if store is not None:
                 store.close()
 
+    def show_diagnostic_test(self):
+        if not self._require_admin():
+            return
+        show_guided_error(
+            self, "ERR_IO",
+            t("Incidente controlado de verificación RF45.2. No se afectaron datos ni procesos activos."),
+        )
+
     def show_alerts(self):
         if not self._require_admin():
             return
@@ -5152,17 +6368,18 @@ class AdminMenuView(QWidget):
         try:
             store = self._open_admin_store()
             rows = store.connection.execute(
-                "SELECT timestamp, actor, action, details FROM audit_log "
-                "WHERE action LIKE '%denied%' OR action LIKE '%override%' OR action LIKE '%blocked%' "
-                "ORDER BY id DESC LIMIT 50"
+                "SELECT a.timestamp, a.actor, a.action, a.details, p.name AS project_name "
+                "FROM audit_log a LEFT JOIN projects p ON p.id=a.project_id "
+                "WHERE a.action = 'quota_threshold_crossed' ORDER BY a.id DESC LIMIT 100"
             ).fetchall()
-            text = "\n".join(f"{row['timestamp']} | {row['action']} | {row['details']}" for row in rows)
-            QMessageBox.information(self, t("Alertas"), text or t("No hay alertas administrativas."))
         except (OSError, sqlite3.DatabaseError) as exc:
             QMessageBox.warning(self, t("Alertas"), str(exc))
+            return
         finally:
             if store is not None:
                 store.close()
+        self._alerts_dialog = BudgetAlertsDialog(rows, self)
+        self._alerts_dialog.exec()
 
     def manage_backup(self):
         if not self._require_admin():
@@ -5240,6 +6457,17 @@ class AdminMenuView(QWidget):
         fields = {name: QLineEdit(str(thresholds.get(name, default))) for name, default in (("green", 50), ("yellow", 90), ("red", 100))}
         for name, field in fields.items():
             form.addRow(name.capitalize(), field)
+        store = self._open_admin_store()
+        try:
+            master = store.master_quotas()
+        finally:
+            store.close()
+        master_budget = QLineEdit("" if master["budget_usd"] is None else str(master["budget_usd"]))
+        master_carbon = QLineEdit("" if master["carbon_gco2eq"] is None else str(master["carbon_gco2eq"]))
+        master_budget.setPlaceholderText(t("Sin techo maestro"))
+        master_carbon.setPlaceholderText(t("Sin techo maestro"))
+        form.addRow(t("Techo maestro USD"), master_budget)
+        form.addRow(t("Techo maestro gCO2eq"), master_carbon)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -5249,6 +6477,13 @@ class AdminMenuView(QWidget):
         try:
             values = tuple(float(fields[name].text()) for name in ("green", "yellow", "red"))
             validate_thresholds(*values)
+            budget_limit = float(master_budget.text()) if master_budget.text().strip() else None
+            carbon_limit = float(master_carbon.text()) if master_carbon.text().strip() else None
+            store = self._open_admin_store()
+            try:
+                store.set_master_quotas(budget_limit, carbon_limit)
+            finally:
+                store.close()
             config["thresholds"] = dict(zip(("green", "yellow", "red"), values))
             with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
                 json.dump(config, handle, ensure_ascii=True, indent=2)
@@ -5355,6 +6590,7 @@ class AdminMenuView(QWidget):
             "role": role,
             "profile_photo": profile_photo,
             "password_hash": hash_password(password),
+            "force_password_change": True,
         }
         users = config.get("users", [])
         users.append(new_user)
@@ -5371,7 +6607,10 @@ class AdminMenuView(QWidget):
             if store is not None:
                 store.close()
 
-        QMessageBox.information(self, t("Crear usuario"), t("Usuario creado correctamente."))
+        QMessageBox.information(
+            self, t("Crear usuario"),
+            t("Usuario creado con contraseña temporal; deberá reemplazarla en su primer inicio de sesión."),
+        )
 
     def delete_user(self):
         if not self._require_admin():
@@ -6025,9 +7264,19 @@ class LoginWindow(QMainWindow):
                 with urllib.request.urlopen(req, timeout=5) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     profile = res_data.get("user")
-                    if not isinstance(profile, dict) or not res_data.get("token"):
+                    if not isinstance(profile, dict):
                         raise ValueError("Respuesta de autenticacion incompleta")
-                    profile["server_token"] = res_data.get("token")
+                    if profile.get("force_password_change"):
+                        change_token = res_data.get("password_change_token")
+                        if not change_token or not self._force_remote_password_change(username, change_token):
+                            self._set_error(t("Debes definir una contraseña nueva antes de continuar."))
+                            return
+                        profile["force_password_change"] = False
+                        profile["server_token"] = self._new_server_token
+                    elif res_data.get("token"):
+                        profile["server_token"] = res_data.get("token")
+                    else:
+                        raise ValueError("Respuesta de autenticacion incompleta")
             except urllib.error.HTTPError as e:
                 self.failed_attempts += 1
                 try:
@@ -6091,16 +7340,70 @@ class LoginWindow(QMainWindow):
                 feedback.setVisible(True)
                 mark_required_field(confirm_password, False)
                 return
-            store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
+            store = None
             try:
+                store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
                 store.set_user_password(username, new_password.text())
             except ValidationError as exc:
                 feedback.setText(str(exc))
                 feedback.setVisible(True)
                 mark_required_field(new_password, False)
                 return
+            except (OSError, sqlite3.DatabaseError) as exc:
+                dialog.reject()
+                self._set_error(t("No se pudo guardar la nueva contraseña: {error}").format(error=exc))
+                return
             finally:
-                store.close()
+                if store is not None:
+                    store.close()
+            dialog.accept()
+
+        buttons.accepted.connect(try_save)
+        return dialog.exec() == QDialog.Accepted
+
+    def _force_remote_password_change(self, username, change_token):
+        """Require a server-side password replacement before accepting a full session token."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("Cambio de contraseña obligatorio"))
+        layout = QFormLayout(dialog)
+        new_password = QLineEdit()
+        new_password.setEchoMode(QLineEdit.Password)
+        confirm_password = QLineEdit()
+        confirm_password.setEchoMode(QLineEdit.Password)
+        feedback = make_label("", "loginError")
+        layout.addRow(t("Nueva contraseña"), new_password)
+        layout.addRow(t("Confirmar contraseña"), confirm_password)
+        layout.addRow(feedback)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addRow(buttons)
+        buttons.rejected.connect(dialog.reject)
+        self._new_server_token = None
+
+        def try_save():
+            if new_password.text() != confirm_password.text():
+                feedback.setText(t("Las contraseñas no coinciden."))
+                return
+            try:
+                validate_password(new_password.text())
+            except ValidationError as exc:
+                feedback.setText(str(exc))
+                return
+            try:
+                import urllib.request
+                request = urllib.request.Request(
+                    f"http://{self.server_url}/change-password",
+                    data=json.dumps({"password": new_password.text()}).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {change_token}"},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                self._new_server_token = result.get("token")
+                if not self._new_server_token:
+                    raise ValueError(t("El servidor no devolvió una sesión válida."))
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                dialog.reject()
+                self._set_error(t("No se pudo guardar la nueva contraseña: {error}").format(error=exc))
+                return
             dialog.accept()
 
         buttons.accepted.connect(try_save)
@@ -6136,9 +7439,10 @@ class LoginWindow(QMainWindow):
 
 
 class CatalogRow(QFrame):
-    def __init__(self, component, comp_type, vcpus, ram, tdp, on_assign=None, payload=None, parent=None):
+    def __init__(self, component, comp_type, vcpus, ram, tdp, on_assign=None, payload=None, selected=False, parent=None):
         super().__init__(parent)
         self.setObjectName("catalogRow")
+        self.setProperty("selected", bool(selected))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setCursor(Qt.PointingHandCursor)
         self.setAutoFillBackground(True)
@@ -6153,7 +7457,7 @@ class CatalogRow(QFrame):
         layout.addWidget(make_label(ram, "catalogCell", alignment=Qt.AlignCenter), 1)
         layout.addWidget(make_label(tdp, "catalogCell", alignment=Qt.AlignCenter), 1)
 
-        assign_button = QPushButton(t("Asignar"))
+        assign_button = QPushButton(t("Seleccionado") if selected else t("Asignar"))
         assign_button.setObjectName("assignButton")
         assign_button.setFixedHeight(32)
         assign_button.setCursor(Qt.PointingHandCursor)
@@ -6245,6 +7549,14 @@ class HardwareCatalogView(QWidget):
         ]
         self.hardware_panel = DetailsPanel(t("Hardware detectado"), hardware_rows)
         self.hardware_panel.setObjectName("hardwarePanel")
+        self.catalog_contingency_label = make_label(
+            t("ALERTA: archivo maestro de hardware ausente o ilegible. Se muestran componentes Fallback de 0 W; reinstale o restaure data/hardware.csv."),
+            "infoText",
+        )
+        self.catalog_contingency_label.setObjectName("hardwareContingencyAlert")
+        self.catalog_contingency_label.setWordWrap(True)
+        self.catalog_contingency_label.setStyleSheet("color: #b91c1c; font-weight: 700;")
+        self.catalog_contingency_label.setVisible(self.catalog_in_contingency)
 
         catalog_panel = QFrame()
         catalog_panel.setObjectName("catalogPanel")
@@ -6353,6 +7665,7 @@ class HardwareCatalogView(QWidget):
         layout.addWidget(title)
         layout.addWidget(make_separator("separator"))
         layout.addWidget(self.hardware_panel)
+        layout.addWidget(self.catalog_contingency_label)
         layout.addWidget(catalog_panel)
 
         self.rightsize_result = make_label("", "infoText")
@@ -6364,7 +7677,12 @@ class HardwareCatalogView(QWidget):
         self._refresh_breakdown()
 
     def _reload_catalog_rows(self):
-        rows = [{**row, "_factory": True} for row in load_csv_rows("hardware.csv")]
+        factory_rows = load_csv_rows("hardware.csv")
+        self.catalog_in_contingency = not bool(factory_rows)
+        rows = (
+            [{**row, "_factory": True} for row in factory_rows]
+            if factory_rows else [dict(row) for row in HARDWARE_FALLBACK_ROWS]
+        )
         store = None
         try:
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
@@ -6384,6 +7702,8 @@ class HardwareCatalogView(QWidget):
             if store is not None:
                 store.close()
         self.hardware_rows = rows
+        if hasattr(self, "catalog_contingency_label"):
+            self.catalog_contingency_label.setVisible(self.catalog_in_contingency)
 
     def _add_custom_hardware(self):
         dialog = QDialog(self)
@@ -6531,7 +7851,7 @@ class HardwareCatalogView(QWidget):
         self._refresh_breakdown()
 
     def _manage_templates(self):
-        actions = [t("Crear plantilla"), t("Eliminar plantilla")]
+        actions = [t("Crear plantilla"), t("Editar plantilla"), t("Eliminar plantilla")]
         action, ok = QInputDialog.getItem(self, t("Administrar plantillas"), t("Acción"), actions, 0, False)
         if not ok:
             return
@@ -6546,6 +7866,33 @@ class HardwareCatalogView(QWidget):
                 if not accepted:
                     return
                 store.add_template(name, json.loads(raw))
+            elif action == actions[1]:
+                templates = store.list_templates()
+                editable = [item for item in templates if not item["is_factory"]]
+                names = [item["name"] for item in editable]
+                selected, accepted = QInputDialog.getItem(self, t("Editar plantilla"), t("Plantilla"), names, 0, False)
+                if not accepted or not selected:
+                    return
+                template = next(item for item in editable if item["name"] == selected)
+                name, accepted = QInputDialog.getText(
+                    self, t("Editar plantilla"), t("Nombre"), text=template["name"]
+                )
+                if not accepted:
+                    return
+                raw, accepted = QInputDialog.getMultiLineText(
+                    self, t("Editar plantilla"), "JSON",
+                    json.dumps(template["config"], ensure_ascii=False, indent=2),
+                )
+                if not accepted:
+                    return
+                config = json.loads(raw)
+                linked = store.template_linked_projects(template["id"])
+                if self._confirm_template_propagation(linked):
+                    store.update_template(template["id"], name, config)
+                    QMessageBox.information(
+                        self, t("Plantillas"),
+                        t("Plantilla actualizada; los recálculos dependientes quedan autorizados."),
+                    )
             else:
                 templates = store.list_templates()
                 names = [item["name"] for item in templates if not item["is_factory"]]
@@ -6571,6 +7918,20 @@ class HardwareCatalogView(QWidget):
         finally:
             if store is not None:
                 store.close()
+
+    def _confirm_template_propagation(self, linked_projects):
+        if not linked_projects:
+            return True
+        answer = QMessageBox.question(
+            self,
+            t("Cambio profundo en plantilla"),
+            t("La modificación afectará {count} proyecto(s): {names}. Sus simulaciones deberán recalcularse. ¿Autorizar propagación?").format(
+                count=len(linked_projects), names=", ".join(linked_projects)
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _build_component_tab(self, component_type):
         extra_headers, _ = self.column_specs[component_type]
@@ -6700,6 +8061,7 @@ class HardwareCatalogView(QWidget):
                     tdp,
                     on_assign=self._handle_assign,
                     payload=row,
+                    selected=row is self.selected_by_type.get(component_type),
                 )
             )
 
@@ -6723,9 +8085,15 @@ class HardwareCatalogView(QWidget):
         return t("Seleccionado: {summary}").format(summary="   |   ".join(parts))
 
     def _refresh_breakdown(self):
+        if self.breakdown_checks and not any(check.isChecked() for check in self.breakdown_checks.values()):
+            for check in self.breakdown_checks.values():
+                check.blockSignals(True)
+                check.setChecked(True)
+                check.blockSignals(False)
         values = {}
         for component_type, row in self.selected_by_type.items():
-            values[component_type] = parse_number(row.get("TDP_Max_Watts", "")) if row else 0.0
+            parsed_tdp = parse_number(row.get("TDP_Max_Watts", "")) if row else None
+            values[component_type] = parsed_tdp if parsed_tdp is not None else 0.0
         visible = {
             component_type: value
             for component_type, value in values.items()
@@ -6754,7 +8122,7 @@ class HardwareCatalogView(QWidget):
                 any_tdp = True
         return " | ".join(parts), (total_tdp if any_tdp else None)
 
-    def _handle_assign(self, row):
+    def _handle_assign(self, row, refresh_catalog=True, notify=True):
         if not row:
             return
         component_type = (row.get("Tipo_Componente") or self._current_component_type()).strip().upper()
@@ -6769,10 +8137,20 @@ class HardwareCatalogView(QWidget):
         self.rightsize_btn.setEnabled(tdp_value is not None)
         self.rightsize_result.setText(t("Hardware seleccionado: {name}").format(name=name))
 
-        if not self.on_assign:
+        if refresh_catalog:
+            QTimer.singleShot(0, self._apply_hardware_filters)
+
+        if not self.on_assign or not notify:
             return
         combined_name, combined_tdp = self._aggregate_selection()
         self.on_assign(hardware=combined_name, hardware_tdp=combined_tdp)
+
+    def apply_recommendation(self, row):
+        """Apply a catalog row through the same reversible path as a manual assignment."""
+        self._handle_assign(row)
+        component_type = (row.get("Tipo_Componente") or "GPU").strip().upper()
+        if component_type in self.COMPONENT_TYPES:
+            self.hardware_tabs.setCurrentIndex(self.COMPONENT_TYPES.index(component_type))
 
     _HW_TRADEMARK_PATTERN = re.compile(r"\((?:r|tm|c)\)", re.IGNORECASE)
     _HW_NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9]+")
@@ -6831,11 +8209,14 @@ class HardwareCatalogView(QWidget):
                 continue
             match = self._find_matching_row(component_type, detected_value)
             if match:
-                self._handle_assign(match)
+                self._handle_assign(match, refresh_catalog=False, notify=False)
                 selected_types.append(component_type)
             else:
                 unmatched_values.append(str(detected_value))
 
+        if selected_types and self.on_assign:
+            combined_name, combined_tdp = self._aggregate_selection()
+            self.on_assign(hardware=combined_name, hardware_tdp=combined_tdp)
         self._on_tab_changed(self.hardware_tabs.currentIndex())
         if selected_types:
             message = self._format_selection_summary()
@@ -6899,7 +8280,7 @@ class HardwareCatalogView(QWidget):
             item = layout.takeAt(0)
             widget = item.widget()
             if widget:
-                widget.setParent(None)
+                widget.hide()
                 widget.deleteLater()
 
 
@@ -7309,7 +8690,11 @@ class DashboardWindow(QMainWindow):
             "hardware": "",
             "hardware_tdp": None,
             "cloud_locked": False,
+            "diesel_generator_enabled": bool(load_config().get("diesel_generator_enabled", False)),
         }
+        diesel_factor, diesel_factor_fallback = load_diesel_factor()
+        self.selection_state["diesel_factor"] = diesel_factor
+        self.selection_state["diesel_factor_fallback"] = diesel_factor_fallback
         self.current_score = None
         self.current_green_score = None
         self.current_semaphore_level = None
@@ -7377,6 +8762,15 @@ class DashboardWindow(QMainWindow):
         self.environmental_view.refresh_project_data()
         self.finops_view.refresh_project_data()
 
+    def is_simulation_running(self):
+        chat_window = getattr(self.home_view, "_chat_window", None)
+        worker = getattr(chat_window, "_worker", None) if chat_window else None
+        telemetry = getattr(self.settings_view, "_telemetry_thread", None) if hasattr(self, "settings_view") else None
+        return bool(
+            (worker is not None and getattr(worker, "isRunning", lambda: False)())
+            or (telemetry is not None and telemetry.isRunning())
+        )
+
     def set_theme(self, theme):
         theme = "light" if theme == "light" else "dark"
         content = self.centralWidget()
@@ -7418,13 +8812,21 @@ class DashboardWindow(QMainWindow):
             row = store.connection.execute(
                 """SELECT COUNT(*) AS count, COALESCE(SUM(e.cost), 0) AS cost,
                           COALESCE(SUM(e.carbon), 0) AS carbon, COALESCE(SUM(e.kwh), 0) AS kwh,
+                          COALESCE(SUM(e.water), 0) AS water,
                           COALESCE(SUM(e.duration_ms), 0) AS duration_ms,
                           MAX(e.timestamp) AS latest_timestamp
                      FROM executions e JOIN models m ON m.id = e.model_id
                     WHERE m.project_id = ? AND m.is_active = 1""",
                 (project_id,),
             ).fetchone()
-            return {"project_name": project["name"], **dict(row)}
+            quota = store.connection.execute(
+                "SELECT carbon_gco2eq FROM project_quotas WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            return {
+                "project_name": project["name"],
+                "carbon_limit": quota["carbon_gco2eq"] if quota else None,
+                **dict(row),
+            }
         except (OSError, ValueError):
             return None
         finally:
@@ -7479,7 +8881,41 @@ class DashboardWindow(QMainWindow):
         if hardware is not None:
             self.selection_state["hardware"] = hardware
         self.selection_state["hardware_tdp"] = hardware_tdp
+        config = load_config()
+        if config.get("immersion_enabled"):
+            fluid = config.get("immersion_fluid", "fluido sintetico")
+            selected = getattr(self.hardware_view, "selected_by_type", {})
+            components = tuple(name for name, row in selected.items() if row)
+            try:
+                incompatible = check_immersion_compatibility(components, fluid)
+            except ValidationError:
+                incompatible = list(components)
+            if incompatible:
+                config["immersion_enabled"] = False
+                try:
+                    with open(writable_path("config.json"), "w", encoding="utf-8") as handle:
+                        json.dump(config, handle, ensure_ascii=True, indent=2)
+                except OSError:
+                    pass
+                if hasattr(self, "settings_view"):
+                    self.settings_view.immersion_checkbox.blockSignals(True)
+                    self.settings_view.immersion_checkbox.setChecked(False)
+                    self.settings_view.immersion_checkbox.blockSignals(False)
+                QMessageBox.warning(
+                    self, t("Inmersión"),
+                    t("Inmersión desactivada por hardware incompatible: {items}").format(items=", ".join(incompatible)),
+                )
         self._update_semaforo()
+
+    def _handle_generator_toggle(self, enabled, diesel_factor=None, fallback=None):
+        self.selection_state["diesel_generator_enabled"] = bool(enabled)
+        if diesel_factor is not None:
+            self.selection_state["diesel_factor"] = float(diesel_factor)
+        if fallback is not None:
+            self.selection_state["diesel_factor_fallback"] = bool(fallback)
+        self._update_semaforo()
+        if hasattr(self, "environmental_view"):
+            self.environmental_view.refresh_contingency_state()
 
     def _abort_simulation(self):
         """Cancel any active local inference/telemetry work and reset the evaluation state."""
@@ -7516,26 +8952,48 @@ class DashboardWindow(QMainWindow):
         except ValidationError:
             show_guided_error(self, "ERR_LOCKED_PARAM", t("El hardware local no puede cambiarse mientras el entorno Cloud está activo."))
             return
-        current_tdp = self.selection_state.get("hardware_tdp")
-        if current_tdp is None:
+        selected_components = {
+            component_type: row
+            for component_type, row in self.hardware_view.selected_by_type.items()
+            if row is not None
+        }
+        if not selected_components:
             QMessageBox.warning(self, t("Recomendación"), t("Selecciona primero un hardware válido."))
             return
-        candidates = []
-        for row in self.hardware_view.hardware_rows:
-            tdp = parse_number(row.get("TDP_Max_Watts"))
-            if tdp is not None:
-                name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
-                candidates.append({"name": name, "tdp_watts": tdp})
+        recommendations = []
         try:
-            recommendation = rightsizing(current_tdp, candidates)
+            for component_type, selected_row in selected_components.items():
+                current_tdp = parse_number(selected_row.get("TDP_Max_Watts"))
+                if current_tdp is None:
+                    continue
+                candidates = []
+                for row in self.hardware_view._rows_of_type(component_type):
+                    tdp = parse_number(row.get("TDP_Max_Watts"))
+                    if tdp is None:
+                        continue
+                    name = f"{row.get('Fabricante', '').strip()} {row.get('Modelo', '').strip()}".strip()
+                    candidates.append({"name": name, "tdp_watts": tdp, "row": row})
+                recommendation = rightsizing(current_tdp, candidates)
+                if recommendation:
+                    recommendation["watts_saved"] = current_tdp - float(recommendation["candidate"]["tdp_watts"])
+                    recommendations.append(recommendation)
         except (TypeError, ValueError) as exc:
             QMessageBox.warning(self, t("Recomendación"), str(exc))
             return
-        if not recommendation:
+        if not recommendations:
             QMessageBox.information(self, t("Recomendación"), t("No existe una alternativa con ahorro superior al 10%."))
             return
+        recommendation = max(
+            recommendations,
+            key=lambda item: item["watts_saved"],
+        )
         candidate = recommendation["candidate"]
-        self._handle_hardware_assign(candidate["name"], candidate["tdp_watts"])
+        try:
+            assert_hardware_upgrade_allowed(candidate["row"])
+        except PermissionError as exc:
+            QMessageBox.warning(self, t("Actualización de hardware restringida"), str(exc))
+            return
+        self.hardware_view.apply_recommendation(candidate["row"])
         QMessageBox.information(
             self,
             t("Recomendación Aplicada"),
@@ -7644,6 +9102,10 @@ class DashboardWindow(QMainWindow):
             self.current_semaphore_level = None
             self.current_evaluation = None
             return
+        config = load_config()
+        local_metrics = config.get("local_metrics", {})
+        if not self.selection_state.get("cloud_locked") and local_metrics.get("grid_factor") is not None:
+            intensity = float(local_metrics["grid_factor"])
         if intensity is None or tdp is None:
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
@@ -7654,8 +9116,25 @@ class DashboardWindow(QMainWindow):
 
         try:
             # La seleccion actual aporta TDP y CIF; una ejecucion inicial se modela a una hora.
-            score = calculate_carbon(tdp, 1.0, 1.0, intensity)
-            config = load_config()
+            pue = float(local_metrics.get("pue", 1.0))
+            immersion_enabled = bool(config.get("immersion_enabled", False))
+            effective_pue = max(1.0, pue * 0.8) if immersion_enabled else pue
+            water_factors = load_water_factors(region, config)
+            measured_litres = local_metrics.get("manual_litres", local_metrics.get("hydro_total_litres"))
+            if measured_litres is not None:
+                measured_litres = float(measured_litres)
+            kwh = calculate_energy(tdp, 1.0, effective_pue)
+            water = calculate_water(
+                kwh, water_factors["wue"], water_factors["wsi"],
+                immersion=immersion_enabled, manual_litres=measured_litres,
+            )
+            diesel_enabled = bool(self.selection_state.get("diesel_generator_enabled"))
+            diesel_factor = float(self.selection_state.get("diesel_factor", DEFAULT_DIESEL_FACTOR))
+            score = calculate_carbon(
+                tdp, 1.0, effective_pue, intensity,
+                diesel_hours=1.0 if diesel_enabled else 0.0,
+                diesel_factor=diesel_factor if diesel_enabled else 0.0,
+            )
             thresholds_config = config.get("thresholds", {})
             thresholds = validate_thresholds(
                 thresholds_config.get("green", 50),
@@ -7664,7 +9143,7 @@ class DashboardWindow(QMainWindow):
             )
             impact_percent = score / 10.0
             green_score_value, _ = green_score(0, 1, score, 1000)
-            level = semaphore_level(impact_percent, *thresholds)
+            level = "Rojo" if diesel_enabled else semaphore_level(impact_percent, *thresholds)
         except (TypeError, ValueError):
             self.home_view.set_semaforo_level(None, None)
             self.current_score = None
@@ -7678,13 +9157,24 @@ class DashboardWindow(QMainWindow):
         self.current_evaluation = {
             "cost": 0.0,
             "carbon": score,
-            "kwh": calculate_energy(tdp, 1.0, 1.0),
-            "water": 0.0,
+            "kwh": kwh,
+            "water": water,
             "duration_ms": 3_600_000,
             "semaphore": level,
+            "diesel_generator_enabled": diesel_enabled,
+            "diesel_factor": diesel_factor if diesel_enabled else None,
+            "diesel_factor_fallback": bool(self.selection_state.get("diesel_factor_fallback")),
+            "wue": water_factors["wue"],
+            "wsi": water_factors["wsi"],
+            "wue_fallback": water_factors["wue_fallback"],
+            "wsi_severe": water_factors["wsi_severe"],
+            "immersion": immersion_enabled,
+            "water_source": "measured" if measured_litres is not None and not immersion_enabled else "estimated",
         }
         status_level = {"Verde": "bajo", "Amarillo": "moderado", "Rojo": "alto"}[level]
         self.home_view.set_semaforo_level(status_level, score, green_score_value)
+        if hasattr(self, "environmental_view"):
+            self.environmental_view.refresh_contingency_state()
 
 
 def apply_stylesheet(app, theme="dark"):
@@ -8099,6 +9589,10 @@ def apply_stylesheet(app, theme="dark"):
         "  border: 1px solid #3c483e;"
         "  border-bottom: 1px solid #3c483e;"
         "}"
+        "QFrame#catalogRow[selected=\"true\"] {"
+        "  background-color: #172616;"
+        "  border: 1px solid #4eb541;"
+        "}"
         "QFrame#statusCard {"
         "  background-color: #141815;"
         "  border: 1px solid #303832;"
@@ -8473,6 +9967,7 @@ def _shutdown_ollama_autostart():
 def main():
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
+    install_global_exception_handler()
     instance_lock = QLockFile(os.path.join(QDir.tempPath(), "SemaforoIA.lock"))
     instance_lock.setStaleLockTime(5000)
     if not instance_lock.tryLock(100):

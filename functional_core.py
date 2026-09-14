@@ -10,10 +10,12 @@ import csv
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import time
 from decimal import Decimal, InvalidOperation
 from html import escape
@@ -290,10 +292,11 @@ def predict_limit_breach(
     if limit <= 0 or metric not in {"cost", "carbon"}:
         raise ValidationError("El limite debe ser positivo y la metrica debe ser cost o carbon.")
     rows = sorted(history, key=lambda row: str(row.get("timestamp", "")))
-    if not rows:
+    if len(rows) < 2:
         return None
     try:
         first = datetime.fromisoformat(str(rows[0]["timestamp"]).replace("Z", "+00:00"))
+        last = datetime.fromisoformat(str(rows[-1]["timestamp"]).replace("Z", "+00:00"))
         total = sum(float(row[metric]) for row in rows)
     except (KeyError, TypeError, ValueError) as exc:
         raise DataIntegrityError("El historial no permite calcular una proyeccion.") from exc
@@ -302,6 +305,10 @@ def predict_limit_breach(
     current = as_of or datetime.now(timezone.utc)
     if first.tzinfo is None:
         first = first.replace(tzinfo=timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last <= first:
+        return None
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     if total >= limit:
@@ -311,6 +318,36 @@ def predict_limit_breach(
     if daily_rate <= 0:
         return None
     return current.astimezone(timezone.utc) + timedelta(days=(limit - total) / daily_rate)
+
+
+def predict_execution_duration(history: Iterable[dict[str, Any]], minimum_samples: int = 3) -> dict[str, Any] | None:
+    """Forecast the next duration with a least-squares trend over valid historical sessions."""
+    if minimum_samples < 3:
+        raise ValidationError("El mínimo estadístico debe ser de al menos tres sesiones.")
+    durations = []
+    for row in history:
+        try:
+            value = float(row["duration_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            durations.append(value)
+    if len(durations) < minimum_samples:
+        return None
+    count = len(durations)
+    mean_x = (count - 1) / 2
+    mean_y = sum(durations) / count
+    denominator = sum((index - mean_x) ** 2 for index in range(count))
+    slope = sum((index - mean_x) * (value - mean_y) for index, value in enumerate(durations)) / denominator
+    predicted = max(1.0, mean_y + slope * (count - mean_x))
+    variance = sum((value - mean_y) ** 2 for value in durations) / count
+    deviation = math.sqrt(variance)
+    return {
+        "predicted_ms": round(predicted),
+        "sample_size": count,
+        "trend_ms_per_run": round(slope, 2),
+        "deviation_ms": round(deviation, 2),
+    }
 
 
 def capacity_plan(
@@ -369,6 +406,20 @@ def liquid_cooling_roi(
         "payback_years": round(payback, 2) if payback != float("inf") else payback,
         "viable": payback <= 5,
     }
+
+
+def compare_cooling_scenarios(baseline: dict[str, Any], immersion: dict[str, Any]) -> dict[str, Any]:
+    """Compare cooling-only clones and reject unrelated structural differences."""
+    for key in ("hardware", "annual_kwh", "energy_price_per_kwh"):
+        if baseline.get(key) != immersion.get(key):
+            raise ValidationError(f"Los escenarios divergen en {key}; la comparación térmica no es válida.")
+    result = liquid_cooling_roi(
+        float(baseline["annual_kwh"]), float(baseline["pue"]), float(immersion["pue"]),
+        float(baseline["energy_price_per_kwh"]), float(immersion.get("investment", 0)),
+    )
+    baseline_water = float(baseline["annual_kwh"]) * float(baseline.get("wue", 0))
+    immersion_water = float(immersion["annual_kwh"]) * float(immersion.get("wue", 0))
+    return {**result, "annual_water_saving_litres": round(max(0.0, baseline_water - immersion_water), 4)}
 
 
 def fetch_exchange_rates(
@@ -552,11 +603,13 @@ def format_carbon(grams: float) -> str:
 def calculate_water(kwh: float, wue: float, wsi: float = 1.0, immersion: bool = False, manual_litres: float | None = None) -> float:
     if kwh < 0 or wue < 0 or not 1 <= wsi <= 3:
         raise ValidationError("KWh, WUE o WSI invalidos.")
+    if immersion:
+        return 0.0
     if manual_litres is not None:
         if manual_litres < 0:
             raise ValidationError("Los litros manuales no pueden ser negativos.")
         return round(float(manual_litres), 4)
-    return 0.0 if immersion else round(kwh * wue * wsi, 4)
+    return round(kwh * wue * wsi, 4)
 
 
 def green_score(cost: float, cost_limit: float, carbon: float, carbon_limit: float) -> tuple[float, str]:
@@ -589,6 +642,28 @@ def best_shifting_hour(hourly_factors: Iterable[float]) -> tuple[int, float]:
         raise ValidationError("La matriz horaria debe contener 24 factores validos.")
     minimum = min(factors)
     return factors.index(minimum), minimum
+
+
+def carbon_shifting_recommendation(
+    hourly_factors: Iterable[float], current_hour: int
+) -> dict[str, float | int] | None:
+    factors = [float(value) for value in hourly_factors]
+    best_hour, best_factor = best_shifting_hour(factors)
+    if not 0 <= current_hour <= 23:
+        raise ValidationError("La hora actual debe estar entre 0 y 23.")
+    current_factor = factors[current_hour]
+    if current_factor <= 0 or max(factors) - min(factors) <= 1e-12:
+        return None
+    saving_percent = (current_factor - best_factor) / current_factor * 100
+    if saving_percent <= 0:
+        return None
+    return {
+        "current_hour": current_hour,
+        "recommended_hour": best_hour,
+        "current_factor": current_factor,
+        "recommended_factor": best_factor,
+        "saving_percent": round(saving_percent, 2),
+    }
 
 
 def software_efficiency_recommendations(
@@ -823,6 +898,17 @@ def rightsizing(
     return {"candidate": best, "saving_percent": round(saving, 2)} if saving > 10 else None
 
 
+def assert_hardware_upgrade_allowed(candidate: dict[str, Any]) -> None:
+    """Reject catalog upgrades explicitly restricted by licensing or corporate policy."""
+    metadata = candidate.get("_metadata", {}) if isinstance(candidate, dict) else {}
+    allowed = metadata.get("license_allowed", candidate.get("license_allowed", True))
+    status = str(metadata.get("license_status", candidate.get("license_status", "allowed"))).strip().lower()
+    if allowed is False or status in {"blocked", "restricted", "denied", "expired"}:
+        reason = str(metadata.get("license_reason", candidate.get("license_reason", ""))).strip()
+        suffix = f" Motivo: {reason}." if reason else ""
+        raise PermissionError("El hardware recomendado no está autorizado por la licencia corporativa." + suffix)
+
+
 def estimate_cloud(instance: dict[str, Any], hours: float, region_factor: float) -> dict[str, Any]:
     required = ("name", "cost_per_hour_usd", "watts")
     if not isinstance(instance, dict) or any(key not in instance for key in required):
@@ -859,13 +945,14 @@ def calculate_execution(
     started_at: datetime | None = None,
 ) -> tuple[Execution, str]:
     started = started_at or datetime.now(timezone.utc)
+    started_monotonic_ns = time.perf_counter_ns()
     cost = calculate_cost(hourly_cost, hours, currency)
     kwh = calculate_energy(tdp_watts, hours, pue)
     carbon = calculate_carbon(tdp_watts, hours, pue, grid_factor, diesel_hours, diesel_factor)
     water = calculate_water(kwh, wue, wsi, immersion)
     score, badge = green_score(cost, cost_limit, carbon, carbon_limit)
     semaphore = semaphore_level(100 - score, *thresholds)
-    duration_ms = max(0, round((datetime.now(timezone.utc) - started).total_seconds() * 1000))
+    duration_ms = max(1, round((time.perf_counter_ns() - started_monotonic_ns) / 1_000_000))
     execution = Execution(model_id, utc_iso(started), cost, carbon, kwh, water, duration_ms, semaphore)
     return execution, badge
 
@@ -909,7 +996,8 @@ class LocalStore:
             );
             CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
-                state TEXT NOT NULL DEFAULT 'active', is_active INTEGER NOT NULL DEFAULT 1
+                state TEXT NOT NULL DEFAULT 'active', is_active INTEGER NOT NULL DEFAULT 1,
+                recalculation_pending INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS models (
                 id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, name TEXT NOT NULL,
@@ -922,9 +1010,18 @@ class LocalStore:
                 duration_ms INTEGER NOT NULL, semaphore TEXT NOT NULL,
                 FOREIGN KEY(model_id) REFERENCES models(id)
             );
+            CREATE TABLE IF NOT EXISTS hydro_readings (
+                id INTEGER PRIMARY KEY, execution_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL, litres REAL NOT NULL, source TEXT NOT NULL,
+                FOREIGN KEY(execution_id) REFERENCES executions(id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS project_quotas (
                 project_id INTEGER PRIMARY KEY, budget_usd REAL, carbon_gco2eq REAL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS quota_master (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                budget_usd REAL, carbon_gco2eq REAL
             );
             CREATE TABLE IF NOT EXISTS admin_overrides (
                 token TEXT PRIMARY KEY, project_id INTEGER NOT NULL, admin_user_id INTEGER NOT NULL,
@@ -944,7 +1041,17 @@ class LocalStore:
                 id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
                 config_json TEXT NOT NULL, is_factory INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS emission_factors (
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+                gco2eq_kwh REAL NOT NULL CHECK(gco2eq_kwh > 0),
+                is_factory INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
             """
+        )
+        self.connection.executemany(
+            "INSERT OR IGNORE INTO emission_factors(name, gco2eq_kwh, is_factory, created_at) VALUES (?, ?, 1, ?)",
+            (("Eólica", 11.0, utc_iso()), ("Solar", 41.0, utc_iso()), ("Red genérica", 475.0, utc_iso())),
         )
         self.connection.commit()
         self._migrate_schema()
@@ -954,6 +1061,7 @@ class LocalStore:
         migrations = (
             ("executions", "username", "ALTER TABLE executions ADD COLUMN username TEXT"),
             ("model_templates", "is_deleted", "ALTER TABLE model_templates ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
+            ("projects", "recalculation_pending", "ALTER TABLE projects ADD COLUMN recalculation_pending INTEGER NOT NULL DEFAULT 0"),
         )
         for table, column, statement in migrations:
             columns = {row[1] for row in self.connection.execute(f"PRAGMA table_info({table})")}
@@ -961,21 +1069,24 @@ class LocalStore:
                 self.connection.execute(statement)
         self.connection.commit()
 
-    def add_user(self, username: str, password: str, role: str = "standard") -> int:
+    def add_user(self, username: str, password: str, role: str = "standard", force_password_change: bool = True) -> int:
         validate_password(password)
         cursor = self.connection.execute(
-            "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?)",
-            (username.strip(), hash_password(password), role),
+            "INSERT INTO users(username, password_hash, role, force_password_change) VALUES (?, ?, ?, ?)",
+            (username.strip(), hash_password(password), role, int(force_password_change)),
         )
         self.connection.commit()
         return int(cursor.lastrowid)
 
-    def add_hashed_user(self, username: str, password_hash: str, role: str = "standard") -> int:
+    def add_hashed_user(
+        self, username: str, password_hash: str, role: str = "standard",
+        force_password_change: bool = False,
+    ) -> int:
         if not password_hash.startswith("pbkdf2_sha256$"):
             raise ValidationError("El hash de contrasena no usa el formato soportado.")
         cursor = self.connection.execute(
-            "INSERT INTO users(username, password_hash, role) VALUES (?, ?, ?)",
-            (username.strip(), password_hash, role),
+            "INSERT INTO users(username, password_hash, role, force_password_change) VALUES (?, ?, ?, ?)",
+            (username.strip(), password_hash, role, int(force_password_change)),
         )
         self.connection.commit()
         return int(cursor.lastrowid)
@@ -1007,12 +1118,43 @@ class LocalStore:
         """Persist per-user USD/CO2 quotas; None removes the corresponding limit."""
         if any(value is not None and value <= 0 for value in (budget_usd, budget_co2)):
             raise ValidationError("Las cuotas de usuario deben ser positivas o quedar vacias.")
+        master = self.master_quotas()
+        if master["budget_usd"] is not None and budget_usd is not None and budget_usd > master["budget_usd"]:
+            raise ValidationError("La cuota financiera del usuario supera el techo maestro.")
+        if master["carbon_gco2eq"] is not None and budget_co2 is not None and budget_co2 > master["carbon_gco2eq"]:
+            raise ValidationError("La cuota de CO2 del usuario supera el techo maestro.")
         cursor = self.connection.execute(
             "UPDATE users SET budget_usd = ?, budget_co2 = ? WHERE username = ?",
             (budget_usd, budget_co2, username.strip()),
         )
         if cursor.rowcount == 0:
             raise ValidationError("El usuario no existe.")
+        self.connection.commit()
+
+    def master_quotas(self) -> dict[str, float | None]:
+        row = self.connection.execute(
+            "SELECT budget_usd, carbon_gco2eq FROM quota_master WHERE id=1"
+        ).fetchone()
+        return {
+            "budget_usd": row["budget_usd"] if row else None,
+            "carbon_gco2eq": row["carbon_gco2eq"] if row else None,
+        }
+
+    def set_master_quotas(self, budget_usd: float | None, carbon_gco2eq: float | None) -> None:
+        if any(value is not None and value <= 0 for value in (budget_usd, carbon_gco2eq)):
+            raise ValidationError("Los techos maestros deben ser positivos o quedar vacíos.")
+        maximums = self.connection.execute(
+            "SELECT MAX(budget_usd) AS budget_usd, MAX(budget_co2) AS carbon_gco2eq FROM users"
+        ).fetchone()
+        if budget_usd is not None and maximums["budget_usd"] is not None and maximums["budget_usd"] > budget_usd:
+            raise ValidationError("El techo financiero maestro no puede ser menor que una cuota de usuario vigente.")
+        if carbon_gco2eq is not None and maximums["carbon_gco2eq"] is not None and maximums["carbon_gco2eq"] > carbon_gco2eq:
+            raise ValidationError("El techo ambiental maestro no puede ser menor que una cuota de usuario vigente.")
+        self.connection.execute(
+            "INSERT INTO quota_master(id, budget_usd, carbon_gco2eq) VALUES (1, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET budget_usd=excluded.budget_usd, carbon_gco2eq=excluded.carbon_gco2eq",
+            (budget_usd, carbon_gco2eq),
+        )
         self.connection.commit()
 
     def user_quotas(self, username: str) -> dict[str, float | None]:
@@ -1119,9 +1261,17 @@ class LocalStore:
             raise ValidationError("Un proyecto archivado o cerrado es de solo lectura.")
         if not name:
             raise ValidationError("El nombre del modelo es obligatorio.")
+        description_markdown = str(description_markdown)
+        sanitize_markdown(description_markdown)
+        duplicate = self.connection.execute(
+            "SELECT id FROM models WHERE project_id = ? AND lower(name) = lower(?)",
+            (project_id, name),
+        ).fetchone()
+        if duplicate:
+            raise ValidationError("Ya existe un modelo con ese nombre en el proyecto.")
         cursor = self.connection.execute(
             "INSERT INTO models(project_id, name, description_markdown) VALUES (?, ?, ?)",
-            (project_id, name, str(description_markdown)),
+            (project_id, name, description_markdown),
         )
         self.connection.commit()
         return int(cursor.lastrowid)
@@ -1198,17 +1348,95 @@ class LocalStore:
             self.connection.execute("DELETE FROM models WHERE project_id = ?", (project_id,))
             self.connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
-    def reassign_model(self, model_id: int, target_project_id: int) -> None:
+    def reassign_model(self, model_id: int, target_project_id: int) -> dict[str, Any]:
         target = self.connection.execute(
-            "SELECT state, is_active FROM projects WHERE id = ?", (target_project_id,)
+            "SELECT name, state, is_active FROM projects WHERE id = ?", (target_project_id,)
         ).fetchone()
         if not target or not target["is_active"] or target["state"] != "active":
             raise ValidationError("El proyecto destino no acepta modificaciones.")
-        model = self.connection.execute("SELECT id FROM models WHERE id = ?", (model_id,)).fetchone()
+        model = self.connection.execute(
+            "SELECT m.id, m.name, m.project_id, p.name AS project_name "
+            "FROM models m JOIN projects p ON p.id=m.project_id "
+            "WHERE m.id=? AND m.is_active=1",
+            (model_id,),
+        ).fetchone()
         if not model:
             raise ValidationError("El modelo no existe.")
-        with self.connection:
-            self.connection.execute("UPDATE models SET project_id = ? WHERE id = ?", (target_project_id, model_id))
+        source_project_id = int(model["project_id"])
+        if source_project_id == target_project_id:
+            raise ValidationError("El modelo ya pertenece al proyecto destino.")
+        before = {
+            "source": self.project_totals(source_project_id),
+            "target": self.project_totals(target_project_id),
+        }
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "UPDATE models SET project_id = ? WHERE id = ?", (target_project_id, model_id)
+                )
+                self.connection.execute(
+                    "UPDATE projects SET recalculation_pending=0 WHERE id IN (?, ?)",
+                    (source_project_id, target_project_id),
+                )
+                self._audit(
+                    "system", "model_reassigned", target_project_id,
+                    f"Modelo {model['name']}: {model['project_name']} -> {target['name']}",
+                )
+        except sqlite3.DatabaseError:
+            try:
+                with self.connection:
+                    self.connection.execute(
+                        "UPDATE projects SET recalculation_pending=1 WHERE id IN (?, ?)",
+                        (source_project_id, target_project_id),
+                    )
+            except sqlite3.DatabaseError:
+                pass
+            raise
+        return {
+            "model_id": model_id,
+            "model_name": model["name"],
+            "source_project_id": source_project_id,
+            "source_project_name": model["project_name"],
+            "target_project_id": target_project_id,
+            "target_project_name": target["name"],
+            "before": before,
+            "after": {
+                "source": self.project_totals(source_project_id),
+                "target": self.project_totals(target_project_id),
+            },
+        }
+
+    def add_emission_factor(self, name: str, gco2eq_kwh: float) -> int:
+        normalized_name = str(name).strip()
+        try:
+            factor = float(gco2eq_kwh)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("El factor de emisión debe ser numérico.") from exc
+        if not normalized_name:
+            raise ValidationError("El nombre de la fuente energética es obligatorio.")
+        if not math.isfinite(factor) or factor <= 0:
+            raise ValidationError("El factor de emisión debe ser mayor que cero.")
+        try:
+            cursor = self.connection.execute(
+                "INSERT INTO emission_factors(name, gco2eq_kwh, is_factory, created_at) VALUES (?, ?, 0, ?)",
+                (normalized_name, factor, utc_iso()),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError("Ya existe una fuente energética con ese nombre.") from exc
+        return int(cursor.lastrowid)
+
+    def list_emission_factors(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT id, name, gco2eq_kwh, is_factory, created_at FROM emission_factors "
+            "ORDER BY is_factory DESC, name COLLATE NOCASE"
+        ).fetchall()
+
+    def emission_factor(self, name: str, fallback: float = 475.0) -> tuple[float, bool]:
+        row = self.connection.execute(
+            "SELECT gco2eq_kwh FROM emission_factors WHERE lower(name)=lower(?)", (str(name).strip(),)
+        ).fetchone()
+        return (float(row["gco2eq_kwh"]), False) if row else (float(fallback), True)
 
     def project_totals(self, project_id: int) -> dict[str, float]:
         row = self.connection.execute(
@@ -1257,22 +1485,63 @@ class LocalStore:
     def list_history(self, model_id: int | None = None, project_id: int | None = None) -> list[sqlite3.Row]:
         if model_id is not None:
             return self.connection.execute(
-                """SELECT e.*, m.name AS model_name FROM executions e
+                """SELECT e.*, m.name AS model_name, p.name AS project_name FROM executions e
                    JOIN models m ON m.id = e.model_id
+                   JOIN projects p ON p.id = m.project_id
                   WHERE e.model_id = ? ORDER BY e.timestamp DESC""",
                 (model_id,),
             ).fetchall()
         if project_id is not None:
             return self.connection.execute(
-                """SELECT e.*, m.name AS model_name FROM executions e
+                """SELECT e.*, m.name AS model_name, p.name AS project_name FROM executions e
                    JOIN models m ON m.id = e.model_id
+                   JOIN projects p ON p.id = m.project_id
                   WHERE m.project_id = ? ORDER BY e.timestamp DESC""",
                 (project_id,),
             ).fetchall()
         return self.connection.execute(
-            """SELECT e.*, m.name AS model_name FROM executions e
-               JOIN models m ON m.id = e.model_id ORDER BY e.timestamp DESC"""
+                """SELECT e.*, m.name AS model_name, p.name AS project_name FROM executions e
+                    JOIN models m ON m.id = e.model_id
+                    JOIN projects p ON p.id = m.project_id ORDER BY e.timestamp DESC"""
         ).fetchall()
+
+    def reconcile_hydro_records(
+        self, project_id: int, records: Iterable[dict[str, Any]], source: str = "import",
+        max_gap_minutes: float = 60.0,
+    ) -> int:
+        """Assign validated water readings to the nearest project execution atomically."""
+        parsed = parse_hydro_records(records)
+        if detect_hydro_desync(parsed, max_gap_minutes=max_gap_minutes):
+            raise DataIntegrityError("El historial hídrico contiene brechas o timestamps desordenados.")
+        executions = self.connection.execute(
+            """SELECT e.id, e.timestamp FROM executions e JOIN models m ON m.id=e.model_id
+               WHERE m.project_id=? ORDER BY e.timestamp""",
+            (project_id,),
+        ).fetchall()
+        if not executions:
+            raise ValidationError("El proyecto no contiene ejecuciones para conciliar.")
+        dated_executions = []
+        for execution in executions:
+            timestamp = datetime.fromisoformat(str(execution["timestamp"]).replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            dated_executions.append((execution["id"], timestamp))
+        allocations = []
+        for record in parsed:
+            execution_id, execution_time = min(
+                dated_executions, key=lambda item: abs((item[1] - record["timestamp"]).total_seconds())
+            )
+            if abs((execution_time - record["timestamp"]).total_seconds()) > max_gap_minutes * 60:
+                raise DataIntegrityError("Una medición hídrica no coincide con ninguna ejecución cercana.")
+            allocations.append((execution_id, record))
+        with self.connection:
+            for execution_id, record in allocations:
+                self.connection.execute("UPDATE executions SET water=? WHERE id=?", (record["litres"], execution_id))
+                self.connection.execute(
+                    "INSERT INTO hydro_readings(execution_id, timestamp, litres, source) VALUES (?, ?, ?, ?)",
+                    (execution_id, utc_iso(record["timestamp"]), record["litres"], str(source)),
+                )
+        return len(allocations)
 
     def backup(self, destination: str | os.PathLike[str]) -> None:
         """Create a consistent SQLite backup using the online backup API."""
@@ -1543,7 +1812,36 @@ class LocalStore:
             if override:
                 self.connection.execute("UPDATE admin_overrides SET used_at=? WHERE token=?", (utc_iso(), override_token))
                 self._audit(override["username"], "override_used", status["project_id"], override["reason"])
+            try:
+                self._record_quota_crossings(status)
+            except sqlite3.DatabaseError:
+                pass
         return int(cursor.lastrowid)
+
+    def _record_quota_crossings(self, status: dict[str, Any]) -> None:
+        quotas = self.connection.execute(
+            "SELECT budget_usd, carbon_gco2eq FROM project_quotas WHERE project_id = ?",
+            (status["project_id"],),
+        ).fetchone()
+        if not quotas:
+            return
+        for metric, quota_key, label in (
+            ("cost", "budget_usd", "presupuesto financiero"),
+            ("carbon", "carbon_gco2eq", "presupuesto ambiental"),
+        ):
+            limit = quotas[quota_key]
+            if limit is None or limit <= 0:
+                continue
+            previous_percentage = status["totals"][metric] / limit * 100
+            projected_percentage = status["projected"][metric] / limit * 100
+            for threshold in (50, 75):
+                if previous_percentage < threshold <= projected_percentage:
+                    self._audit(
+                        "system",
+                        "quota_threshold_crossed",
+                        status["project_id"],
+                        f"Umbral preventivo alcanzado: consumo acumulado al {threshold}% del {label}.",
+                    )
 
     def soft_delete_model(self, model_id: int) -> None:
         self.connection.execute("UPDATE models SET is_active = 0 WHERE id = ?", (model_id,))
@@ -1597,24 +1895,40 @@ def import_records(
 
 def export_records(records: Iterable[dict[str, Any]], path: str | os.PathLike[str]) -> None:
     destination = Path(path)
+    temporary_path: Path | None = None
     try:
         rows = list(records)
-        if destination.suffix.lower() == ".json":
-            destination.write_text(json.dumps(rows, ensure_ascii=True, indent=2), encoding="utf-8")
-            return
-        if destination.suffix.lower() == ".csv":
-            if not rows:
-                raise DataIntegrityError("No hay registros para exportar.")
-            with destination.open("w", encoding="utf-8", newline="") as handle:
+        suffix = destination.suffix.lower()
+        if suffix not in {".json", ".csv"}:
+            raise DataIntegrityError("Formato de exportacion no soportado; use JSON o CSV.")
+        if suffix == ".csv" and not rows:
+            raise DataIntegrityError("No hay registros para exportar.")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=destination.parent,
+            prefix=f".{destination.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            if suffix == ".json":
+                json.dump(rows, handle, ensure_ascii=True, indent=2)
+            else:
                 writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
-            return
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
     except MemoryError as exc:
         raise MemoryError("No hay memoria suficiente para preparar la exportacion.") from exc
     except (OSError, csv.Error) as exc:
         raise PermissionError(f"No se pudo escribir {destination}: {exc}") from exc
-    raise DataIntegrityError("Formato de exportacion no soportado; use JSON o CSV.")
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def fetch_json_with_fallback(url: str, fallback_path: str | os.PathLike[str], timeout: float = 5) -> Any:
@@ -1654,5 +1968,8 @@ def bootstrap_store(config: dict[str, Any], path: str | os.PathLike[str]) -> Loc
             "SELECT 1 FROM users WHERE username = ?", (username,)
         ).fetchone()
         if not exists:
-            store.add_hashed_user(username, password_hash, profile.get("role", "standard"))
+            store.add_hashed_user(
+                username, password_hash, profile.get("role", "standard"),
+                bool(profile.get("force_password_change", False)),
+            )
     return store

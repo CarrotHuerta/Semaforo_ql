@@ -53,10 +53,21 @@ def _open_store(path: str) -> LocalStore:
     return LocalStore(Path(path))
 
 
+def _require_model(store: LocalStore, model_id: int) -> None:
+    if not any(row["id"] == model_id for row in store.list_models()):
+        raise ValidationError(f"Not found: model ID {model_id}.")
+
+
+def _require_project(store: LocalStore, project_id: int) -> None:
+    if not any(row["id"] == project_id for row in store.list_projects()):
+        raise ValidationError(f"Not found: project ID {project_id}.")
+
+
 def run(args: argparse.Namespace) -> dict | list | None:
     store = _open_store(args.database)
     try:
         if args.command == "calculate":
+            _require_model(store, args.model_id)
             execution, badge = calculate_execution(
                 model_id=args.model_id,
                 hourly_cost=args.hourly_cost,
@@ -76,8 +87,14 @@ def run(args: argparse.Namespace) -> dict | list | None:
                 execution_id = None
             return {"execution": asdict(execution), "badge": badge, "execution_id": execution_id}
         if args.command == "history":
+            if args.project_id is not None:
+                _require_project(store, args.project_id)
+            if args.model_id is not None:
+                _require_model(store, args.model_id)
             return [dict(row) for row in store.list_history(model_id=args.model_id, project_id=args.project_id)]
         if args.command == "export":
+            if args.project_id is not None:
+                _require_project(store, args.project_id)
             rows = [dict(row) for row in store.list_history(project_id=args.project_id)]
             export_records(rows, args.output)
             return {"output": str(Path(args.output).resolve()), "records": len(rows)}

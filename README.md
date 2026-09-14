@@ -10,6 +10,132 @@ Este documento es la especificación técnica maestra (Technical Design Document
 
 Si vas a desarrollar en Python, debes seguir esta estructura paso a paso.
 
+## Evidencias de presentación
+
+### Ubicación de capturas RF10.2 a RF39.2
+
+- **Figura 4.21, RF10.2:** abra **Impacto Ambiental** y capture la tarjeta **Tiempo de procesamiento** tras una ejecución menor a un segundo; mostrará `ms`. Evidencia técnica: `test_fast_execution_uses_millisecond_floor` y `test_metric_units_scale_with_values`.
+- **Figura 4.24, RF12.1:** abra **Comparativas**. El bloque **Huella de Carbono Moderada** carga tres acciones desde `data/recommendation_rules.json`. Para el fallback, use `test_recommendation_manual_has_corruption_fallback`.
+- **Figura 4.38, RF18.1:** abra **Modelos**, seleccione uno y use **Descripción Markdown del modelo → Guardar descripción**. Capture el contador; al superar `5000` el botón queda deshabilitado. Prueba: `test_markdown_editor_blocks_overflow_and_renders_saved_text`.
+- **Figura 4.39, RF18.2:** en la misma vista, escriba `# Título`, `- **GPU**` y guarde. Capture el visor enriquecido sobre el editor. HTML peligroso se presenta como texto, no se ejecuta.
+- **Figura 4.44, RF21.1:** abra **Cloud** y seleccione proveedor/región. Capture **Factor regional activo: ... gCO2eq/kWh**. Si la región no tiene factor, aparece **Factor regional no disponible; cálculo ambiental bloqueado**. Prueba: `test_cloud_view_blocks_when_regional_factor_is_missing`.
+- **Figura 4.53, RF25.2:** abra **Hardware → Desglose de componentes**, asigne CPU/GPU y desmarque un componente. Capture el reparto recalculado a 100%. Al desmarcar el último, se restauran todos. Nota: el texto entregado rotula esta figura como “Caso 26.1”; debe corregirse a **Caso 25.2**.
+- **Figura 4.61, RF29.2:** abra **Historial → Auditorías ambientales**. Capture la curva con dos o más registros. Con cero o uno, la gráfica muestra **Datos históricos insuficientes para trazar una evolución** y conserva la lista textual. Prueba: `test_sparse_history_uses_textual_fallback`.
+- **Figura 4.64, RF31.2:** abra **Comparativas → Ineficiencias de software**, use duración `130000` ms y CPU `35`, pulse **Analizar eficiencia** y después **Abrir manual local**. Capture `CPU subutilizada` y su instrucción. Pruebas: `test_efficiency_finding_opens_local_manual` y `test_recommendation_manual_has_corruption_fallback`.
+- **Figura 4.65, RF32.1:** abra **Comparativas → Carbon-aware shifting**, ingrese 24 factores separados por comas y pulse **Buscar mejor hora**. Capture hora UTC y ahorro. Con 24 valores iguales aparece **Matriz estable: no se recomienda postergar la ejecución**.
+- **Figura 4.66, RF32.2:** en el mismo bloque capture las barras **Ahora** y **Recomendado**, junto al porcentaje de ahorro. Prueba: `test_carbon_shifting_shows_savings_and_hides_flat_comparison`.
+- **Figura 4.67, RF33.1:** abra **Proyectos → Nuevo proyecto**, escriba un nombre y confirme. Capture el nuevo proyecto en el selector. Repetir el nombre muestra el rechazo de integridad.
+- **Figura 4.68, RF33.2:** abra **Proyectos → Reasignar modelo**, elija modelo y proyecto destino y pulse **Transferir y recalcular**. El mismo proyecto y los destinos archivados no se ofrecen; los nombres de modelo duplicados en un proyecto se rechazan. Prueba: `test_model_name_is_unique_within_project`.
+- **Figura 4.71, RF35.1:** configure **Administración → Sistema → Integraciones → URL factores CO2** y luego abra **Ajustes → Entorno y Hardware On-Premise → Sincronizar Factores Oficiales**. Capture la confirmación de sincronización o uso del respaldo local.
+- **Figura 4.72, RF35.2:** tras al menos dos sincronizaciones, abra **Ajustes → Entorno y Hardware On-Premise → Restablecer a fecha pasada**, seleccione una instantánea fechada y capture **versión restaurada y métricas recalculadas**. Prueba: `test_carbon_factor_versions_can_be_restored`.
+- **Figura 4.74, RF36.2:** abra **Ajustes → Entorno y Hardware On-Premise**, seleccione `SNMP` o `Modbus TCP`, complete host y OID/registro; para SNMP complete **Community SNMP**. Pulse **Probar Enlace Sensor On-Premise** y capture **Sondeo Activo** o el rechazo de autenticación. Prueba: `test_snmp_telemetry_passes_protected_community`.
+- **Figura 4.80, RF39.1:** en **Proyectos**, fije una **Cuota USD** inferior al próximo costo y ejecute el modelo. Capture **Error guiado / ERR_QUOTA_FIN** y en **Costos FinOps** el estado **Disyuntor activo**. Si el diálogo falla, el núcleo mantiene el bloqueo, emite aviso del sistema y audita `circuit_notification_failed`.
+- **Figura 4.81, RF39.2:** desde ese bloqueo complete **Override Administrativo** con cuenta admin, contraseña, motivo y vigencia. Capture la ejecución autorizada; credenciales inválidas mantienen el bloqueo. Pruebas: `test_governance_circuit_override_and_capacity_plan` y `test_admin_override_expiration_and_closed_project_block_execution`.
+
+Para una captura consolidada de pruebas ejecute:
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m unittest -v
+```
+
+### RF01.1 - Informe de costos y divisas
+
+1. Abra **FinOps** con un proyecto activo que tenga ejecuciones.
+2. Seleccione `USD`, `EUR` u otra moneda en el selector superior.
+3. Capture las tarjetas de costo y el panel **Gasto por componente**; GPU, almacenamiento, red y servicios administrados se recalculan en la moneda elegida.
+4. Pulse **Exportar** y capture el menú con `PDF`, `CSV` y `JSON`. Genere cada formato; todos incluyen totales, moneda y desglose por componente.
+5. Para el caso sin tasa, retire temporalmente una tasa de `exchange_rates.json`, seleccione esa moneda y capture **Tasa no disponible... Seleccione otra moneda o actualice las tasas**. La exportación queda bloqueada hasta corregir la selección.
+
+### RF01.2 - Datos FinOps y permisos de escritura
+
+Use **FinOps → Exportar → CSV** o **JSON**. Para la captura positiva, abra el archivo y muestre las filas `component` con importe y unidad monetaria. Para el caso de permisos, seleccione como destino una carpeta protegida de Windows. El diálogo informa que no pudo escribir el informe y ofrece **Reintentar**; púlselo, elija **Documentos** y capture después la confirmación de guardado. El archivo fallido no se presenta como exportación exitosa.
+
+### RF02.1 - Informe ambiental e integridad
+
+1. Abra **Impacto Ambiental** con un proyecto activo.
+2. Capture emisiones de entrenamiento/ejecución, energía, tiempo, agua, estado hídrico y contingencia.
+3. Pulse **Exportar** y capture el menú con `PDF`, `CSV` y `JSON`; genere el formato exigido.
+4. La exportación valida que las métricas sean numéricas, finitas y no negativas. El caso corrupto se acredita con `test_environmental_export_rejects_corrupt_metric`: muestra `ERR_DATA`, detiene el flujo y no invoca el generador.
+
+### RF02.2 - Histórico de auditorías ambientales
+
+Abra **Historial → Auditorías ambientales**. Capture **Auditorías recientes**: cada fila muestra fecha local, proyecto/modelo, estado del semáforo, carbono y costo, ordenada desde la más reciente. Para el estado sin datos, use una base nueva y capture **No hay auditorías ambientales registradas**.
+
+### RF42.1 y RF42.2 - Capacity Planning histórico
+
+Abra **Proyectos → Pronóstico pre-vuelo**, seleccione un modelo y pulse **Calcular pronóstico**. Con tres o más ejecuciones se muestran duración estimada, número de sesiones y dispersión. Un modelo nuevo muestra **Cálculo por determinarse**. **Invalidar pronóstico** devuelve al estado neutral; durante una simulación activa la invalidación se rechaza y conserva el valor vigente.
+
+### RF43.1 y RF43.2 - Upgrade de hardware
+
+Abra **Hardware**, seleccione un componente y pulse la acción de optimización. La recomendación sólo aparece cuando existe una alternativa con ahorro superior al 10% y retorno justificable. Al aplicar, el resumen de selección cambia inmediatamente. Si la metadata del candidato contiene `license_status: restricted` o `license_allowed: false`, se muestra **Actualización de hardware restringida** y se conserva el componente anterior.
+
+### RF44.1 y RF44.2 - Cuotas por usuario
+
+1. En **Administración → Sistema → Parámetros globales**, configure **Techo maestro USD** y **Techo maestro gCO2eq**.
+2. En **Administración → Usuarios → Cuotas por usuario**, seleccione la cuenta subordinada y asigne sus cuotas.
+3. Capture la asignación válida y luego un intento negativo o superior al techo maestro, que será rechazado.
+
+### RF45.1 - Recuperación guiada y fallo fatal
+
+Los errores recuperables de E/S abren **Error guiado** con código, causa, acción, detalle y copia/exportación de diagnóstico. El manejador global delega `MemoryError`, `SystemExit` y `KeyboardInterrupt` al hook nativo sin intentar reconstruir la UI. La primera rama es evidencia visual; la delegación fatal se acredita mediante la prueba automatizada correspondiente.
+
+### RF45.2 - Portapapeles y archivo de diagnóstico
+
+Para la **Figura 4.93**, abra **Administración → Auditoría → Verificar canal de diagnóstico**. En el diálogo **Error guiado**:
+
+1. Pulse **Copiar detalles** y capture la confirmación **Diagnóstico completo copiado al portapapeles**.
+2. Pulse **Exportar diagnóstico .txt** y capture la ruta mostrada bajo los botones.
+3. El archivo queda en `error_reports/` e incluye identificador de incidente, fecha UTC, plataforma, versión de Python, PID, código, causa, acción y traza técnica completa.
+
+Si el clipboard deniega la operación, **Copiar detalles** ejecuta automáticamente el mismo fallback `.txt` y muestra la ruta. Las pruebas automatizadas verifican textos superiores a 50 KB sin truncamiento y equivalencia exacta entre el contenido copiado y el archivo.
+
+### RF61.2 - Reasignación y consolidados
+
+1. Abra **Proyectos** y seleccione el proyecto de origen.
+2. En **Reasignar modelo**, elija el modelo y el proyecto destino.
+3. Pulse **Transferir y recalcular**.
+4. Capture el mensaje verde persistente: muestra costos y carbono de origen y destino antes y después. Las tarjetas superiores quedan recalculadas.
+
+La operación es transaccional. Si SQLite interrumpe el guardado, ambos proyectos quedan con `recalculation_pending=1` y la vista informa **Recálculo pendiente**.
+
+### RF48.2 - Factor de emisión experimental
+
+1. Abra **Ajustes → Entorno y Hardware On-Premise**.
+2. Localice **Catálogo de factores de emisión**.
+3. Escriba una fuente, por ejemplo `Gas Sintético`, y su valor en `gCO2eq/kWh`.
+4. Pulse **Agregar factor**, seleccione la nueva fila y pulse **Aplicar factor seleccionado**.
+5. Capture la fila marcada **Experimental local** y el mensaje verde **Factor activo**. La siguiente evaluación local utilizará este valor; Cloud conserva prioridad cuando está activo.
+
+Los nombres vacíos, factores no numéricos, valores menores o iguales a cero y nombres duplicados son rechazados.
+
+### RF62.2 - Centro de alertas presupuestarias
+
+1. En **Proyectos**, configure **Cuota USD** y/o **Cuota gCO2eq**.
+2. Registre ejecuciones que hagan pasar el consumo acumulado por 50% y 75%.
+3. Abra **Administración → Auditoría → Alertas**.
+4. Capture la tabla **Centro de alertas presupuestarias**, que muestra severidad, fecha, proyecto, umbral y detalle.
+
+Los cruces de 50% son `PREVENTIVA`; los de 75% son `ALTA`. Un fallo exclusivo del buzón no cancela el cálculo principal.
+
+### RF66.2 - Exportación autónoma y CLI
+
+Desde la interfaz, abra **Proyectos → Exportar → Automatización CLI / CSV puro**. El diálogo muestra el comando PowerShell exacto, permite copiarlo y genera un CSV puro mediante **Exportar CSV puro ahora**.
+
+En desarrollo:
+
+```powershell
+.\.venv\Scripts\python.exe cli.py --database semaforo.sqlite3 export --project-id 1 --output evidencia-rf66.csv
+```
+
+Después de ejecutar `build_exe.bat`, la distribución incluye un ejecutable de consola independiente:
+
+```powershell
+.\dist\SemaforoIA\SemaforoCLI.exe --database semaforo.sqlite3 export --project-id 1 --output evidencia-rf66.csv
+```
+
+`SemaforoCLI.exe` no inicia PySide6, devuelve códigos de salida al shell y rechaza IDs inexistentes con `Not found`. Debe distribuirse junto con `SemaforoIA.exe`.
+
 ## 1. Estructura de la Base de Datos (Diccionario de Datos)
 
 El sistema requiere una persistencia relacional local (SQLite es ideal) estricta. Estas son las tablas y campos obligatorios que debes programar:

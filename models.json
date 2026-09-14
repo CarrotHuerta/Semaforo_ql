@@ -1,17 +1,5 @@
 [
   {
-    "\ufeffID_Modelo": "MOD_001",
-    "Nombre_Modelo": "Llama 3.3",
-    "Empresa_Creador": "Meta",
-    "Dominio": "LLM",
-    "Parametros_Billones": "70.0 B",
-    "VRAM_Minima_GB_FP16_INT8": "140 / 40",
-    "Consumo_Energetico_Base": "0.40 J",
-    "Unidad_Medida": "por Token",
-    "Multiplicador_Razonamiento": "1x",
-    "is_active": false
-  },
-  {
     "\ufeffID_Modelo": "MOD_002",
     "Nombre_Modelo": "Llama 3.1",
     "Empresa_Creador": "Meta",

@@ -1,6 +1,7 @@
 import csv
 import json
 import http.client
+import sqlite3
 import threading
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ import i18n
 
 from functional_core import (
     ApiKeyError,
+    assert_hardware_upgrade_allowed,
     CircuitBreakerError,
     DataIntegrityError,
     Execution,
@@ -22,6 +24,7 @@ from functional_core import (
     calculate_cost,
     calculate_energy,
     calculate_execution,
+    carbon_shifting_recommendation,
     calculate_water,
     budget_percentage,
     capacity_plan,
@@ -38,6 +41,7 @@ from functional_core import (
     import_records,
     forecast_budget,
     predict_limit_breach,
+    predict_execution_duration,
     mask_api_key,
     rightsizing,
     semaphore_level,
@@ -59,6 +63,20 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertEqual(calculate_carbon(1000, 2, 1, 400, 1, 1000), 1400.0)
         self.assertEqual(calculate_water(3, 2, 3, immersion=True), 0.0)
         self.assertEqual(format_carbon(10001), "10.00 kgCO2eq")
+
+    def test_fast_execution_uses_millisecond_floor(self):
+        execution, _badge = calculate_execution(
+            1, 1, 0.001, "USD", 100, 1, 100, 1, 1, 100, 100,
+        )
+        self.assertGreaterEqual(execution.duration_ms, 1)
+
+    def test_shifting_recommendation_and_flat_matrix(self):
+        factors = [10.0] * 24
+        factors[5] = 4.0
+        recommendation = carbon_shifting_recommendation(factors, current_hour=1)
+        self.assertEqual(recommendation["recommended_hour"], 5)
+        self.assertEqual(recommendation["saving_percent"], 60.0)
+        self.assertIsNone(carbon_shifting_recommendation([7.0] * 24, current_hour=1))
 
     @patch("functional_core.requests.get")
     def test_exchange_rates_from_api_and_inverse_conversion(self, get):
@@ -117,6 +135,24 @@ class FunctionalCoreTests(unittest.TestCase):
                 self.assertEqual(workbook["KPIs"].auto_filter.ref, "A1:E2")
             finally:
                 workbook.close()
+
+    def test_csv_report_contains_component_breakdown(self):
+        from export_handler import _create_csv_report
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "finops.csv"
+            _create_csv_report(
+                "economia",
+                {
+                    "exported_by": "Test",
+                    "kpis": [[15, 60, "Costo", "100", "USD", "cyan_500"]],
+                    "components": [["GPU compute", "48.00", "USD"]],
+                },
+                path,
+            )
+            with path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.reader(handle))
+        self.assertIn(["component", "GPU compute", "48.00", "USD"], rows)
 
     def test_invalid_business_values(self):
         with self.assertRaises(ValidationError):
@@ -213,6 +249,11 @@ class FunctionalCoreTests(unittest.TestCase):
         ])
         self.assertEqual(recommendation["candidate"]["name"], "efficient")
         self.assertEqual(recommendation["saving_percent"], 25.0)
+        assert_hardware_upgrade_allowed({"_metadata": {"license_allowed": True}})
+        with self.assertRaises(PermissionError):
+            assert_hardware_upgrade_allowed({"_metadata": {
+                "license_status": "restricted", "license_reason": "Contrato vencido",
+            }})
         self.assertEqual(forecast_budget(500, 15, 800, 30), 1000.0)
         with self.assertRaises(ValidationError):
             forecast_budget(500, 0, 800, 30)
@@ -220,9 +261,16 @@ class FunctionalCoreTests(unittest.TestCase):
     def test_governance_circuit_override_and_capacity_plan(self):
         now = datetime(2026, 9, 4, tzinfo=timezone.utc)
         breach = predict_limit_breach(
-            [{"timestamp": "2026-09-01T00:00:00+00:00", "cost": 30}], 100, "cost", now,
+            [
+                {"timestamp": "2026-09-01T00:00:00+00:00", "cost": 20},
+                {"timestamp": "2026-09-02T00:00:00+00:00", "cost": 10},
+            ],
+            100, "cost", now,
         )
         self.assertEqual(breach.date(), date(2026, 9, 11))
+        self.assertIsNone(predict_limit_breach(
+            [{"timestamp": "2026-09-01T00:00:00+00:00", "cost": 30}], 100, "cost", now,
+        ))
         plan = capacity_plan(4000, 300, [
             {"name": "Viable", "tdp_watts": 150, "acquisition_cost": 200},
             {"name": "Caro", "tdp_watts": 100, "acquisition_cost": 10000},
@@ -246,8 +294,21 @@ class FunctionalCoreTests(unittest.TestCase):
             with self.assertRaises(CircuitBreakerError):
                 store.add_execution(execution, token)
             actions = [row["action"] for row in store.connection.execute("SELECT action FROM audit_log")]
-            self.assertEqual(actions, ["override_denied", "override_granted", "override_used"])
+            override_actions = [action for action in actions if action.startswith("override_")]
+            self.assertEqual(override_actions, ["override_denied", "override_granted", "override_used"])
+            self.assertEqual(actions.count("quota_threshold_crossed"), 3)
             store.close()
+
+    def test_execution_duration_forecast_requires_useful_history(self):
+        self.assertIsNone(predict_execution_duration([]))
+        self.assertIsNone(predict_execution_duration([{"duration_ms": 100}, {"duration_ms": 120}]))
+        forecast = predict_execution_duration([
+            {"duration_ms": 1000}, {"duration_ms": 1200}, {"duration_ms": 1400}, {"duration_ms": 1600},
+        ])
+        self.assertEqual(forecast["predicted_ms"], 1800)
+        self.assertEqual(forecast["sample_size"], 4)
+        with self.assertRaises(ValidationError):
+            predict_execution_duration([], minimum_samples=2)
 
     def test_admin_override_expiration_and_closed_project_block_execution(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -449,6 +510,62 @@ class FunctionalCoreTests(unittest.TestCase):
                 httpd.server_close()
                 thread.join(timeout=2)
 
+    def test_server_requires_password_change_before_hardware_access(self):
+        import server
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "server_temporary.sqlite3"
+            password_hash = hash_password("Temporal-123")
+            store = LocalStore(database_path)
+            store.add_hashed_user("new_remote", password_hash, force_password_change=True)
+            store.close()
+
+            def open_store():
+                return LocalStore(database_path)
+
+            config = {"users": [{"username": "new_remote", "password_hash": password_hash}]}
+            httpd = server.socketserver.ThreadingTCPServer(("127.0.0.1", 0), server.SimpleHandler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch("server.get_store", side_effect=open_store), patch(
+                    "server.load_config", return_value=config,
+                ), patch("server.get_hardware_info", return_value={"cpu": "test"}):
+                    connection = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1])
+                    body = json.dumps({"username": "new_remote", "password": "Temporal-123"})
+                    connection.request("POST", "/login", body, {"Content-Type": "application/json"})
+                    response = connection.getresponse()
+                    login_data = json.loads(response.read().decode("utf-8"))
+                    change_token = login_data["password_change_token"]
+                    self.assertNotIn("token", login_data)
+
+                    connection.request("GET", "/hardware", headers={"Authorization": f"Bearer {change_token}"})
+                    self.assertEqual(connection.getresponse().status, 401)
+
+                    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {change_token}"}
+                    connection.request("POST", "/change-password", json.dumps({"password": "weak"}), headers)
+                    self.assertEqual(connection.getresponse().status, 400)
+
+                    connection.request(
+                        "POST", "/change-password", json.dumps({"password": "Definitiva-123"}), headers,
+                    )
+                    response = connection.getresponse()
+                    session_token = json.loads(response.read().decode("utf-8"))["token"]
+                    self.assertEqual(response.status, 200)
+                    connection.request("GET", "/hardware", headers={"Authorization": f"Bearer {session_token}"})
+                    self.assertEqual(connection.getresponse().status, 200)
+                    connection.close()
+
+                    verified_store = open_store()
+                    self.assertEqual(
+                        verified_store.authenticate("new_remote", "Definitiva-123")["force_password_change"], 0,
+                    )
+                    verified_store.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
+
     def test_admin_can_view_and_unlock_accounts(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "users.sqlite3")
@@ -495,6 +612,57 @@ class FunctionalCoreTests(unittest.TestCase):
             self.assertEqual(backup_store.project_totals(target)["cost"], 10.0)
             self.assertEqual(len(backup_store.list_history()), 1)
             backup_store.close()
+            store.close()
+
+    def test_model_name_is_unique_within_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "models.sqlite3")
+            project = store.add_project("Proyecto")
+            store.add_model(project, "Modelo")
+            with self.assertRaisesRegex(ValidationError, "Ya existe"):
+                store.add_model(project, "modelo")
+            other = store.add_project("Otro")
+            store.add_model(other, "Modelo")
+            store.close()
+
+    def test_reassignment_returns_consolidated_totals_and_marks_failed_recalculation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "reassignment.sqlite3")
+            source = store.add_project("Origen")
+            target = store.add_project("Destino")
+            model = store.add_model(source, "Modelo transferible")
+            store.add_execution(Execution(model, "2026-09-13 10:00:00", 12, 34, 5, 6, 7, "Verde"))
+
+            summary = store.reassign_model(model, target)
+            self.assertEqual(summary["before"]["source"]["cost"], 12)
+            self.assertEqual(summary["after"]["source"]["cost"], 0)
+            self.assertEqual(summary["after"]["target"]["carbon"], 34)
+
+            with patch.object(store, "_audit", side_effect=sqlite3.OperationalError("disk failure")):
+                with self.assertRaises(sqlite3.OperationalError):
+                    store.reassign_model(model, source)
+            project_states = {
+                row["id"]: row["recalculation_pending"] for row in store.list_projects()
+            }
+            self.assertEqual(project_states[source], 1)
+            self.assertEqual(project_states[target], 1)
+            self.assertEqual(store.list_models(target)[0]["id"], model)
+            store.close()
+
+    def test_custom_emission_factor_catalog(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "factors.sqlite3")
+            factor_id = store.add_emission_factor("Gas Sintético", 123.45)
+            factors = {row["name"]: row for row in store.list_emission_factors()}
+            self.assertEqual(factors["Gas Sintético"]["id"], factor_id)
+            self.assertEqual(store.emission_factor("gas sintético"), (123.45, False))
+            self.assertEqual(store.emission_factor("Desconocida"), (475.0, True))
+            with self.assertRaises(ValidationError):
+                store.add_emission_factor("", 10)
+            with self.assertRaises(ValidationError):
+                store.add_emission_factor("Otra", 0)
+            with self.assertRaises(ValidationError):
+                store.add_emission_factor("Gas Sintético", 999)
             store.close()
 
     def test_empty_history_is_explicit(self):
@@ -563,6 +731,45 @@ class FunctionalCoreTests(unittest.TestCase):
                 store.set_user_quotas("fantasma", 1, 1)
             store.close()
 
+    def test_master_quotas_bound_per_user_financial_and_carbon_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "master_quotas.sqlite3")
+            store.add_user("secundaria", "Segura-123")
+            store.set_master_quotas(100, 1000)
+            store.set_user_quotas("secundaria", 80, 900)
+            self.assertEqual(store.user_quotas("secundaria"), {"budget_usd": 80.0, "budget_co2": 900.0})
+            with self.assertRaises(ValidationError):
+                store.set_user_quotas("secundaria", 101, 900)
+            with self.assertRaises(ValidationError):
+                store.set_user_quotas("secundaria", 80, -1)
+            with self.assertRaises(ValidationError):
+                store.set_master_quotas(50, 1000)
+            store.close()
+
+    def test_passive_quota_crossings_are_logged_without_blocking_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "quota_alerts.sqlite3")
+            project = store.add_project("Proyecto alertas")
+            model = store.add_model(project, "Modelo alertas")
+            store.set_project_quotas(project, 100, 100)
+
+            store.add_execution(Execution(model, "2026-09-13 10:00:00", 55, 30, 1, 1, 1, "Verde"))
+            store.add_execution(Execution(model, "2026-09-13 11:00:00", 25, 50, 1, 1, 1, "Amarillo"))
+            messages = [
+                row["details"] for row in store.connection.execute(
+                    "SELECT details FROM audit_log WHERE action = 'quota_threshold_crossed' ORDER BY id"
+                )
+            ]
+            self.assertEqual(len(messages), 4)
+            self.assertTrue(any("50% del presupuesto financiero" in message for message in messages))
+            self.assertTrue(any("75% del presupuesto ambiental" in message for message in messages))
+            self.assertTrue(all(message.startswith("Umbral preventivo alcanzado") for message in messages))
+
+            with patch.object(store, "_audit", side_effect=sqlite3.OperationalError("inbox locked")):
+                store.add_execution(Execution(model, "2026-09-13 12:00:00", 1, 1, 1, 1, 1, "Amarillo"))
+            self.assertEqual(len(store.list_history(model_id=model)), 3)
+            store.close()
+
     def test_template_soft_delete_and_linked_projects(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "templates.sqlite3")
@@ -583,7 +790,8 @@ class FunctionalCoreTests(unittest.TestCase):
 
     def test_hydro_records_flow_meter_and_desync(self):
         from functional_core import (
-            detect_hydro_desync, flow_meter_reading, hydro_total_litres, parse_hydro_records,
+            compare_cooling_scenarios, detect_hydro_desync, flow_meter_reading,
+            hydro_total_litres, parse_hydro_records,
         )
 
         records = parse_hydro_records([
@@ -609,6 +817,41 @@ class FunctionalCoreTests(unittest.TestCase):
         self.assertGreaterEqual(reading, 1.0)
         with self.assertRaises(TimeoutError):
             flow_meter_reading("10.0.0.99")
+
+        self.assertEqual(calculate_water(10, 2, 3), 60)
+        self.assertEqual(calculate_water(10, 2, 3, immersion=True, manual_litres=7), 0)
+
+        baseline = {"hardware": "GPU A", "annual_kwh": 1000, "pue": 1.5, "energy_price_per_kwh": 0.2, "wue": 2}
+        immersion = {"hardware": "GPU A", "annual_kwh": 1000, "pue": 1.1, "energy_price_per_kwh": 0.2, "investment": 50, "wue": 0}
+        comparison = compare_cooling_scenarios(baseline, immersion)
+        self.assertEqual(comparison["annual_water_saving_litres"], 2000)
+        with self.assertRaises(ValidationError):
+            compare_cooling_scenarios(baseline, {**immersion, "hardware": "GPU B"})
+
+    def test_hydro_records_reconcile_atomically_with_project_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory) / "hydro.sqlite3")
+            project = store.add_project("Hídrico")
+            model = store.add_model(project, "Modelo")
+            first = store.add_execution(Execution(model, "2026-09-01 10:00:00", 1, 1, 1, 0, 1, "Verde"))
+            second = store.add_execution(Execution(model, "2026-09-01 11:00:00", 1, 1, 1, 0, 1, "Verde"))
+            records = [
+                {"timestamp": "2026-09-01T10:00:00+00:00", "litres": 2.5},
+                {"timestamp": "2026-09-01T11:00:00+00:00", "litres": 1.5},
+            ]
+            self.assertEqual(store.reconcile_hydro_records(project, records, "meter.csv"), 2)
+            values = dict(store.connection.execute("SELECT id, water FROM executions").fetchall())
+            self.assertEqual(values, {first: 2.5, second: 1.5})
+            self.assertEqual(store.connection.execute("SELECT COUNT(*) FROM hydro_readings").fetchone()[0], 2)
+
+            with self.assertRaises(DataIntegrityError):
+                store.reconcile_hydro_records(project, [
+                    {"timestamp": "2026-10-01T10:00:00+00:00", "litres": 9},
+                    {"timestamp": "2026-10-01T11:00:00+00:00", "litres": 9},
+                ])
+            unchanged = dict(store.connection.execute("SELECT id, water FROM executions").fetchall())
+            self.assertEqual(unchanged, values)
+            store.close()
 
     def test_primary_energy_source_and_balanced_mix(self):
         from functional_core import primary_energy_source
@@ -658,6 +901,7 @@ class FunctionalCoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory) / "temp_pass.sqlite3")
             store.add_user("temporal", "Inicial-123")
+            self.assertEqual(store.authenticate("temporal", "Inicial-123")["force_password_change"], 1)
             store.reset_password_temporary("temporal", "Temporal-123")
             user = store.authenticate("temporal", "Temporal-123")
             self.assertIsNotNone(user)
@@ -669,6 +913,19 @@ class FunctionalCoreTests(unittest.TestCase):
                 store.reset_password_temporary("fantasma", "Temporal-123")
             with self.assertRaises(ValidationError):
                 store.reset_password_temporary("temporal", "corta")
+            store.close()
+
+    def test_bootstrap_marks_new_config_user_password_as_temporary(self):
+        from functional_core import bootstrap_store
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"users": [{
+                "username": "nuevo", "password_hash": hash_password("Temporal-123"),
+                "role": "Usuario", "force_password_change": True,
+            }]}
+            store = bootstrap_store(config, Path(directory) / "new_user.sqlite3")
+            user = store.authenticate("nuevo", "Temporal-123")
+            self.assertEqual(user["force_password_change"], 1)
             store.close()
 
 

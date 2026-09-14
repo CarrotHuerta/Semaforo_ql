@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import threading
@@ -85,6 +86,20 @@ class AdvancedFeatureTests(unittest.TestCase):
             self.assertTrue(factors)
             self.assertIn("gco2eq_kwh", factors[0])
 
+    def test_carbon_factor_versions_can_be_restored(self):
+        from external_services import list_cache_snapshots, restore_cache_snapshot
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "carbon.json"
+            old = [{"region": "old", "gco2eq_kwh": 99, "updated_at": "2025-01-01"}]
+            cache.write_text(json.dumps(old), encoding="utf-8")
+            CarbonFactorClient(cache).sync("placeholder://carbon/factors")
+            snapshots = list_cache_snapshots(cache)
+            self.assertTrue(snapshots)
+            restored = restore_cache_snapshot(cache, snapshots[0].name)
+            self.assertEqual(restored, old)
+            self.assertEqual(json.loads(cache.read_text(encoding="utf-8")), old)
+
     def test_simulated_telemetry_loss_factor_and_cancel(self):
         client = SimulatedTelemetryClient(100, 101, seed=7)
         watts = client.read_watts(loss_factor=1.5)
@@ -152,6 +167,32 @@ class AdvancedFeatureTests(unittest.TestCase):
             ])
             self.assertEqual(result, 0)
 
+    def test_headless_rejects_unknown_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "headless.sqlite3"
+            store = LocalStore(database)
+            project = store.add_project("Proyecto conocido")
+            store.add_model(project, "Modelo conocido")
+            store.close()
+
+            with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                result = cli.main([
+                    "--database", str(database), "calculate", "--model-id", "999999",
+                    "--hourly-cost", "1", "--hours", "1", "--tdp-watts", "100",
+                    "--pue", "1", "--grid-factor", "100", "--wue", "1", "--wsi", "1",
+                    "--cost-limit", "100", "--carbon-limit", "100",
+                ])
+            self.assertEqual(result, 2)
+            self.assertIn("Not found: model ID 999999", stderr.getvalue())
+
+            with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                result = cli.main([
+                    "--database", str(database), "export", "--project-id", "999999",
+                    "--output", str(Path(directory) / "unknown.csv"),
+                ])
+            self.assertEqual(result, 2)
+            self.assertIn("Not found: project ID 999999", stderr.getvalue())
+
     def test_liquid_cooling_roi_requires_real_savings(self):
         result = liquid_cooling_roi(10000, 1.5, 1.1, 0.2, 500)
         self.assertTrue(result["viable"])
@@ -197,6 +238,18 @@ class AdvancedFeatureTests(unittest.TestCase):
             blocked.mkdir()  # ocupa la ruta destino con un directorio
             with self.assertRaises(PermissionError):
                 export_records([{"a": 1}], blocked)
+
+    def test_export_records_preserves_destination_when_atomic_replace_fails(self):
+        from functional_core import export_records
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "out.json"
+            destination.write_text('[{"original": true}]', encoding="utf-8")
+            with patch("functional_core.os.replace", side_effect=OSError("disk failure")):
+                with self.assertRaises(PermissionError):
+                    export_records([{"replacement": True}], destination)
+            self.assertEqual(destination.read_text(encoding="utf-8"), '[{"original": true}]')
+            self.assertEqual(list(Path(directory).glob(".out.json.*.tmp")), [])
 
 
 if __name__ == "__main__":

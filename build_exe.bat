@@ -17,13 +17,13 @@ if not exist "%VENV_PY%" (
     if errorlevel 1 exit /b %ERRORLEVEL%
 )
 
-echo [2/4] Installing or updating dependencies...
+echo [2/5] Installing or updating dependencies...
 "%VENV_PY%" -m pip install --upgrade pip==25.2
 if errorlevel 1 exit /b %ERRORLEVEL%
 "%VENV_PY%" -m pip install -r "%ROOT%requirements.txt" pyinstaller
 if errorlevel 1 exit /b %ERRORLEVEL%
 
-echo [3/4] Building SemaforoIA.exe...
+echo [3/5] Building SemaforoIA.exe...
 "%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed --onedir ^
     --name "SemaforoIA" ^
     --distpath "%ROOT%dist" ^
@@ -46,7 +46,20 @@ if errorlevel 1 (
     exit /b %ERRORLEVEL%
 )
 
-echo [4/4] Preparing the complete distribution...
+echo [4/5] Building SemaforoCLI.exe for headless automation...
+"%VENV_PY%" -m PyInstaller --noconfirm --clean --console --onefile ^
+    --name "SemaforoCLI" ^
+    --distpath "%DIST_DIR%" ^
+    --workpath "%ROOT%build-cli" ^
+    --specpath "%ROOT%build-cli" ^
+    "%ROOT%cli.py"
+if errorlevel 1 (
+    echo.
+    echo CLI BUILD FAILED. Review the PyInstaller output above.
+    exit /b %ERRORLEVEL%
+)
+
+echo [5/5] Preparing the complete distribution...
 if not exist "%DIST_DIR%\_internal" (
     echo ERROR: PyInstaller did not create "%DIST_DIR%\_internal".
     echo Run this script again and review the PyInstaller output above.
@@ -58,11 +71,16 @@ if errorlevel 1 (
     echo The distribution is incomplete and must not be copied to another PC.
     exit /b 1
 )
+if not exist "%DIST_DIR%\SemaforoCLI.exe" (
+    echo ERROR: Headless executable was not generated.
+    exit /b 1
+)
 if exist "%ROOT%config.json" copy /y "%ROOT%config.json" "%DIST_DIR%\config.json" >nul
 
 echo.
 echo BUILD COMPLETE
 echo Executable: "%DIST_DIR%\SemaforoIA.exe"
+echo Headless CLI: "%DIST_DIR%\SemaforoCLI.exe"
 echo Copy the entire "%DIST_DIR%" folder, including _internal, to the target PC.
 echo.
 exit /b 0
