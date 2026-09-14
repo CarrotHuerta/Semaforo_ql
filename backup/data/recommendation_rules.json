@@ -1,0 +1,27 @@
+{
+  "moderate": {
+    "title": "Huella de Carbono Moderada",
+    "summary": "La evaluación está en rango amarillo. Revise estas medidas antes de una nueva ejecución.",
+    "recommendations": [
+      "Región de ejecución: migre cargas a una región con menor factor de emisión.",
+      "Tiempo de procesamiento: revise early stopping, caché y paralelismo.",
+      "Hardware: reduzca capacidad ociosa o utilice un acelerador más eficiente."
+    ]
+  },
+  "LONG_RUNTIME": {
+    "title": "Duración elevada",
+    "manual": "Revise early stopping, caché de datos y paralelismo. Compare la duración antes y después del cambio."
+  },
+  "LOW_CPU_UTILIZATION": {
+    "title": "CPU subutilizada",
+    "manual": "Inspeccione esperas de E/S, serialización y tamaño de lote. Evite aumentar hardware mientras la CPU permanezca bajo 50%."
+  },
+  "HIGH_MEMORY_PRESSURE": {
+    "title": "Presión de memoria",
+    "manual": "Reduzca el lote, libere tensores intermedios y mida nuevamente el pico de memoria."
+  },
+  "SINGLE_ITEM_BATCH": {
+    "title": "Lote unitario",
+    "manual": "Agrupe entradas compatibles para reducir el costo fijo por iteración y vuelva a medir duración y energía."
+  }
+}
