@@ -65,6 +65,8 @@ def _detect_hardware():
             data = json.loads(raw) if raw else {}
         except ValueError:
             data = {}
+        if not isinstance(data, dict):
+            data = {}
 
         cpu_name = data.get("cpu")
         if cpu_name:
@@ -73,7 +75,7 @@ def _detect_hardware():
         gpu_names = data.get("gpu")
         if isinstance(gpu_names, str):
             gpu_names = [gpu_names]
-        if gpu_names:
+        if isinstance(gpu_names, list) and gpu_names:
             info["gpu"] = " / ".join(
                 [str(name).strip() for name in gpu_names if str(name).strip()]
             )

@@ -2,12 +2,13 @@ import os
 import sys
 import argparse
 from datetime import datetime
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import matplotlib
 matplotlib.use("Agg")  # backend sin GUI: seguro para generar el grafico desde un hilo aparte
 import matplotlib.pyplot as plt
-from config_loader import export_json_report, load_config
+from config_loader import chart_data, export_json_report, load_config
+from pdf_support import pdf_text
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import i18n
 from i18n import t
 
@@ -28,6 +29,9 @@ SHARED, REPORT, COLORS = load_config("economia")
 
 
 class SemaforoPDF(FPDF):
+    def normalize_text(self, text):
+        return super().normalize_text(pdf_text(text))
+
     def add_gradient_background(self):
         """Dibuja un gradiente suave de celeste a blanco desde la mitad hacia abajo."""
         for i in range(150):
@@ -83,11 +87,12 @@ class SemaforoPDF(FPDF):
 
 def generate_charts():
     """Genera el gráfico de distribución mensual de costos."""
+    values, labels, colors = chart_data(REPORT)
     fig, ax = plt.subplots(
         figsize=SHARED['chart_figure_size'], dpi=SHARED['chart_dpi'])
     wedges, _ = ax.pie(
-        REPORT['chart_values'],
-        colors=REPORT['chart_colors'],
+        values,
+        colors=colors,
         startangle=90,
         wedgeprops=dict(width=0.4, edgecolor='white', linewidth=2)
     )
@@ -95,7 +100,7 @@ def generate_charts():
     ax.set_position(SHARED['chart_axes_position'])
     fig.legend(
         wedges,
-        REPORT['chart_labels'],
+        labels,
         loc='lower center',
         bbox_to_anchor=(0.5, SHARED['chart_legend_y']),
         frameon=False,

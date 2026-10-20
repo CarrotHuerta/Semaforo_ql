@@ -19,11 +19,11 @@ SESSION_TTL_SECONDS = 8 * 60 * 60
 
 
 def load_config():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_dir, "config.json")
+    config_path = writable_path("config.json")
     try:
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            config = json.load(f)
+            return config if isinstance(config, dict) else {"users": []}
     except Exception:
         return {"users": []}
 
@@ -56,7 +56,12 @@ def validate_session_token(token, required_scope="session"):
     if not isinstance(token, str) or "." not in token:
         return False
     encoded, signature = token.split(".", 1)
-    expected = hmac.new(_token_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    try:
+        encoded_bytes = encoded.encode("ascii")
+        signature.encode("ascii")
+    except UnicodeError:
+        return False
+    expected = hmac.new(_token_secret(), encoded_bytes, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return False
     try:
@@ -136,7 +141,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                     self._send_json(status, {"status": "ok", "user": user, "token": create_session_token(user["username"])})
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send_json(400, {"error": "JSON invalido"})
-            except OSError:
+            except (OSError, sqlite3.DatabaseError):
                 self._send_json(503, {"error": "Servicio de autenticacion no disponible"})
         elif parsed_path.path == '/change-password':
             authorization = self.headers.get("Authorization", "")
@@ -164,7 +169,7 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(400, {"error": str(exc)})
             except (OSError, sqlite3.DatabaseError):
                 self._send_json(503, {"error": "No se pudo guardar la nueva contraseña"})
-            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._send_json(400, {"error": "Solicitud invalida"})
         else:
             self._send_json(404, {"error": "Ruta no encontrada"})

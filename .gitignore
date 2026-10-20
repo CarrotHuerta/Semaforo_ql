@@ -23,13 +23,22 @@ config.local.json
 
 # PyInstaller output
 build/
+build-cli/
 dist/
+*.exe
+*.pkg
 *.spec
 *.toc
 *.pyz
 
 # Runtime-generated local data
 exchange_rates.json
+exports/
+error_reports/
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.bak
+*.sqlite3.pre_demo_backup
 
 # Local encryption keys and secrets (RF34)
 secrets/

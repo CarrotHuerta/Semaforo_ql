@@ -2,12 +2,13 @@ import os
 import sys
 import argparse
 from datetime import datetime
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import matplotlib
 matplotlib.use("Agg")  # backend sin GUI: seguro para generar el grafico desde un hilo aparte
 import matplotlib.pyplot as plt
-from config_loader import export_json_report, load_config
+from config_loader import chart_data, export_json_report, load_config
+from pdf_support import pdf_text
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import i18n
 from i18n import t
 
@@ -36,6 +37,9 @@ def _accent_colors():
     return main, dark, light
 
 class SemaforoPDF(FPDF):
+    def normalize_text(self, text):
+        return super().normalize_text(pdf_text(text))
+
     def add_gradient_background(self):
         """Dibuja un gradiente suave desde blanco hacia el color de acento (según el puntaje) desde la mitad hacia abajo."""
         # A4 = 210mm ancho x 297mm alto. La mitad es ~148mm
@@ -95,19 +99,20 @@ class SemaforoPDF(FPDF):
         self.rect(x, y, w, h, style='FD', round_corners=True, corner_radius=radius)
 
 def generate_charts():
+    values, labels, colors = chart_data(REPORT)
     # Gráfico de Dona (Green Score vs margen restante)
     fig, ax = plt.subplots(
         figsize=SHARED['chart_figure_size'], dpi=SHARED['chart_dpi'])
     wedges, texts = ax.pie(
-        REPORT['chart_values'],
-        colors=REPORT['chart_colors'],
+        values,
+        colors=colors,
         startangle=90,
         wedgeprops=dict(width=0.4, edgecolor='white', linewidth=2)
     )
     ax.set_aspect('equal')
     ax.set_position(SHARED['chart_axes_position'])
 
-    fig.legend(wedges, REPORT['chart_labels'],
+    fig.legend(wedges, labels,
                loc='lower center',
                bbox_to_anchor=(0.5, SHARED['chart_legend_y']),
                frameon=False, fontsize=7, ncol=1,

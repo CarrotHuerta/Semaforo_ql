@@ -628,5 +628,17 @@
   "Disyuntor: sin modelos": {"es": "Disyuntor: sin modelos", "en": "Circuit breaker: no models"},
   "Disyuntor: dentro de cuota": {"es": "Disyuntor: dentro de cuota", "en": "Circuit breaker: within quota"},
   "Disyuntor activo: {reason}": {"es": "Disyuntor activo: {reason}", "en": "Circuit breaker active: {reason}"},
-  "Disyuntor no disponible: {error}": {"es": "Disyuntor no disponible: {error}", "en": "Circuit breaker unavailable: {error}"}
+  "Disyuntor no disponible: {error}": {"es": "Disyuntor no disponible: {error}", "en": "Circuit breaker unavailable: {error}"},
+  "No disponible en esta versión.": {"es": "No disponible en esta versión.", "en": "Not available in this version."},
+  "Finalizando tareas en segundo plano...": {"es": "Finalizando tareas en segundo plano...", "en": "Finishing background tasks..."},
+  "Nombre visible": {"es": "Nombre visible", "en": "Display name"},
+  "El nombre no puede quedar vacío.": {"es": "El nombre no puede quedar vacío.", "en": "The name cannot be empty."},
+  "El perfil no está disponible en este equipo.": {"es": "El perfil no está disponible en este equipo.", "en": "This profile is not available on this computer."},
+  "Contraseña actual": {"es": "Contraseña actual", "en": "Current password"},
+  "Nueva contraseña": {"es": "Nueva contraseña", "en": "New password"},
+  "Confirmar contraseña": {"es": "Confirmar contraseña", "en": "Confirm password"},
+  "Contraseña actual incorrecta o cuenta bloqueada.": {"es": "Contraseña actual incorrecta o cuenta bloqueada.", "en": "Incorrect current password or locked account."},
+  "Contraseña actualizada.": {"es": "Contraseña actualizada.", "en": "Password updated."},
+  "No se pudo abrir la base de datos local: {error}": {"es": "No se pudo abrir la base de datos local: {error}", "en": "Could not open the local database: {error}"},
+  "Sin datos": {"es": "Sin datos", "en": "No data"}
 }

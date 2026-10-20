@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
+from pdf_support import pdf_text
 
 
 class EsgExportError(RuntimeError):
@@ -51,7 +52,7 @@ def export_esg_pdf(data: dict[str, Any], destination: str | os.PathLike[str]) ->
             pdf.set_font("Helvetica", "B", 10)
             pdf.cell(45, 8, str(label))
             pdf.set_font("Helvetica", "", 10)
-            pdf.cell(0, 8, str(value), new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 8, pdf_text(value), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(5)
         pdf.set_font("Helvetica", "", 8)
         pdf.multi_cell(0, 5, "Limites: emisiones operacionales y consumo hidrico registrados por Semaforo IA para las ejecuciones asociadas a la campana.")

@@ -1,5 +1,25 @@
 # Semáforo IA - Especificación Técnica Detallada y Hoja de Ruta
 
+## Ejecución y verificación
+
+En Windows, abre `run_venv.bat`. El entorno se crea la primera vez; las siguientes
+aperturas reutilizan las dependencias instaladas sin consultar PyPI. Las pantallas
+se cargan al seleccionarlas y los servicios opcionales arrancan después del login
+visible. No hace falta esperar a MLflow u Ollama para usar la aplicación.
+
+Pruebas y medición reproducible:
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+.\.venv\Scripts\python.exe -m unittest -v
+.\.venv\Scripts\python.exe scripts\benchmark_startup.py --samples 5
+```
+
+Consulta [VALIDACION.md](VALIDACION.md) para el alcance, los resultados y las
+funciones todavía no disponibles. Los ejecutables pertenecen a Releases;
+`dist/`, `build/`, `build-cli/`, las bases locales y las exportaciones se excluyen
+del repositorio. Sus archivos existentes se conservan en el equipo.
+
 ## Acceso de demostracion
 
 Las credenciales se almacenan como hashes PBKDF2 en `config.json`. Para el usuario

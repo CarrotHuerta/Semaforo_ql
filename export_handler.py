@@ -1,6 +1,10 @@
 import csv
+import importlib
 import os
 import sys
+import tempfile
+import threading
+from copy import deepcopy
 from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, QStandardPaths, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
@@ -12,16 +16,8 @@ from app_paths import resource_path, writable_path
 # Add export handler to path
 sys.path.append(resource_path("export handler"))
 
-try:
-    import eco
-    import economia
-    import inicio
-    _EXPORT_IMPORT_ERROR = None
-except Exception as exc:
-    eco = None
-    economia = None
-    inicio = None
-    _EXPORT_IMPORT_ERROR = exc
+# Matplotlib and report module globals are shared by export workers.
+_report_lock = threading.Lock()
 
 # Mantiene vivas las referencias a hilos/workers en curso (si no, Python los recolecta a mitad de la tarea).
 _active_exports = []
@@ -281,78 +277,23 @@ def _apply_report_data(report_type, data, file_path, export_format, lang):
         _create_xlsx_report(report_type, data, file_path)
         return
 
-    if _EXPORT_IMPORT_ERROR is not None:
-        raise RuntimeError(f"No se pudieron cargar los módulos de exportación: {_EXPORT_IMPORT_ERROR}") from _EXPORT_IMPORT_ERROR
-
-    if report_type in ('eco', 'proyecto'):
-        # Update eco module data ('proyecto' reuses the same generic KPI/details/logs template)
-        if "kpis" in data:
-            eco.REPORT["kpis"] = data["kpis"]
-        if "details" in data:
-            eco.REPORT["details"] = data["details"]
-        if "logs" in data:
-            eco.REPORT["logs"] = data["logs"]
-        if "progress" in data:
-            eco.REPORT["progress"] = data["progress"]
-        if "exported_by" in data:
-            eco.SHARED["exported_by"] = data["exported_by"]
-
-        if "chart_values" in data:
-            eco.REPORT["chart_values"] = data["chart_values"]
-        if "chart_labels" in data:
-            eco.REPORT["chart_labels"] = data["chart_labels"]
-        try:
-            eco.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
-        finally:
-            chart_file = eco.REPORT.get("chart_file")
-            if chart_file and os.path.exists(chart_file):
-                os.remove(chart_file)
-
-    elif report_type == 'economia':
-        if "kpis" in data:
-            economia.REPORT["kpis"] = data["kpis"]
-        if "details" in data:
-            economia.REPORT["details"] = data["details"]
-        if "logs" in data:
-            economia.REPORT["logs"] = data["logs"]
-        if "progress" in data:
-            economia.REPORT["progress"] = data["progress"]
-        if "exported_by" in data:
-            economia.SHARED["exported_by"] = data["exported_by"]
-        if "chart_values" in data:
-            economia.REPORT["chart_values"] = data["chart_values"]
-        if "chart_labels" in data:
-            economia.REPORT["chart_labels"] = data["chart_labels"]
-
-        economia.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
-
-    elif report_type == 'inicio':
-        if "kpis" in data:
-            inicio.REPORT["kpis"] = data["kpis"]
-        if "details" in data:
-            inicio.REPORT["details"] = data["details"]
-        if "logs" in data:
-            inicio.REPORT["logs"] = data["logs"]
-        if "progress" in data:
-            inicio.REPORT["progress"] = data["progress"]
-        if "badge" in data:
-            inicio.REPORT["badge"] = data["badge"]
-        if "accent_color" in data:
-            inicio.REPORT["accent_color"] = data["accent_color"]
-        if "accent_color_dark" in data:
-            inicio.REPORT["accent_color_dark"] = data["accent_color_dark"]
-        if "accent_color_light" in data:
-            inicio.REPORT["accent_color_light"] = data["accent_color_light"]
-        if "exported_by" in data:
-            inicio.SHARED["exported_by"] = data["exported_by"]
-        if "chart_values" in data:
-            inicio.REPORT["chart_values"] = data["chart_values"]
-        if "chart_labels" in data:
-            inicio.REPORT["chart_labels"] = data["chart_labels"]
-        if "chart_colors" in data:
-            inicio.REPORT["chart_colors"] = data["chart_colors"]
-
-        inicio.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
+    if report_type not in {"eco", "economia", "inicio"}:
+        raise ValueError(f"Tipo de informe no soportado: {report_type}")
+    with _report_lock:
+        module = importlib.import_module(report_type)
+        from config_loader import load_config
+        original_shared, original_report = module.SHARED, module.REPORT
+        shared, report, _colors = load_config(report_type)
+        report.update({key: deepcopy(value) for key, value in data.items() if key in report})
+        shared["exported_by"] = data.get("exported_by", "")
+        # Isolate charts, including when launched from a read-only working directory.
+        with tempfile.TemporaryDirectory(prefix="semaforo-report-") as directory:
+            report["chart_file"] = os.path.join(directory, "chart.png")
+            module.SHARED, module.REPORT = shared, report
+            try:
+                module.create_pdf_report(filename=file_path, export_format=export_format, lang=lang)
+            finally:
+                module.SHARED, module.REPORT = original_shared, original_report
 
 
 class _ExportWorker(QObject):
@@ -361,7 +302,7 @@ class _ExportWorker(QObject):
     def __init__(self, report_type, data, file_path, export_format, lang):
         super().__init__()
         self._report_type = report_type
-        self._data = data
+        self._data = deepcopy(data)
         self._file_path = file_path
         self._export_format = export_format
         self._lang = lang
@@ -458,5 +399,6 @@ def generate_and_save_report(parent_widget, report_type, data, export_format="pd
     controller = _ExportController(parent_widget, thread, worker, trigger_widget, lang, export_entry, retry_args)
     export_entry["controller"] = controller
     worker.finished.connect(controller.on_finished)
+    worker.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
     thread.start()

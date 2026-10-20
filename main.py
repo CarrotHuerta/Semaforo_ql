@@ -16,6 +16,7 @@ import traceback
 from datetime import datetime, timezone
 from html import escape as html_escape
 from difflib import SequenceMatcher
+from urllib.parse import urlsplit
 from PySide6.QtCore import QDateTime, QDir, QEvent, QLockFile, QObject, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtCore import QSequentialAnimationGroup
 from PySide6.QtGui import (
@@ -71,7 +72,7 @@ from i18n import t
 from app_paths import resource_path, writable_path
 from functional_core import bootstrap_store, budget_percentage, calculate_carbon, capacity_plan, compare_models, component_percentages, export_records, green_score, import_records, render_markdown, rightsizing, semaphore_level, sensor_reading, validate_thresholds
 from functional_core import classify_cpu_tier
-from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_security_answer
+from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_password, verify_security_answer
 from functional_core import CircuitBreakerError, hash_password, predict_limit_breach, validate_password, ValidationError
 from functional_core import ApiKeyError, decrypt_api_key, encrypt_api_key, mask_api_key
 from functional_core import calculate_energy, Execution, format_carbon, utc_iso
@@ -225,7 +226,10 @@ def load_config():
     try:
         with open(config_path, "r", encoding="utf-8") as handle:
             config = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return data
+
+    if not isinstance(config, dict):
         return data
 
     for key, value in config.items():
@@ -370,6 +374,44 @@ def load_recommendation_rules(path=None):
         }, True
 
 
+class BackgroundTaskThread(QThread):
+    """Run a blocking integration without preventing Qt from processing input."""
+
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, task, parent=None):
+        super().__init__(parent)
+        self.task = task
+
+    def run(self):
+        try:
+            result = self.task()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.completed.emit(result)
+
+
+def defer_close_for_tasks(window, event):
+    """Keep worker owners alive while their bounded I/O finishes, without a GUI wait."""
+    active = [thread for thread in window.findChildren(QThread) if thread.isRunning()]
+    if not active:
+        timer = getattr(window, "_pending_close_timer", None)
+        if timer is not None:
+            timer.stop()
+        return False
+    for thread in active:
+        thread.requestInterruption()
+    event.ignore()
+    if not hasattr(window, "_pending_close_timer"):
+        window._pending_close_timer = QTimer(window)
+        window._pending_close_timer.setInterval(100)
+        window._pending_close_timer.timeout.connect(window.close)
+    window._pending_close_timer.start()
+    return True
+
+
 class ExchangeRateThread(QThread):
     rates_ready = Signal(dict)
     failed = Signal(str)
@@ -479,8 +521,17 @@ class EsgExportThread(QThread):
 def parse_number(value):
     if value is None:
         return None
-    text = "".join(ch for ch in str(value) if ch.isdigit() or ch == ".")
-    return float(text) if text else None
+    # Catalogs contain units and thousands separators, e.g. "4,500 W".
+    # Keep signs and stop at the unit instead of concatenating unrelated digits.
+    text = str(value).strip().lstrip("~≈<>≤≥ ")
+    match = re.match(r"[+-]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?", text)
+    if not match or (match.end() < len(text) and text[match.end()] in ".,0123456789"):
+        return None
+    try:
+        number = float(match.group().replace(",", ""))
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def extract_cloud_entry(entorno):
@@ -529,6 +580,17 @@ def build_cloud_region_map(rows):
 
 def normalize_username(value):
     return value.strip().lower()
+
+
+def normalize_server_url(value):
+    value = str(value or "").strip().rstrip("/")
+    parsed = urlsplit(value if "://" in value else f"http://{value}")
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+        raise ValueError("Ingrese una URL HTTP(S) valida del servidor.")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("El puerto debe estar entre 1 y 65535.")
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def find_user_profile(config, username):
@@ -631,7 +693,8 @@ def handle_uncaught_exception(exc_type, exc_value, exc_traceback, native_hook=No
         return "delegated"
     detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)).strip()
     handler = dialog_handler or show_guided_error
-    handler(None, "ERR_IO" if issubclass(exc_type, OSError) else "ERR_UNKNOWN", detail)
+    code = "ERR_DB" if issubclass(exc_type, sqlite3.DatabaseError) else "ERR_IO" if issubclass(exc_type, OSError) else "ERR_UNKNOWN"
+    handler(None, code, detail)
     return "guided"
 
 
@@ -1639,8 +1702,25 @@ class OllamaChatWindow(QDialog):
         self._thread.started.connect(self._worker.run)
         self._controller = _OllamaChatController(self, self._thread, self._worker)
         self._worker.finished.connect(self._controller.on_finished)
+        self._worker.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.start()
+
+    def closeEvent(self, event):
+        self._closing = True
+        if self._worker is not None:
+            self._worker.cancel_event.set()
+        if defer_close_for_tasks(self, event):
+            self.status_label.setText(t("Cancelando..."))
+            return
+        super().closeEvent(event)
+
+    def reject(self):
+        # Escape must follow the same worker cleanup path as the title-bar close.
+        if self._thread is not None and self._thread.isRunning():
+            self.close()
+        else:
+            super().reject()
 
     def _cancel_active(self):
         if self._worker is not None:
@@ -1649,6 +1729,8 @@ class OllamaChatWindow(QDialog):
             self._worker.cancel()
 
     def _handle_response(self, success, error_message, metrics):
+        if getattr(self, "_closing", False):
+            return
         self.input_line.setEnabled(True)
         self.send_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
@@ -1963,9 +2045,35 @@ class HomeView(QWidget):
             water=water, duration_ms=int(duration_ms), semaphore=semaphore,
         )
 
+    def _queue_mlflow_log(self, **data):
+        self.register_execution_btn.setEnabled(False)
+        thread = BackgroundTaskThread(lambda: self._log_execution_to_mlflow(**data), self)
+        thread.completed.connect(self._on_mlflow_log_completed)
+        thread.failed.connect(self._on_mlflow_log_failed)
+        thread.finished.connect(self._on_mlflow_log_finished)
+        self._mlflow_log_thread = thread
+        thread.start()
+
+    def _on_mlflow_log_completed(self, run_id):
+        QMessageBox.information(
+            self, t("Registrar Ejecución"),
+            t("Ejecución registrada localmente y en MLflow (run {run_id}).").format(run_id=run_id),
+        )
+
+    def _on_mlflow_log_failed(self, error):
+        QMessageBox.warning(
+            self, t("Registrar Ejecución"),
+            t("Ejecución guardada localmente, pero no se pudo registrar en MLflow:\n{error}").format(error=error),
+        )
+
+    def _on_mlflow_log_finished(self):
+        self.register_execution_btn.setEnabled(True)
+
     def _register_execution(self):
         """Persiste el calculo real actual (LocalStore + MLflow); no hay valores inventados."""
         if not self.main_window:
+            return
+        if not self.register_execution_btn.isEnabled():
             return
         state = self.main_window.selection_state
         provider = state.get("provider")
@@ -2004,26 +2112,14 @@ class HomeView(QWidget):
                 kwh=kwh, water=water, duration_ms=duration_ms, semaphore=semaphore_value,
             )
             self.main_window.refresh_projects_view()
-        except (OSError, ValidationError) as exc:
+        except (OSError, ValidationError, sqlite3.DatabaseError) as exc:
             QMessageBox.critical(self, t("Registrar Ejecución"), str(exc))
             return
 
-        try:
-            run_id = self._log_execution_to_mlflow(
-                project_name=project_name, model=model, hardware=hardware, provider=provider,
-                region=region, cost=cost, carbon=carbon, kwh=kwh, water=water,
-                duration_ms=duration_ms, semaphore=semaphore_value,
-            )
-        except Exception as exc:
-            QMessageBox.warning(
-                self, t("Registrar Ejecución"),
-                t("Ejecución guardada localmente, pero no se pudo registrar en MLflow:\n{error}").format(error=str(exc)),
-            )
-            return
-
-        QMessageBox.information(
-            self, t("Registrar Ejecución"),
-            t("Ejecución registrada localmente y en MLflow (run {run_id}).").format(run_id=run_id),
+        self._queue_mlflow_log(
+            project_name=project_name, model=model, hardware=hardware, provider=provider,
+            region=region, cost=cost, carbon=carbon, kwh=kwh, water=water,
+            duration_ms=duration_ms, semaphore=semaphore_value,
         )
 
     def _open_ollama_chat(self):
@@ -2045,7 +2141,10 @@ class HomeView(QWidget):
             return
 
         if self._chat_window is not None:
-            self._chat_window.close()
+            self._chat_window.show()
+            self._chat_window.raise_()
+            self._chat_window.activateWindow()
+            return
         self._chat_window = OllamaChatWindow(self, hardware, provider, region, tdp, intensity, parent=self)
         self._chat_window.setAttribute(Qt.WA_DeleteOnClose)
         self._chat_window.destroyed.connect(lambda: setattr(self, "_chat_window", None))
@@ -2082,12 +2181,12 @@ class HomeView(QWidget):
                 )
                 if self.main_window:
                     self.main_window.refresh_projects_view()
-                self._log_execution_to_mlflow(
+                result["registered"] = True
+                self._queue_mlflow_log(
                     project_name=project_name, model=model, hardware=hardware, provider=provider or "",
                     region=region or "", cost=0.0, carbon=carbon, kwh=kwh, water=water,
                     duration_ms=duration_ms, semaphore=semaphore_value,
                 )
-                result["registered"] = True
             except Exception as exc:
                 result["error"] = str(exc)
         return result
@@ -4263,9 +4362,8 @@ class ProjectsView(QWidget):
             self.active_project_label.setText(t("No hay un proyecto activo."))
         if refresh:
             self._refresh()
-            if self.main_window and hasattr(self.main_window, "environmental_view"):
-                self.main_window.environmental_view.refresh_project_data()
-                self.main_window.finops_view.refresh_project_data()
+            if self.main_window:
+                self.main_window.refresh_projects_view()
         self._load_quotas()
         self._load_reassignment_options()
         self._load_capacity_options()
@@ -4587,7 +4685,7 @@ class ProjectsView(QWidget):
 
         if project_name and not (self.is_admin and self.global_view):
             if include_mlflow:
-                self._mlflow_items_by_project[project_name] = self._mlflow_run_items(project_name)
+                self._request_mlflow_runs(project_name)
             mlflow_items = self._mlflow_items_by_project.get(project_name)
             if mlflow_items is not None:
                 self.history_container.addWidget(
@@ -4600,12 +4698,30 @@ class ProjectsView(QWidget):
             t("Actualizado: {time}").format(time=QDateTime.currentDateTime().toString("HH:mm:ss"))
         )
 
+    def _request_mlflow_runs(self, project_name):
+        running = getattr(self, "_mlflow_thread", None)
+        if running is not None and running.isRunning():
+            return
+        self._mlflow_thread = BackgroundTaskThread(lambda: self._mlflow_run_items(project_name), self)
+        self._mlflow_thread.project_name = project_name
+        self._mlflow_thread.completed.connect(self._on_mlflow_runs_ready)
+        self._mlflow_thread.finished.connect(self._load_pending_mlflow_runs)
+        self._mlflow_thread.start()
+
+    def _on_mlflow_runs_ready(self, items):
+        project_name = self.sender().project_name
+        self._mlflow_items_by_project[project_name] = items
+        if self.project_combo.currentText() == project_name:
+            self._refresh(include_mlflow=False)
+
+    def _load_pending_mlflow_runs(self):
+        if self.isVisible() and self.project_combo.currentText() != self.sender().project_name:
+            self._request_mlflow_runs(self.project_combo.currentText())
+
     def _mlflow_run_items(self, project_name):
-        import mlflow_integration
         try:
+            import mlflow_integration
             runs = mlflow_integration.list_runs(load_config(), project_name)
-        except mlflow_integration.MlflowConfigError:
-            return [t("MLflow no esta configurado (ver Ajustes).")]
         except Exception as exc:
             return [t("No se pudo consultar MLflow: {error}").format(error=str(exc))]
         if not runs:
@@ -5562,7 +5678,9 @@ class SettingsView(QWidget):
         test_mlflow_btn.setObjectName("secondaryButton")
 
         def test_mlflow_connection():
-            import mlflow_integration
+            running = getattr(self, "_mlflow_connection_thread", None)
+            if running is not None and running.isRunning():
+                return
             uri = uri_input.text().strip()
             if not uri:
                 QMessageBox.warning(self, t("MLflow"), t("Ingrese la Tracking URI del servidor MLflow."))
@@ -5574,14 +5692,18 @@ class SettingsView(QWidget):
                 if raw_token:
                     # Token recien tipeado, todavia no guardado: se prueba tal cual esta en pantalla.
                     test_config["mlflow_token_encrypted"] = encrypt_api_key(raw_token, self.mlflow_token_key_path)
-                mlflow_integration.test_connection(test_config)
             except ApiKeyError as exc:
                 QMessageBox.warning(self, t("MLflow"), str(exc))
                 return
-            except Exception as exc:
-                QMessageBox.critical(self, t("MLflow"), t("No se pudo conectar al servidor MLflow:\n{error}").format(error=str(exc)))
-                return
-            QMessageBox.information(self, t("MLflow"), t("Conexión con el servidor MLflow exitosa."))
+            def probe():
+                import mlflow_integration
+                mlflow_integration.test_connection(test_config)
+            test_mlflow_btn.setEnabled(False)
+            self._mlflow_connection_thread = BackgroundTaskThread(probe, self)
+            self._mlflow_connection_thread.completed.connect(self._on_mlflow_connection_completed)
+            self._mlflow_connection_thread.failed.connect(self._on_mlflow_connection_failed)
+            self._mlflow_connection_thread.finished.connect(lambda: test_mlflow_btn.setEnabled(True))
+            self._mlflow_connection_thread.start()
 
         test_mlflow_btn.clicked.connect(test_mlflow_connection)
 
@@ -5819,6 +5941,12 @@ class SettingsView(QWidget):
         dialog_layout.addWidget(close_btn)
         dialog.exec()
 
+    def _on_mlflow_connection_completed(self, _result):
+        QMessageBox.information(self, t("MLflow"), t("Conexión con el servidor MLflow exitosa."))
+
+    def _on_mlflow_connection_failed(self, error):
+        QMessageBox.critical(self, t("MLflow"), t("No se pudo conectar al servidor MLflow:\n{error}").format(error=error))
+
     def showEvent(self, event):
         """El autostart de MLflow guarda su URI en segundo plano; si esta vista se
         construyo antes de que terminara, refresca el campo cuando se vuelve a ver."""
@@ -5892,6 +6020,7 @@ class MenuSection(QFrame):
                 button.clicked.connect(callback)
             else:
                 button.setEnabled(False)
+                button.setToolTip(t("No disponible en esta versión."))
             layout.addWidget(button)
 
 
@@ -5916,9 +6045,9 @@ class UserMenuView(QWidget):
             MenuSection(
                 t("Perfil"),
                 [
-                    (t("Editar perfil"), "menuButton", None),
+                    (t("Editar perfil"), "menuButton", self.edit_profile),
                     (t("Actualizar foto"), "menuButton", self.update_photo),
-                    (t("Datos personales"), "menuButton", None),
+                    (t("Datos personales"), "menuButton", self.show_personal_data),
                 ],
             ),
             1,
@@ -5927,9 +6056,9 @@ class UserMenuView(QWidget):
             MenuSection(
                 t("Preferencias"),
                 [
-                    (t("Notificaciones"), "menuButton", None),
-                    (t("Idioma y zona horaria"), "menuButton", None),
-                    (t("Accesibilidad"), "menuButton", None),
+                    (t("Notificaciones"), "menuButton", self.open_preferences),
+                    (t("Idioma y zona horaria"), "menuButton", main_window._toggle_language if main_window else None),
+                    (t("Accesibilidad"), "menuButton", self.open_preferences),
                 ],
             ),
             1,
@@ -5941,7 +6070,7 @@ class UserMenuView(QWidget):
             MenuSection(
                 t("Seguridad"),
                 [
-                    (t("Cambiar contrasena"), "menuButton", None),
+                    (t("Cambiar contrasena"), "menuButton", self.change_password if self.user_profile.get("connection_mode", "Local") == "Local" else None),
                     (t("Dispositivos vinculados"), "menuButton", None),
                     (t("Verificacion en dos pasos"), "menuButton", None),
                 ],
@@ -5961,6 +6090,85 @@ class UserMenuView(QWidget):
 
         layout.addLayout(top_row)
         layout.addLayout(bottom_row)
+
+    def open_preferences(self):
+        if self.main_window:
+            self.main_window._show_view("settings_view")
+
+    def edit_profile(self):
+        name, accepted = QInputDialog.getText(
+            self, t("Editar perfil"), t("Nombre visible"),
+            text=self.user_profile.get("display_name", self.user_profile.get("username", "")),
+        )
+        if not accepted:
+            return
+        if not name.strip():
+            QMessageBox.warning(self, t("Editar perfil"), t("El nombre no puede quedar vacío."))
+            return
+        users = [dict(user) for user in load_config().get("users", [])]
+        profile = find_user_profile({"users": users}, self.user_profile.get("username", ""))
+        if profile is None:
+            QMessageBox.warning(self, t("Editar perfil"), t("El perfil no está disponible en este equipo."))
+            return
+        profile["display_name"] = name.strip()
+        try:
+            save_users_to_config(users)
+        except OSError as exc:
+            show_guided_error(self, "ERR_IO", str(exc))
+            return
+        self.user_profile["display_name"] = name.strip()
+        owner = self.main_window or self
+        for label in owner.findChildren(QLabel):
+            if label.objectName() in {"userName", "accountName"}:
+                label.setText(name.strip())
+
+    def show_personal_data(self):
+        fields = ((t("Usuario"), "username"), (t("Nombre visible"), "display_name"),
+                  (t("Rol"), "role"), (t("Conexión"), "connection_mode"))
+        QMessageBox.information(self, t("Datos personales"), "\n".join(
+            f"{label}: {self.user_profile.get(field, '')}" for label, field in fields
+        ))
+
+    def change_password(self):
+        current, accepted = QInputDialog.getText(self, t("Cambiar contrasena"), t("Contraseña actual"), QLineEdit.Password)
+        if not accepted:
+            return
+        password, accepted = QInputDialog.getText(self, t("Cambiar contrasena"), t("Nueva contraseña"), QLineEdit.Password)
+        if not accepted:
+            return
+        confirmation, accepted = QInputDialog.getText(self, t("Cambiar contrasena"), t("Confirmar contraseña"), QLineEdit.Password)
+        if not accepted:
+            return
+        store = None
+        try:
+            if password != confirmation:
+                raise ValidationError(t("Las contraseñas no coinciden."))
+            encoded = hash_password(password)
+            username = self.user_profile.get("username", "")
+            config = load_config()
+            store = bootstrap_store(config, writable_path("semaforo.sqlite3"))
+            account = store.connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+            if account is None or account["is_locked"] or not verify_password(current, account["password_hash"]):
+                raise ValidationError(t("Contraseña actual incorrecta o cuenta bloqueada."))
+            users = [dict(user) for user in config.get("users", [])]
+            profile = find_user_profile({"users": users}, username)
+            if profile is None:
+                raise ValidationError(t("El perfil no está disponible en este equipo."))
+            profile.update(password_hash=encoded, force_password_change=False)
+            with store.connection:
+                store.connection.execute(
+                    "UPDATE users SET password_hash = ?, force_password_change = 0, failed_attempts = 0 WHERE username = ?",
+                    (encoded, username),
+                )
+                save_users_to_config(users)
+            self.user_profile.update(password_hash=encoded, force_password_change=False)
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            QMessageBox.warning(self, t("Cambiar contrasena"), str(exc))
+            return
+        finally:
+            if store is not None:
+                store.close()
+        QMessageBox.information(self, t("Cambiar contrasena"), t("Contraseña actualizada."))
 
     def update_photo(self):
         username = self.user_profile.get("username", "")
@@ -7150,7 +7358,7 @@ class LoginWindow(QMainWindow):
         self.server_ip_input.setVisible(False)
 
         def on_connection_changed(idx):
-            is_server = (self.connection_combo.currentText() == t("Servidor"))
+            is_server = (idx == 1)
             self.ip_label.setVisible(is_server)
             self.server_ip_input.setVisible(is_server)
 
@@ -7210,8 +7418,8 @@ class LoginWindow(QMainWindow):
 
         password = self.password_input.text()
 
-        mode = self.connection_combo.currentText()
-        if mode == t("Local"):
+        mode = "Local" if self.connection_combo.currentIndex() == 0 else "Servidor"
+        if mode == "Local":
             profile = find_user_profile(self.config, username)
             if not profile:
                 self.failed_attempts += 1
@@ -7222,11 +7430,18 @@ class LoginWindow(QMainWindow):
                     self._set_error(t("Usuario no encontrado."))
                 return
 
-            auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
-            authenticated = auth_store.authenticate(username, password)
-            is_locked = auth_store.is_user_locked(username)
-            force_change = bool(authenticated and authenticated["force_password_change"])
-            auth_store.close()
+            auth_store = None
+            try:
+                auth_store = bootstrap_store(self.config, writable_path("semaforo.sqlite3"))
+                authenticated = auth_store.authenticate(username, password)
+                is_locked = auth_store.is_user_locked(username)
+                force_change = bool(authenticated and authenticated["force_password_change"])
+            except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+                self._set_error(t("No se pudo abrir la base de datos local: {error}").format(error=exc))
+                return
+            finally:
+                if auth_store is not None:
+                    auth_store.close()
             if not authenticated:
                 self.failed_attempts += 1
                 if is_locked:
@@ -7254,13 +7469,13 @@ class LoginWindow(QMainWindow):
             import urllib.error
             import json
 
-            self.server_url = self.server_ip_input.text().strip()
-            req = urllib.request.Request(
-                f"http://{self.server_url}/login",
-                data=json.dumps({"username": username, "password": password}).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
             try:
+                self.server_url = normalize_server_url(self.server_ip_input.text())
+                req = urllib.request.Request(
+                    f"{self.server_url}/login",
+                    data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
                 with urllib.request.urlopen(req, timeout=5) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     profile = res_data.get("user")
@@ -7391,7 +7606,7 @@ class LoginWindow(QMainWindow):
             try:
                 import urllib.request
                 request = urllib.request.Request(
-                    f"http://{self.server_url}/change-password",
+                    f"{self.server_url}/change-password",
                     data=json.dumps({"password": new_password.text()}).encode("utf-8"),
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {change_token}"},
                 )
@@ -7501,12 +7716,12 @@ class HardwareLookupThread(QThread):
             token = self.profile.get("server_token")
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             try:
-                request = urllib.request.Request(f"http://{server_url}/hardware", headers=headers)
+                request = urllib.request.Request(f"{normalize_server_url(server_url)}/hardware", headers=headers)
                 with urllib.request.urlopen(request, timeout=5) as response:
                     info = json.loads(response.read().decode("utf-8"))
             except Exception:
                 info = {}
-        self.finished_with_info.emit(info)
+        self.finished_with_info.emit(info if isinstance(info, dict) else {})
 
 
 class HardwareCatalogView(QWidget):
@@ -7518,6 +7733,10 @@ class HardwareCatalogView(QWidget):
         self.profile = profile or {}
 
         self._hardware_loaded = False
+        self._hardware_load_timer = QTimer(self)
+        self._hardware_load_timer.setSingleShot(True)
+        self._hardware_load_timer.setInterval(50)
+        self._hardware_load_timer.timeout.connect(self._load_hardware)
         self.detected_info = {}
         self.selected_by_type = {component_type: None for component_type in self.COMPONENT_TYPES}
         self.hardware_rows = []
@@ -7728,8 +7947,10 @@ class HardwareCatalogView(QWidget):
 
         def validate_live():
             name_ok = bool(name.text().strip())
-            tdp_ok = (parse_number(tdp.text()) or 0) > 0
-            cost_ok = parse_number(acquisition_cost.text()) is not None and parse_number(acquisition_cost.text()) >= 0
+            tdp_value = parse_number(tdp.text())
+            cost_value = parse_number(acquisition_cost.text())
+            tdp_ok = tdp_value is not None and tdp_value > 0
+            cost_ok = cost_value is not None and cost_value >= 0
             mark_required_field(name, name_ok)
             mark_required_field(tdp, tdp_ok)
             mark_required_field(acquisition_cost, cost_ok)
@@ -7744,8 +7965,8 @@ class HardwareCatalogView(QWidget):
         try:
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
             store.add_hardware(
-                name.text(), category.currentText(), float(tdp.text()),
-                {"acquisition_cost": float(acquisition_cost.text())},
+                name.text(), category.currentText(), parse_number(tdp.text()),
+                {"acquisition_cost": parse_number(acquisition_cost.text())},
             )
         except (ValueError, ValidationError, OSError, sqlite3.DatabaseError) as exc:
             QMessageBox.warning(self, t("Hardware"), str(exc))
@@ -7783,22 +8004,25 @@ class HardwareCatalogView(QWidget):
         def validate_live():
             name_ok = bool(name.text().strip())
             tdp_ok = (parse_number(tdp.text()) or 0) > 0
+            cost = parse_number(acquisition_cost.text())
+            cost_ok = cost is not None and cost >= 0
             mark_required_field(name, name_ok)
             mark_required_field(tdp, tdp_ok)
-            save_button.setEnabled(name_ok and tdp_ok)
+            mark_required_field(acquisition_cost, cost_ok)
+            save_button.setEnabled(name_ok and tdp_ok and cost_ok)
 
-        for field in (name, tdp):
+        for field in (name, tdp, acquisition_cost):
             field.textChanged.connect(validate_live)
         validate_live()
         if dialog.exec() != QDialog.Accepted:
             return
         store = None
         try:
-            metadata["acquisition_cost"] = float(acquisition_cost.text() or 0)
+            metadata["acquisition_cost"] = parse_number(acquisition_cost.text())
             store = bootstrap_store(load_config(), writable_path("semaforo.sqlite3"))
             store.update_hardware(
                 int(row["_hardware_id"]), name.text(), row.get("Categoria", self._current_component_type()),
-                float(tdp.text()), metadata,
+                parse_number(tdp.text()), metadata,
             )
             self.selected_by_type[self._current_component_type()] = None
         except (ValueError, ValidationError, PermissionError, OSError, sqlite3.DatabaseError) as exc:
@@ -7995,15 +8219,25 @@ class HardwareCatalogView(QWidget):
         super().showEvent(event)
         if not self._hardware_loaded:
             self._hardware_loaded = True
-            QTimer.singleShot(50, self._load_hardware)
+            self._hardware_load_timer.start()
+
+    def hideEvent(self, event):
+        if self._hardware_load_timer.isActive():
+            self._hardware_load_timer.stop()
+            self._hardware_loaded = False
+        super().hideEvent(event)
 
     def _load_hardware(self):
+        running = getattr(self, "_hw_thread", None)
+        if running is not None and running.isRunning():
+            return
         self._hw_thread = HardwareLookupThread(self.profile, self)
         self._hw_thread.finished_with_info.connect(self._on_hardware_loaded)
         self._hw_thread.start()
 
     def _on_hardware_loaded(self, info):
-        self.detected_info = info or {}
+        info = info if isinstance(info, dict) else {}
+        self.detected_info = info
         values = [
             info.get("cpu", t("No detectado")),
             info.get("gpu", t("No detectado")),
@@ -8357,6 +8591,7 @@ class Sidebar(QFrame):
         self.brand_icon.setFixedSize(QSize(26, 26))
 
         self.brand_title = make_label(t("SEMÁFORO IA"), "brandTitle")
+        self.brand_title.setWordWrap(True)
 
         brand_row.addWidget(self.toggle_button)
         brand_row.addWidget(self.brand_icon)
@@ -8506,6 +8741,7 @@ class Sidebar(QFrame):
     def _build_account_menu(self):
         menu = QMenu(self)
         menu.setObjectName("accountMenu")
+        menu.setToolTipsVisible(True)
 
         def add_header(text):
             action = menu.addAction(t(text))
@@ -8514,8 +8750,17 @@ class Sidebar(QFrame):
 
         def add_action(text, handler=None):
             action = menu.addAction(t(text))
+            action.setData(text)
+            unavailable = text in {"Dispositivos vinculados", "Verificacion en dos pasos", "Cerrar sesion en otros equipos"}
+            if text in {"Editar perfil", "Actualizar foto", "Cambiar contrasena"} and self.user_profile.get("connection_mode", "Local") != "Local":
+                unavailable = True
+            if handler is None and self.main_window is not None and not unavailable:
+                handler = lambda checked=False, key=text: self.main_window._handle_account_action(key)
             if handler:
                 action.triggered.connect(handler)
+            else:
+                action.setEnabled(False)
+                action.setToolTip(t("No disponible en esta versión."))
             return action
 
         add_header("Perfil")
@@ -8543,7 +8788,7 @@ class Sidebar(QFrame):
             add_header("Usuarios")
             add_action("Crear usuario")
             add_action("Resetear contrasena")
-            add_action("Desactivar usuario")
+            add_action("Eliminar usuario")
             add_action("Editar roles")
             menu.addSeparator()
             add_header("Permisos")
@@ -8638,6 +8883,34 @@ class ResponsivePageScrollArea(QScrollArea):
 
 
 class DashboardWindow(QMainWindow):
+    @property
+    def models_view(self):
+        return self._ensure_view("models_view")
+
+    @property
+    def hardware_view(self):
+        return self._ensure_view("hardware_view")
+
+    @property
+    def cloud_view(self):
+        return self._ensure_view("cloud_view")
+
+    @property
+    def projects_view(self):
+        return self._ensure_view("projects_view")
+
+    @property
+    def environmental_view(self):
+        return self._ensure_view("environmental_view")
+
+    @property
+    def finops_view(self):
+        return self._ensure_view("finops_view")
+
+    @property
+    def settings_view(self):
+        return self._ensure_view("settings_view")
+
     def __init__(self, user_profile=None):
         super().__init__()
 
@@ -8658,7 +8931,7 @@ class DashboardWindow(QMainWindow):
             user_profile = get_default_user(config)
         self.user_profile = user_profile
 
-        sidebar = Sidebar(user_profile, self._handle_logout)
+        sidebar = Sidebar(user_profile, self._handle_logout, main_window=self)
         self.sidebar = sidebar
         self.stack = ResponsiveStackedWidget()
         from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -8701,73 +8974,76 @@ class DashboardWindow(QMainWindow):
         self.current_evaluation = None
         self.current_lang = i18n.load_saved_language()
 
+        self._loaded_views = {}
+        self._view_factories = {}
+        self._view_pages = {}
         self.home_view = HomeView(main_window=self)
-        self.models_view = ModelsView(on_selection=self._handle_model_selection)
-        self.hardware_view = HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile)
-        self.cloud_view = CloudView(on_selection=self._handle_cloud_selection)
-        self.projects_view = ProjectsView(profile=user_profile, main_window=self)
-        self.environmental_view = EnvironmentalPerformanceView(main_window=self)
-        self.finops_view = FinOpsView(main_window=self)
 
         sidebar.lang_action.triggered.connect(self._toggle_language)
         self.header_title = self.home_view.findChild(QLabel, "pageTitle")
 
         self._add_nav_item(sidebar, t("Inicio"), make_home_icon(), self.home_view)
-        self._add_nav_item(sidebar, t("Modelos"), make_grid_icon(), self.models_view)
+        self._add_nav_item(sidebar, t("Modelos"), make_grid_icon(),
+                           view_name="models_view", factory=lambda: ModelsView(on_selection=self._handle_model_selection))
         self._add_nav_item(
             sidebar,
             t("Proyectos"),
             make_text_icon("P", 18, "#66bb22"),
-            self.projects_view,
+            view_name="projects_view", factory=lambda: ProjectsView(profile=user_profile, main_window=self),
         )
         self._add_nav_item(
             sidebar,
             t("Impacto Ambiental"),
             make_leaf_pixmap(18, "#66bb22"),
-            self.environmental_view,
+            view_name="environmental_view", factory=lambda: EnvironmentalPerformanceView(main_window=self),
         )
         self._add_nav_item(
             sidebar,
             t("Costos FinOps"),
             make_text_icon("$", 18, "#66bb22"),
-            self.finops_view,
+            view_name="finops_view", factory=lambda: FinOpsView(main_window=self),
         )
         self._add_nav_item(
             sidebar,
             t("Comparativas"),
             make_bars_icon(),
-            CarbonDetailView(
+            view_name="comparisons_view", factory=lambda: CarbonDetailView(
                 on_apply_recommendation=self._apply_recommendation,
                 on_abort_simulation=self._abort_simulation,
             ),
         )
-        self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), self.hardware_view)
-        self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), self.cloud_view)
-        self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), HistoryView())
-        self.settings_view = SettingsView(main_window=self)
-        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), self.settings_view)
+        self._add_nav_item(sidebar, t("Hardware"), make_chip_icon(), view_name="hardware_view",
+                           factory=lambda: HardwareCatalogView(on_assign=self._handle_hardware_assign, profile=user_profile))
+        self._add_nav_item(sidebar, t("Cloud"), make_cloud_icon(), view_name="cloud_view",
+                           factory=lambda: CloudView(on_selection=self._handle_cloud_selection))
+        self._add_nav_item(sidebar, t("Historial"), make_clock_icon(), view_name="history_view", factory=HistoryView)
+        self._add_nav_item(sidebar, t("Ajustes"), make_gear_icon(), view_name="settings_view",
+                           factory=lambda: SettingsView(main_window=self))
 
         self._add_nav_item(
             sidebar,
             t("Administracion"),
             make_gear_icon(),
-            AdminMenuView(user_profile, on_logout=self._handle_logout, main_window=self),
+            view_name="admin_view", factory=lambda: AdminMenuView(user_profile, on_logout=self._handle_logout, main_window=self),
         )
 
         sidebar.button_group.buttons()[0].setChecked(True)
         self.stack.setCurrentIndex(0)
 
     def refresh_projects_view(self):
-        self.projects_view.request_refresh()
-        self.environmental_view.refresh_project_data()
-        self.finops_view.refresh_project_data()
+        projects = self._loaded_views.get("projects_view")
+        if projects is not None:
+            projects.request_refresh()
+        for name in ("environmental_view", "finops_view"):
+            view = self._loaded_views.get(name)
+            if view is not None:
+                view.refresh_project_data()
 
     def is_simulation_running(self):
         chat_window = getattr(self.home_view, "_chat_window", None)
-        worker = getattr(chat_window, "_worker", None) if chat_window else None
-        telemetry = getattr(self.settings_view, "_telemetry_thread", None) if hasattr(self, "settings_view") else None
+        telemetry = getattr(self._loaded_views.get("settings_view"), "_telemetry_thread", None)
         return bool(
-            (worker is not None and getattr(worker, "isRunning", lambda: False)())
+            (chat_window is not None and chat_window._thread is not None and chat_window._thread.isRunning())
             or (telemetry is not None and telemetry.isRunning())
         )
 
@@ -8827,17 +9103,59 @@ class DashboardWindow(QMainWindow):
                 "carbon_limit": quota["carbon_gco2eq"] if quota else None,
                 **dict(row),
             }
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.DatabaseError):
             return None
         finally:
             if store is not None:
                 store.close()
 
-    def _add_nav_item(self, sidebar, label, icon, widget):
+    def _ensure_view(self, name):
+        if name not in self._loaded_views:
+            view = self._view_factories[name]()
+            self._loaded_views[name] = view
+            if name == "settings_view":
+                view.set_local_factors_locked(self.selection_state.get("cloud_locked", False))
+            self._view_pages[name].setWidget(view)
+        return self._loaded_views[name]
+
+    def _show_view(self, name):
+        self._ensure_view(name)
+        index = self.stack.indexOf(self._view_pages[name])
+        self.sidebar.button_group.buttons()[index].click()
+
+    def _handle_account_action(self, name):
+        if name in {"Notificaciones", "Accesibilidad"}:
+            self._show_view("settings_view")
+            return
+        account_actions = {"Editar perfil": "edit_profile", "Actualizar foto": "update_photo",
+                           "Datos personales": "show_personal_data", "Cambiar contrasena": "change_password"}
+        if name in account_actions:
+            if not hasattr(self, "_account_view"):
+                self._account_view = UserMenuView(self.user_profile, self._handle_logout, self, parent=self)
+                self._account_view.hide()
+            getattr(self._account_view, account_actions[name])()
+            return
+        admin_actions = {
+            "Crear usuario": "create_user", "Resetear contrasena": "reset_password",
+            "Eliminar usuario": "delete_user", "Editar roles": "edit_roles",
+            "Roles y permisos": "show_roles_permissions", "Grupos": "show_groups",
+            "Accesos temporales": "show_temporary_access", "Backup y restauracion": "manage_backup",
+            "Integraciones": "manage_integrations", "Parametros globales": "manage_global_parameters",
+        }
+        if name in admin_actions:
+            self._show_view("admin_view")
+            getattr(self._loaded_views["admin_view"], admin_actions[name])()
+
+    def _add_nav_item(self, sidebar, label, icon, widget=None, *, view_name=None, factory=None):
         button = sidebar.add_nav_button(label, icon)
-        page_scroll = ResponsivePageScrollArea(widget)
+        page_scroll = ResponsivePageScrollArea(widget if widget is not None else QWidget())
+        if factory is not None:
+            self._view_factories[view_name] = factory
+            self._view_pages[view_name] = page_scroll
         index = self.stack.addWidget(page_scroll)
         def on_click(checked=False, idx=index):
+            if factory is not None:
+                self._ensure_view(view_name)
             if self.stack.currentIndex() != idx:
                 self.fade_effect.setEnabled(True)
                 self.fade_anim.stop()
@@ -8850,13 +9168,20 @@ class DashboardWindow(QMainWindow):
         return button
 
     def _handle_logout(self):
-        self.login_window = LoginWindow()
-        self.login_window.show()
+        self._logout_requested = True
         self.close()
 
     def closeEvent(self, event):
-        for view in self.findChildren(FinOpsView):
-            view.shutdown()
+        chat_window = getattr(self.home_view, "_chat_window", None)
+        if chat_window is not None:
+            chat_window.close()
+        if defer_close_for_tasks(self, event):
+            self.statusBar().showMessage(t("Finalizando tareas en segundo plano..."))
+            return
+        if getattr(self, "_logout_requested", False):
+            self._logout_requested = False
+            self.login_window = LoginWindow()
+            self.login_window.show()
         super().closeEvent(event)
 
     def _handle_cloud_selection(self, provider=None, region=None, region_intensity=None, cloud_enabled=None):
@@ -8867,8 +9192,9 @@ class DashboardWindow(QMainWindow):
         self.selection_state["region_intensity"] = region_intensity
         if cloud_enabled is not None:
             self.selection_state["cloud_locked"] = bool(cloud_enabled)
-            if hasattr(self, "settings_view"):
-                self.settings_view.set_local_factors_locked(bool(cloud_enabled))
+            settings = self._loaded_views.get("settings_view")
+            if settings is not None:
+                settings.set_local_factors_locked(bool(cloud_enabled))
         self._update_semaforo()
 
     def _handle_model_selection(self, model=None, model_energy=None):
@@ -8897,10 +9223,11 @@ class DashboardWindow(QMainWindow):
                         json.dump(config, handle, ensure_ascii=True, indent=2)
                 except OSError:
                     pass
-                if hasattr(self, "settings_view"):
-                    self.settings_view.immersion_checkbox.blockSignals(True)
-                    self.settings_view.immersion_checkbox.setChecked(False)
-                    self.settings_view.immersion_checkbox.blockSignals(False)
+                settings = self._loaded_views.get("settings_view")
+                if settings is not None:
+                    settings.immersion_checkbox.blockSignals(True)
+                    settings.immersion_checkbox.setChecked(False)
+                    settings.immersion_checkbox.blockSignals(False)
                 QMessageBox.warning(
                     self, t("Inmersión"),
                     t("Inmersión desactivada por hardware incompatible: {items}").format(items=", ".join(incompatible)),
@@ -8914,8 +9241,9 @@ class DashboardWindow(QMainWindow):
         if fallback is not None:
             self.selection_state["diesel_factor_fallback"] = bool(fallback)
         self._update_semaforo()
-        if hasattr(self, "environmental_view"):
-            self.environmental_view.refresh_contingency_state()
+        environmental = getattr(self, "_loaded_views", {}).get("environmental_view")
+        if environmental is not None:
+            environmental.refresh_contingency_state()
 
     def _abort_simulation(self):
         """Cancel any active local inference/telemetry work and reset the evaluation state."""
@@ -8928,7 +9256,7 @@ class DashboardWindow(QMainWindow):
                 cancelled.append("Ollama")
             except RuntimeError:
                 pass
-        telemetry = getattr(self.settings_view, "_telemetry_thread", None) if hasattr(self, "settings_view") else None
+        telemetry = getattr(self._loaded_views.get("settings_view"), "_telemetry_thread", None)
         if telemetry is not None and telemetry.isRunning():
             telemetry.requestInterruption()
             cancelled.append(t("Sensor"))
@@ -9173,8 +9501,9 @@ class DashboardWindow(QMainWindow):
         }
         status_level = {"Verde": "bajo", "Amarillo": "moderado", "Rojo": "alto"}[level]
         self.home_view.set_semaforo_level(status_level, score, green_score_value)
-        if hasattr(self, "environmental_view"):
-            self.environmental_view.refresh_contingency_state()
+        environmental = getattr(self, "_loaded_views", {}).get("environmental_view")
+        if environmental is not None:
+            environmental.refresh_contingency_state()
 
 
 def apply_stylesheet(app, theme="dark"):
@@ -9914,6 +10243,9 @@ def apply_stylesheet(app, theme="dark"):
     app.setStyleSheet(stylesheet)
 
 
+_background_stop_event = threading.Event()
+
+
 def _bootstrap_mlflow_autostart():
     """Arranca (o detecta) un MLflow Tracking Server local en un hilo aparte, sin bloquear la UI.
 
@@ -9933,9 +10265,11 @@ def _bootstrap_mlflow_autostart():
             pass
 
     def worker():
-        import mlflow_integration
         try:
-            mlflow_integration.start_local_server_if_needed(load_config(), save_config_callback=save_uri)
+            import mlflow_integration
+            mlflow_integration.start_local_server_if_needed(
+                load_config(), save_config_callback=save_uri, cancel_event=_background_stop_event,
+            )
         except Exception:
             pass
 
@@ -9943,16 +10277,19 @@ def _bootstrap_mlflow_autostart():
 
 
 def _shutdown_mlflow_autostart():
-    import mlflow_integration
-    mlflow_integration.stop_local_server()
+    _background_stop_event.set()
+    integration = sys.modules.get("mlflow_integration")
+    if integration is not None:
+        integration.stop_local_server()
 
 
 def _bootstrap_ollama_autostart():
     """Detecta o arranca un servidor Ollama local (si el binario esta instalado), sin bloquear la UI."""
     def worker():
-        import ollama_integration
         try:
-            ollama_integration.start_local_server_if_needed()
+            import ollama_integration
+            uri = load_config().get("ollama_uri") or ollama_integration.DEFAULT_OLLAMA_URI
+            ollama_integration.start_local_server_if_needed(uri, cancel_event=_background_stop_event)
         except Exception:
             pass
 
@@ -9960,8 +10297,10 @@ def _bootstrap_ollama_autostart():
 
 
 def _shutdown_ollama_autostart():
-    import ollama_integration
-    ollama_integration.stop_local_server()
+    _background_stop_event.set()
+    integration = sys.modules.get("ollama_integration")
+    if integration is not None:
+        integration.stop_local_server()
 
 
 def main():
@@ -9977,13 +10316,15 @@ def main():
     apply_stylesheet(app, load_config().get("theme", "dark"))
 
     i18n.load_saved_language()
-    _bootstrap_mlflow_autostart()
-    _bootstrap_ollama_autostart()
+    _background_stop_event.clear()
     app.aboutToQuit.connect(_shutdown_mlflow_autostart)
     app.aboutToQuit.connect(_shutdown_ollama_autostart)
 
     window = LoginWindow()
     window.show()
+    # Let Qt paint the login before even starting optional service discovery.
+    QTimer.singleShot(250, _bootstrap_mlflow_autostart)
+    QTimer.singleShot(250, _bootstrap_ollama_autostart)
 
     exit_code = app.exec()
     instance_lock.unlock()

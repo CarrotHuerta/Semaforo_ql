@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 DEFAULT_OLLAMA_URI = "http://127.0.0.1:11434"
 DEFAULT_TEST_MODEL = "llama3.2"
@@ -36,22 +37,31 @@ def is_reachable(uri: str = DEFAULT_OLLAMA_URI, timeout: float = 1.5) -> bool:
         return False
 
 
-def start_local_server_if_needed(uri: str = DEFAULT_OLLAMA_URI, wait_seconds: float = 15) -> bool:
+def start_local_server_if_needed(uri: str = DEFAULT_OLLAMA_URI, wait_seconds: float = 15, cancel_event=None) -> bool:
     """Intenta levantar `ollama serve` si el binario esta instalado y nada responde aun.
 
     No inventa nada si el binario `ollama` no esta instalado: devuelve False y el error
     real se ve al intentar usar la API (mensaje que indica instalar Ollama).
     """
     global _local_server_process
+    if cancel_event is not None and cancel_event.is_set():
+        return False
     if is_reachable(uri):
         return True
+
+    parsed = urlsplit(uri)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return False
 
     ollama_bin = shutil.which("ollama")
     if not ollama_bin:
         return False
 
+    if cancel_event is not None and cancel_event.is_set():
+        return False
     if _local_server_process is None or _local_server_process.poll() is not None:
-        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+                        "env": {**os.environ, "OLLAMA_HOST": uri}}
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         else:
@@ -63,9 +73,15 @@ def start_local_server_if_needed(uri: str = DEFAULT_OLLAMA_URI, wait_seconds: fl
 
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            stop_local_server()
+            return False
         if is_reachable(uri):
             return True
-        time.sleep(0.5)
+        if cancel_event is not None:
+            cancel_event.wait(0.5)
+        else:
+            time.sleep(0.5)
     return False
 
 

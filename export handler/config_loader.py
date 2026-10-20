@@ -1,10 +1,21 @@
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
 from app_paths import resource_path
 
 CONFIG_PATH = Path(resource_path("export handler", "report_config.json"))
+
+
+def chart_data(report):
+    values = [float(value) for value in report.get("chart_values", [])]
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("El grafico contiene valores invalidos.")
+    if not values or sum(values) == 0:
+        from i18n import t
+        return [1], [t("Sin datos")], ["#d1d5db"]
+    return values, report["chart_labels"], report["chart_colors"]
 
 
 def load_config(report_name):

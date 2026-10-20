@@ -30,10 +30,15 @@ class Translator:
         try:
             with open(self.translations_path, encoding="utf-8") as handle:
                 data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
             data = {}
         data.pop("_meta", None)
-        self._translations = data
+        self._translations = {
+            key: {lang: text for lang, text in variants.items() if isinstance(text, str)}
+            for key, variants in data.items() if isinstance(variants, dict)
+        }
         self._build_reverse_index()
 
     def _build_reverse_index(self):
@@ -111,7 +116,9 @@ def load_saved_language():
     try:
         with open(_CONFIG_PATH, encoding="utf-8") as handle:
             config = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return get_language()
+    if not isinstance(config, dict):
         return get_language()
     lang = config.get("language", DEFAULT_LANGUAGE)
     set_language(lang)
@@ -123,7 +130,9 @@ def save_language(lang_code):
     try:
         with open(_CONFIG_PATH, encoding="utf-8") as handle:
             config = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        config = {}
+    if not isinstance(config, dict):
         config = {}
     config["language"] = lang_code
     try:

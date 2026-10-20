@@ -5,6 +5,8 @@ configurado por el usuario (config.json -> "mlflow_tracking_uri"). No hay datos 
 corridas simuladas: si el servidor no responde o no esta configurado, se propaga la
 excepcion real en vez de devolver un resultado falso.
 """
+from __future__ import annotations
+
 import atexit
 import os
 import signal
@@ -12,9 +14,11 @@ import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import urlsplit
+from typing import TYPE_CHECKING
 
-import mlflow
-from mlflow.tracking import MlflowClient
+if TYPE_CHECKING:
+    from mlflow.tracking import MlflowClient
 
 from app_paths import writable_path
 from functional_core import ApiKeyError, decrypt_api_key
@@ -50,6 +54,11 @@ def configure(config: dict) -> str:
     uri = get_tracking_uri(config)
     if not uri:
         raise MlflowConfigError("No hay una Tracking URI de MLflow configurada (ver Ajustes).")
+    # MLflow defaults to 120 s per request and several retries. Bound optional
+    # integrations while preserving explicit deployment-specific overrides.
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "1")
+    import mlflow
     mlflow.set_tracking_uri(uri)
     token = get_decrypted_token(config)
     if token:
@@ -61,6 +70,7 @@ def configure(config: dict) -> str:
 
 def get_client(config: dict) -> MlflowClient:
     configure(config)
+    from mlflow.tracking import MlflowClient
     return MlflowClient()
 
 
@@ -99,6 +109,7 @@ def log_execution_run(
     semaphore: str,
 ) -> str:
     """Logs one real execution as an MLflow run and returns its run_id."""
+    import mlflow
     configure(config)
     experiment_id = get_or_create_experiment(config, project_name)
     with mlflow.start_run(experiment_id=experiment_id, run_name=model_name) as run:
@@ -139,10 +150,10 @@ def _is_reachable(uri: str, timeout: float = 1.5) -> bool:
 
 
 def _is_local_uri(uri: str) -> bool:
-    return "127.0.0.1" in uri or "localhost" in uri
+    return urlsplit(uri).hostname in {"127.0.0.1", "localhost", "::1"}
 
 
-def start_local_server_if_needed(config: dict, save_config_callback=None, wait_seconds: float = 45) -> str:
+def start_local_server_if_needed(config: dict, save_config_callback=None, wait_seconds: float = 45, cancel_event=None) -> str:
     """Auto-arranca un MLflow Tracking Server local real si no hay ninguno accesible.
 
     No reemplaza una Tracking URI remota configurada explicitamente (aunque este
@@ -151,6 +162,9 @@ def start_local_server_if_needed(config: dict, save_config_callback=None, wait_s
     cuando el servidor local recien arrancado (o ya corriendo) responde de verdad.
     """
     global _local_server_process
+
+    if cancel_event is not None and cancel_event.is_set():
+        return ""
 
     configured_uri = get_tracking_uri(config)
     if configured_uri and _is_reachable(configured_uri):
@@ -168,6 +182,8 @@ def start_local_server_if_needed(config: dict, save_config_callback=None, wait_s
     if getattr(sys, "frozen", False):
         return configured_uri or ""
 
+    if cancel_event is not None and cancel_event.is_set():
+        return ""
     if _local_server_process is None or _local_server_process.poll() is not None:
         mlflow_home = writable_path("mlflow_data")
         os.makedirs(mlflow_home, exist_ok=True)
@@ -196,11 +212,17 @@ def start_local_server_if_needed(config: dict, save_config_callback=None, wait_s
 
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
+        if cancel_event is not None and cancel_event.is_set():
+            stop_local_server()
+            return ""
         if _is_reachable(DEFAULT_LOCAL_URI):
             if save_config_callback is not None:
                 save_config_callback(DEFAULT_LOCAL_URI)
             return DEFAULT_LOCAL_URI
-        time.sleep(0.5)
+        if cancel_event is not None:
+            cancel_event.wait(0.5)
+        else:
+            time.sleep(0.5)
     return configured_uri or ""
 
 
