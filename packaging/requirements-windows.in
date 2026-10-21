@@ -1,0 +1,14 @@
+# Python 3.13.6 x64. Runtime plus build tools; server MLflow is external.
+PySide6==6.11.2
+psycopg2-binary==2.9.12
+matplotlib==3.11.1
+fpdf2==2.8.8
+requests==2.34.2
+openpyxl==3.1.5
+plyer==2.1.0
+cryptography==49.0.0
+mlflow-skinny==3.15.2
+pymodbus==3.15.0
+pysnmp==7.1.29
+packaging==26.3
+pyinstaller==6.22.2

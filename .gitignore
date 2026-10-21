@@ -28,6 +28,7 @@ dist/
 *.exe
 *.pkg
 *.spec
+!packaging/*.spec
 *.toc
 *.pyz
 
@@ -46,4 +47,9 @@ secrets/
 
 # Local MLflow tracking server data (sqlite backend + artifacts)
 mlflow_data/
+userdata/
+.build-venv/
+artifacts/
+*.pfx
+*.p12
  

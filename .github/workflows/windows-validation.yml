@@ -1,0 +1,48 @@
+name: Windows development validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  development:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13.6'
+          architecture: x64
+      - name: Locked build environment
+        id: product
+        shell: powershell
+        run: |
+          ./scripts/Initialize-Build.ps1 -Python python
+          $version = (Get-Content -Raw product.json | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Pinned Inno Setup
+        shell: powershell
+        run: ./scripts/Install-InnoSetup.ps1
+      - name: Test, compile and package unsigned development artifacts
+        shell: powershell
+        run: ./scripts/Build-Windows.ps1 -Channel Development
+      - name: Run the actual portable executables
+        shell: powershell
+        run: |
+          $zip = (Get-ChildItem 'artifacts/development/${{ steps.product.outputs.version }}/*-portable.zip').FullName
+          ./scripts/Test-Bundle.ps1 -Zip $zip
+      - name: Install and uninstall on the fresh hosted runner (not a clean Windows 11 VM)
+        shell: powershell
+        run: |
+          $dir = 'artifacts/development/${{ steps.product.outputs.version }}'
+          ./scripts/Test-Checksums.ps1 -Directory $dir
+          ./scripts/Test-CleanWindows.ps1 -Setup (Get-ChildItem "$dir/*-setup.exe").FullName -Portable (Get-ChildItem "$dir/*-portable.zip").FullName -PurgeTestData
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: SemaforoIA-development-unsigned-${{ github.sha }}
+          path: artifacts/development/${{ steps.product.outputs.version }}/*
+          retention-days: 14
+          if-no-files-found: error

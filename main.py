@@ -70,6 +70,7 @@ from hardware_info import get_hardware_info
 import i18n
 from i18n import t
 from app_paths import resource_path, writable_path
+from app_version import VERSION
 from functional_core import bootstrap_store, budget_percentage, calculate_carbon, capacity_plan, compare_models, component_percentages, export_records, green_score, import_records, render_markdown, rightsizing, semaphore_level, sensor_reading, validate_thresholds
 from functional_core import classify_cpu_tier
 from functional_core import convert_clp, fetch_exchange_rates, fetch_json_with_fallback, verify_password, verify_security_answer
@@ -181,44 +182,8 @@ def resize_to_available_screen(window, preferred_width, preferred_height):
 
 def load_config():
     config_path = writable_path("config.json")
-    data = {
-        "default_user": "nacha",
-        "server_ip": "127.0.0.1",
-        "server_port": 6767,
-        "language": "es",
-        "notifications_os": True,
-        "theme": "dark",
-        "users": [
-            {
-                "username": "nacha",
-                "display_name": "Nacha",
-                "role": "Administrador",
-                "profile_photo": "img/nacha.png",
-                "password_hash": "pbkdf2_sha256$260000$c37fe72f5445644395a019b205ee555d$c710c08721d36a2a6d6320a44d2c090ff6d45a9b099bceb05b863807efa7258d",
-                "security_questions": [
-                    {
-                        "question": "Nombre de su mascota",
-                        "answer_hash": "pbkdf2_sha256$260000$3dc1d0a00915fd901ae969f80da3ab56$666a99eb6cde4e9ca34b4739274edf604aee0ce55a19107e50445e79168d0758",
-                    },
-                    {
-                        "question": "Nombre y Apellido",
-                        "answer_hash": "pbkdf2_sha256$260000$1fcc8297118b9ccbd8567b748e13569e$51d0dfe7d18137c7cd57cbc71e2c93d196b0f8a7af1f60e559ecd9119962fec7",
-                    },
-                    {
-                        "question": "Jefe del equipo",
-                        "answer_hash": "pbkdf2_sha256$260000$fbe1f62806d5e91b2463fab820e180fb$cb043f4ddf3a51cd73f8514a54c49f59e893f0f5315cbe2ea5ac90d58dc9035f",
-                    },
-                ],
-            },
-            {
-                "username": "maxine",
-                "display_name": "Maxine",
-                "role": "Usuario",
-                "profile_photo": "img/maxine.jpg",
-                "password_hash": "pbkdf2_sha256$260000$ac95afa719aaacd1f7c819b68936f308$74ba6a1be746a1322728cc890b406a339a0bf6560e0b200a46d8e2f6b5296d93",
-            },
-        ],
-    }
+    with open(resource_path("defaults", "config.json"), encoding="utf-8") as handle:
+        data = json.load(handle)
 
     if not os.path.isfile(config_path):
         return data
@@ -280,8 +245,7 @@ def load_config():
                 }
             )
 
-    if users:
-        data["users"] = users
+    data["users"] = users
 
     for key in ("thresholds", "local_metrics"):
         if isinstance(config.get(key), dict):
@@ -1584,7 +1548,11 @@ class _OllamaChatWorker(QObject):
                         "No se encontro un servidor Ollama corriendo ni el binario 'ollama' "
                         "instalado. Instala Ollama desde https://ollama.com y vuelve a intentar."
                     )
-            ollama_integration.ensure_model_available(self.uri, self.model, cancel_event=self.cancel_event)
+            available = ollama_integration.list_local_models(self.uri)
+            if not any(name == self.model or name.startswith(f"{self.model}:") for name in available):
+                raise ollama_integration.OllamaError(
+                    f"El modelo {self.model} no está instalado. Instálelo explícitamente con ollama pull {self.model} y vuelva a intentar."
+                )
             metrics = ollama_integration.run_chat(
                 self.uri, self.model, self.messages, cancel_event=self.cancel_event,
             )
@@ -7281,6 +7249,7 @@ class LoginWindow(QMainWindow):
         self.failed_attempts = 0 # CU 55.2
 
         self.config = load_config()
+        self.first_run = not self.config.get("users")
         self.setWindowTitle(t("Semáforo IA - Login"))
         resize_to_available_screen(self, 1100, 640)
 
@@ -7334,6 +7303,12 @@ class LoginWindow(QMainWindow):
 
         right_layout.addWidget(self.password_input)
 
+        self.confirm_password = QLineEdit()
+        self.confirm_password.setEchoMode(QLineEdit.Password)
+        self.confirm_password.setPlaceholderText(t("Confirmar contraseña"))
+        self.confirm_password.setVisible(self.first_run)
+        right_layout.addWidget(self.confirm_password)
+
         server_ip = self.config.get("server_ip", "127.0.0.1")
         server_port = self.config.get("server_port", 6767)
         self.server_url = f"{server_ip}:{server_port}"
@@ -7373,8 +7348,17 @@ class LoginWindow(QMainWindow):
         self.login_button.setCursor(Qt.PointingHandCursor)
         self.login_button.setFixedWidth(140)
         self.login_button.clicked.connect(self.handle_login)
+        if self.first_run:
+            self.login_button.setText(t("Crear administrador"))
+            self.login_button.setFixedWidth(210)
+            self.password_input.setToolTip(t("8 caracteres, mayúscula, número y @, - o _."))
 
         right_layout.addWidget(self.login_button, 0, Qt.AlignLeft)
+
+        self.migrate_button = QPushButton(t("Migrar distribución anterior..."))
+        self.migrate_button.setVisible(self.first_run)
+        self.migrate_button.clicked.connect(self._migrate_legacy)
+        right_layout.addWidget(self.migrate_button)
 
         self.recover_button = QPushButton(t("Recuperar acceso con preguntas de seguridad"))
         self.recover_button.setObjectName("secondaryButton")
@@ -7404,6 +7388,18 @@ class LoginWindow(QMainWindow):
         self.password_input.returnPressed.connect(self.handle_login)
 
     def handle_login(self):
+        if self.first_run and self.connection_combo.currentIndex() == 0:
+            try:
+                from onboarding import create_administrator
+                create_administrator(self.username_input.text(), self.password_input.text(), self.confirm_password.text())
+                self.config = load_config()
+                self.first_run = False
+                self.confirm_password.hide()
+                self.migrate_button.hide()
+                self.login_button.setText(t("Continuar"))
+            except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+                self._set_error(str(exc))
+                return
         self.recover_button.setVisible(False)
         self._locked_admin_username = None
 
@@ -7522,6 +7518,29 @@ class LoginWindow(QMainWindow):
     def _set_error(self, message):
         self.error_label.setText(message)
         self.error_label.setVisible(True)
+
+    def _migrate_legacy(self):
+        from app_paths import executable_dir
+        from data_migration import migrate_legacy
+        source = QFileDialog.getExistingDirectory(self, t("Distribución anterior"), str(executable_dir()))
+        if not source:
+            return
+        answer = QMessageBox.question(self, t("Migración con respaldo"),
+            t("Se validará la base y se copiarán cuentas, configuración, fotos y claves cifradas. Los originales se conservarán. ¿Continuar?"),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            backup = migrate_legacy(source)
+        except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            self._set_error(str(exc))
+            return
+        self.config = load_config()
+        self.first_run = False
+        self.confirm_password.hide()
+        self.migrate_button.hide()
+        self.login_button.setText(t("Continuar"))
+        QMessageBox.information(self, t("Migración"), t("Respaldo conservado en: ") + backup)
 
     def _force_password_change(self, username):
         """RF59: a temporary password must be replaced before entering the dashboard."""
@@ -10253,6 +10272,9 @@ def _bootstrap_mlflow_autostart():
     nada mas que confirmarlo; si no hay ninguno, levanta uno local y guarda su URI real en
     config.json apenas responde, para que el resto de la app lo use sin configuracion manual.
     """
+    if not load_config().get("mlflow_autostart", False):
+        return
+
     def save_uri(uri):
         config_path = writable_path("config.json")
         try:
@@ -10285,6 +10307,8 @@ def _shutdown_mlflow_autostart():
 
 def _bootstrap_ollama_autostart():
     """Detecta o arranca un servidor Ollama local (si el binario esta instalado), sin bloquear la UI."""
+    if not load_config().get("ollama_autostart", False):
+        return
     def worker():
         try:
             import ollama_integration
@@ -10306,8 +10330,15 @@ def _shutdown_ollama_autostart():
 def main():
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
+    app.setApplicationVersion(VERSION)
+    from app_paths import initialize_user_data
+    try:
+        initialize_user_data()
+    except OSError as exc:
+        QMessageBox.critical(None, "Semáforo IA", str(exc))
+        return 2
     install_global_exception_handler()
-    instance_lock = QLockFile(os.path.join(QDir.tempPath(), "SemaforoIA.lock"))
+    instance_lock = QLockFile(writable_path(".instance.lock"))
     instance_lock.setStaleLockTime(5000)
     if not instance_lock.tryLock(100):
         QMessageBox.information(None, t("Semáforo IA"), t("Semáforo IA ya está abierto."))

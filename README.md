@@ -2,6 +2,11 @@
 
 ## Ejecución y verificación
 
+**Distribución Windows:** consulte [la guía de instalación, build y portable](docs/WINDOWS-DISTRIBUTION.md),
+[firma Authenticode](docs/SIGNING.md) y [evidencias de validación](docs/VALIDACION-DISTRIBUCION.md).
+El primer inicio nuevo crea una cuenta administradora; las credenciales históricas
+de la sección siguiente no se cargan automáticamente ni se distribuyen en los paquetes.
+
 En Windows, abre `run_venv.bat`. El entorno se crea la primera vez; las siguientes
 aperturas reutilizan las dependencias instaladas sin consultar PyPI. Las pantallas
 se cargan al seleccionarlas y los servicios opcionales arrancan después del login
@@ -151,7 +156,7 @@ En desarrollo:
 Después de ejecutar `build_exe.bat`, la distribución incluye un ejecutable de consola independiente:
 
 ```powershell
-.\dist\SemaforoIA\SemaforoCLI.exe --database semaforo.sqlite3 export --project-id 1 --output evidencia-rf66.csv
+.\dist\windows-1.0.1-development\SemaforoIA\SemaforoCLI.exe export --project-id 1 --output evidencia-rf66.csv
 ```
 
 `SemaforoCLI.exe` no inicia PySide6, devuelve códigos de salida al shell y rechaza IDs inexistentes con `Not found`. Debe distribuirse junto con `SemaforoIA.exe`.
@@ -358,22 +363,16 @@ Aquí se enumeran las tareas pendientes (lo que falta hacer) en la base de códi
 ## Crear ejecutable para Windows
 
 Para crear una versión que pueda ejecutarse en un PC sin Python instalado, abre
-`build_exe.bat` desde este directorio. El script crea o reutiliza `.venv`, instala
-las dependencias y PyInstaller, y genera una distribución en:
+`build_exe.bat` desde este directorio. Usa `.build-venv`, dependencias y ruedas
+fijadas por hash, PyInstaller y un compilador Inno Setup verificado.
+Entrega instalador, portable completo y checksums en
+`artifacts/development/<version>/`; el número está en `product.json`.
 
-`dist\SemaforoIA\SemaforoIA.exe`
-
-El script verifica que cree la subcarpeta `_internal` y que incluya la DLL de
-Python antes de terminar. Hay que copiar la carpeta completa `dist\SemaforoIA`, no solamente el `.exe`,
-porque contiene las librerías y recursos de la aplicación. `config.json` queda
-junto al ejecutable para que la configuración pueda modificarse en el PC destino.
-
-Si aparece `Failed to load Python DLL`, elimina la copia anterior y vuelve a
-copiar la carpeta completa manteniendo la subcarpeta `_internal`. El ejecutable
-debe iniciarse desde `dist\SemaforoIA\SemaforoIA.exe`; no debe separarse de esa
-carpeta. Si el error continúa, instala en el PC destino el paquete oficial
-`Microsoft Visual C++ Redistributable 2015-2022` de 64 bits y verifica que el
-antivirus no haya puesto archivos de `_internal` en cuarentena.
+El paquete incluye Python, Qt y los runtime MSVC app-local. No requiere instalar
+herramientas de desarrollo en el destino. Mantenga `_internal` junto a los EXE.
+Los datos instalados se guardan en `%LOCALAPPDATA%\SemaforoIA`; en portable,
+en `userdata`. No copie configuración personal al paquete ni sobrescriba los
+datos al actualizar. Consulte la [guía Windows](docs/WINDOWS-DISTRIBUTION.md).
 
 Cómo se planea continuar haciendo el código y terminar el proyecto:
 

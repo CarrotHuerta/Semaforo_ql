@@ -6,8 +6,11 @@ import argparse
 import json
 import sqlite3
 import sys
+import getpass
 from dataclasses import asdict
 from pathlib import Path
+from app_paths import initialize_user_data, writable_path
+from app_version import VERSION
 
 from esg_export import EsgExportError, export_esg_pdf
 from functional_core import (
@@ -21,8 +24,15 @@ from functional_core import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="semaforo-cli", description="Motor headless de Semaforo IA")
-    parser.add_argument("--database", default="semaforo.sqlite3", help="Ruta de la base SQLite")
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--database", default=writable_path("semaforo.sqlite3"), help="Ruta de la base SQLite")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("diagnose", help="Version, rutas y comprobacion local sin servicios externos")
+    administrator = commands.add_parser("init-admin", help="Crea la primera cuenta local; contraseña por entrada segura o dos líneas stdin")
+    administrator.add_argument("--username", required=True)
+    migrate = commands.add_parser("migrate", help="Importa una distribucion antigua con respaldo sin borrar originales")
+    migrate.add_argument("--source", required=True)
+    migrate.add_argument("--confirm", action="store_true", required=True)
 
     calculate = commands.add_parser("calculate", help="Calcula una ejecucion sin iniciar PySide6")
     calculate.add_argument("--model-id", type=int, required=True)
@@ -64,6 +74,22 @@ def _require_project(store: LocalStore, project_id: int) -> None:
 
 
 def run(args: argparse.Namespace) -> dict | list | None:
+    if args.command == "init-admin":
+        from onboarding import create_administrator
+        if sys.stdin.isatty():
+            password = getpass.getpass("Contraseña: ")
+            confirmation = getpass.getpass("Confirmar contraseña: ")
+        else:
+            password = sys.stdin.readline().rstrip("\r\n")
+            confirmation = sys.stdin.readline().rstrip("\r\n")
+        profile = create_administrator(args.username, password, confirmation)
+        return {"created": profile["username"]}
+    if args.command == "diagnose":
+        from distribution_smoke import diagnose
+        return diagnose()
+    if args.command == "migrate":
+        from data_migration import migrate_legacy
+        return {"backup": migrate_legacy(args.source)}
     store = _open_store(args.database)
     try:
         if args.command == "calculate":
@@ -114,9 +140,10 @@ def run(args: argparse.Namespace) -> dict | list | None:
 
 def main(argv: list[str] | None = None) -> int:
     try:
+        initialize_user_data()
         result = run(build_parser().parse_args(argv))
         if result is not None:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except (ValidationError, DataIntegrityError, EsgExportError, PermissionError, sqlite3.DatabaseError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

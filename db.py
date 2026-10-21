@@ -1,6 +1,7 @@
 import csv
 import os
 import sqlite3
+from app_paths import resource_path, writable_path
 
 try:
     import psycopg2
@@ -11,17 +12,14 @@ except ImportError:  # pragma: no cover - graceful fallback for minimal environm
 
 DB_CONFIG = {
     "dbname": os.environ.get("DB_NAME", "greenops"),
-    "user": os.environ.get("DB_USER", "jules"),
-    "password": os.environ.get("DB_PASSWORD", "password"),
+    "user": os.environ.get("DB_USER", ""),
+    "password": os.environ.get("DB_PASSWORD", ""),
     "host": os.environ.get("DB_HOST", "localhost"),
     "port": os.environ.get("DB_PORT", "5432")
 }
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
 def _sqlite_path():
-    path = os.environ.get("DB_PATH", os.path.join(_BASE_DIR, "semaforo.sqlite3"))
+    path = os.environ.get("DB_PATH", writable_path("semaforo.sqlite3"))
     directory = os.path.dirname(path)
     if directory and not os.path.isdir(directory):
         os.makedirs(directory, exist_ok=True)
@@ -34,7 +32,7 @@ def _csv_fallback_rows(table_name):
         "intensidad_carbono_csv": "intensidad_carbono.csv",
         "modelos_ia_csv": "modelos_ia.csv",
     }
-    path = os.path.join(_BASE_DIR, "data", csv_map.get(table_name, ""))
+    path = resource_path("data", csv_map.get(table_name, ""))
     if not os.path.isfile(path):
         return []
     try:
@@ -50,8 +48,9 @@ def get_connection():
     if mode == "postgres" and psycopg2 is not None:
         try:
             return psycopg2.connect(**DB_CONFIG)
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("PostgreSQL no disponible; se utiliza el catálogo local: %s", type(exc).__name__)
     return sqlite3.connect(_sqlite_path())
 
 

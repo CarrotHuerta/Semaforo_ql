@@ -978,11 +978,15 @@ class LocalStore:
     """SQLite persistence for users, projects, executions and raw imports."""
 
     def __init__(self, path: str | os.PathLike[str]):
+        from data_migration import backup_before_upgrade
+        backup_before_upgrade(path)
         self.path = str(path)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self._create_schema()
+        self.connection.execute("PRAGMA user_version = 1")
+        self.connection.commit()
 
     def _create_schema(self) -> None:
         self.connection.executescript(

@@ -1,0 +1,13 @@
+{
+  "users": [],
+  "default_user": "",
+  "language": "es",
+  "theme": "dark",
+  "notifications_os": false,
+  "server_ip": "127.0.0.1",
+  "server_port": 6767,
+  "mlflow_tracking_uri": "",
+  "mlflow_autostart": false,
+  "ollama_uri": "http://127.0.0.1:11434",
+  "ollama_autostart": false
+}

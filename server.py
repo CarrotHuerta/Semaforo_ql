@@ -1,5 +1,6 @@
 import http.server
 import socketserver
+import socket
 import json
 import base64
 import hashlib
@@ -12,6 +13,7 @@ from hardware_info import get_hardware_info
 import os
 from app_paths import writable_path
 from functional_core import ValidationError, bootstrap_store
+from app_version import VERSION
 
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -100,7 +102,7 @@ def authenticate_request(username, password):
 
 
 class SimpleHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "SemaforoIA/1.0"
+    server_version = "SemaforoIA/" + VERSION
 
     def _send_json(self, status, payload):
         encoded = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -194,18 +196,29 @@ class SimpleHandler(http.server.BaseHTTPRequestHandler):
         super().log_message("%s", format % args)
 
 
+class SemaforoHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    # SO_REUSEADDR on Windows permits concurrent binds, unlike POSIX.
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def run():
+    from app_paths import initialize_user_data
+    initialize_user_data()
     config = load_config()
     port = int(config.get("server_port", 6767))
     if not 1 <= port <= 65535:
         raise ValueError("server_port debe estar entre 1 y 65535")
-    server_address = ("0.0.0.0", port)
-
-    class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-        allow_reuse_address = True
-        daemon_threads = True
-
-    httpd = ThreadingTCPServer(server_address, SimpleHandler)
+    host = str(config.get("server_host", "127.0.0.1")).strip()
+    if not host:
+        raise ValueError("server_host no puede estar vacío")
+    server_address = (host, port)
+    httpd = SemaforoHTTPServer(server_address, SimpleHandler)
     print(f"Servidor corriendo en el puerto {port}")
     try:
         httpd.serve_forever()

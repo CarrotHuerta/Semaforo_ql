@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import logging
 import urllib.request
 from urllib.parse import urlsplit
 from typing import TYPE_CHECKING
@@ -189,29 +190,28 @@ def start_local_server_if_needed(config: dict, save_config_callback=None, wait_s
         os.makedirs(mlflow_home, exist_ok=True)
         db_path = os.path.join(mlflow_home, "mlflow.db").replace("\\", "/")
         artifacts_path = os.path.join(mlflow_home, "artifacts").replace("\\", "/")
-        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        popen_kwargs = {"cwd": mlflow_home}
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         else:
             # Su propio grupo de procesos, para poder matar el arbol completo al cerrar la app.
             popen_kwargs["start_new_session"] = True
         try:
-            _local_server_process = subprocess.Popen(
-                [
-                    sys.executable, "-m", "mlflow", "server",
-                    "--backend-store-uri", f"sqlite:///{db_path}",
-                    "--default-artifact-root", artifacts_path,
-                    "--host", "127.0.0.1",
-                    "--port", "5000",
-                ],
-                **popen_kwargs,
-            )
+            with open(writable_path("logs", "mlflow-server.log"), "ab") as output:
+                _local_server_process = subprocess.Popen(
+                    [sys.executable, "-m", "mlflow", "server", "--backend-store-uri", f"sqlite:///{db_path}",
+                     "--default-artifact-root", artifacts_path, "--host", "127.0.0.1", "--port", "5000"],
+                    stdout=output, stderr=subprocess.STDOUT, **popen_kwargs,
+                )
             atexit.register(stop_local_server)
         except OSError:
             return configured_uri or ""
 
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
+        if _local_server_process is not None and _local_server_process.poll() is not None:
+            logging.getLogger(__name__).warning("MLflow no inició; revise logs/mlflow-server.log y el puerto 5000.")
+            return ""
         if cancel_event is not None and cancel_event.is_set():
             stop_local_server()
             return ""
@@ -240,6 +240,7 @@ def stop_local_server() -> None:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             try:
