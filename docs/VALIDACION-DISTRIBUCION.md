@@ -120,8 +120,15 @@ semaforo-portable-update-verified.log
 5. Unidad extraíble física: no había una conectada para probarla. Se probaron
    rutas locales con espacios/Unicode y traslado de claves mediante tests;
    falta validar la ejecución y persistencia desde hardware extraíble real.
-6. Observar los resultados de GitHub Actions después del push y, tras firma y
-   validación pendientes, revisar el borrador. Ningún workflow publica por sí solo.
+6. Desbloquear la facturación de la cuenta GitHub y volver a ejecutar Actions.
+   El push y el evento PR de `388c23b` crearon runs, pero GitHub no asignó runner
+   ni ejecutó ningún paso: informó literalmente «The job was not started because
+   your account is locked due to a billing issue.» Véase la
+   [ejecución de push](https://github.com/CarrotHuerta/Semaforo_ql/actions/runs/39524383984).
+   No se declara validación remota correcta; la evidencia positiva es local.
+   La propietaria debe resolver el estado de Billing de su cuenta y luego
+   reintentar el workflow de desarrollo. Tras firma y validaciones pendientes,
+   revisar el borrador. Ningún workflow publica por sí solo.
 
 El instalador exige Windows 11 build 22000 o superior. Solo se probó este host
 build 26200; no se certifican todos los builds, Windows 10 ni ARM64.
