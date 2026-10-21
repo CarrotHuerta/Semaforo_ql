@@ -34,7 +34,7 @@ jobs:
         run: |
           $zip = (Get-ChildItem 'artifacts/development/${{ steps.product.outputs.version }}/*-portable.zip').FullName
           ./scripts/Test-Bundle.ps1 -Zip $zip
-      - name: Install and uninstall on the fresh hosted runner (not a clean Windows 11 VM)
+      - name: Install and uninstall on the fresh hosted runner (not a clean Windows 10/11 VM)
         shell: powershell
         run: |
           $dir = 'artifacts/development/${{ steps.product.outputs.version }}'

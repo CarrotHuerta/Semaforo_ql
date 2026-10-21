@@ -5,7 +5,8 @@ Extraiga el ZIP completo en una carpeta con permiso de escritura. Abra
 No basta con copiar un EXE. No necesita Python, pip, Git ni administrador.
 
 En el primer inicio cree su cuenta administradora. Los datos se guardan en
-`userdata`. Puede mover TODA la carpeta a otro equipo Windows 11 x64,
+`userdata`. Puede mover TODA la carpeta a otro equipo Windows 10 versión 1809
+(build 17763) o posterior, x64,
 incluido un disco extraíble, con la aplicación cerrada. Una carpeta de solo
 lectura produce un error y no cambia a AppData. Evite FAT32 si un archivo
 supera su límite de 4 GB; no extraiga encima de una app abierta.

@@ -7,6 +7,6 @@ Authenticode propio. Los datos se conservan al actualizar o desinstalar.
 Primer inicio sin credenciales de demostración: cree su administrador local.
 MLflow, Ollama/modelos y PostgreSQL requieren servicios externos explícitos.
 
-Este borrador requiere completar la validación de Windows 11 limpio y revisar
+Este borrador requiere completar la validación de Windows 10 1809+ y Windows 11 limpios y revisar
 las evidencias de firma antes de publicarlo manualmente. La automatización no
 publica releases.

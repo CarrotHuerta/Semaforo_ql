@@ -109,7 +109,7 @@ semaforo-portable-update-verified.log
    tres EXE, Setup y desinstalador instalado. Se comprobó el rechazo de un EXE
    sin firma y la negativa a compilar producción sin configuración de firma;
    no hubo una prueba positiva con certificado propio.
-3. VM Windows 11 x64 limpia, cuenta estándar sin Python/Git/SDK: ejecutar
+3. VM limpia Windows 10 1809+ y Windows 11 x64, cuenta estándar sin Python/Git/SDK: ejecutar
    `Test-CleanWindows.ps1` con dos versiones reales. Falta esa evidencia y la
    de su purga explícita en una cuenta desechable. Windows Sandbox no estaba
    disponible en este host.
@@ -130,8 +130,12 @@ semaforo-portable-update-verified.log
    reintentar el workflow de desarrollo. Tras firma y validaciones pendientes,
    revisar el borrador. Ningún workflow publica por sí solo.
 
-El instalador exige Windows 11 build 22000 o superior. Solo se probó este host
-build 26200; no se certifican todos los builds, Windows 10 ni ARM64.
+El instalador acepta Windows 10 versión 1809 (build 17763) o superior, x64,
+según el mínimo documentado por Qt 6.11. En este entorno solo se probó el host
+Windows 11 build 26200; la ejecución real en Windows 10, el instalador y la
+desinstalación en esa versión siguen pendientes. No se certifican ARM64 ni cada
+edición/build de Windows. La matriz de compatibilidad implementada no sustituye
+la validación en hardware o VM Windows 10 limpia.
 
 El procedimiento reproducible de la VM está en `WINDOWS-DISTRIBUTION.md`.
 Estas distinciones son condiciones pendientes de validación, no evidencias

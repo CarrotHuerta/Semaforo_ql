@@ -1,7 +1,7 @@
 ﻿param([Parameter(Mandatory=$true)][string]$Setup,
       [Parameter(Mandatory=$true)][string]$Portable,
       [string]$PreviousSetup, [switch]$Production, [switch]$PurgeTestData)
-# Run in Windows Sandbox / disposable Windows 11 x64 VM as a standard user.
+# Run in Windows Sandbox / disposable Windows 10 1809+ or Windows 11 x64 VM as a standard user.
 # This script does not use Python, pip, Git, Inno Setup or a compiler.
 $ErrorActionPreference = 'Stop'
 $local = [Environment]::GetFolderPath('LocalApplicationData')

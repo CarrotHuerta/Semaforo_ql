@@ -3,12 +3,19 @@
 ## Plataformas y alcance
 
 Se mantiene Python/PySide6. Objetivo soportado por esta distribución: **Windows
-11 x64**, mínimo contractual del instalador **build 22000**. Esta es una barrera
-de producto, no una afirmación de que se probaron todas las ediciones/builds.
-Qt 6.11 documenta Windows 10 1809+ y Windows 11; no se anuncia compatibilidad del
-producto con Windows 10, ARM64/emulación, Wine o Windows de 32 bits. Ver
+10 versión 1809 (build 17763) o posterior, x64**, incluido Windows 11. El
+instalador aplica ese mínimo contractual, derivado de la plataforma oficialmente
+documentada por Qt 6.11 para Windows x64. Es una barrera del paquete, no una
+afirmación de que se probaron todas las ediciones/builds. La validación directa
+en Windows 10 sigue pendiente; el host disponible es Windows 11. No se anuncia
+compatibilidad con ARM64/emulación, Wine o Windows de 32 bits. Ver
 [plataformas de Qt](https://doc.qt.io/qt-6.11/supported-platforms.html) y
 `docs/VALIDACION-DISTRIBUCION.md` para las pruebas realmente realizadas.
+
+Windows 10 Home/Pro terminó soporte general de Microsoft el 14 de octubre de
+2025 (ediciones LTSC tienen ciclos separados). Compatibilidad técnica no equivale
+a recibir actualizaciones de seguridad del sistema; consulte el ciclo de vida de
+[Windows 10 en Microsoft](https://learn.microsoft.com/en-us/lifecycle/products/windows-10-home-and-pro).
 
 `product.json` es la fuente de versión, editor, versiones de herramientas y
 requisito Windows. No reutilice una versión para dos releases de producción.
@@ -168,7 +175,7 @@ para distinguir implementado, compilado y probado.
 
 ## Verificación en Windows limpio
 
-Copie a una VM Windows 11 x64 desechable los artefactos de dos versiones
+Copie a una VM Windows x64 desechable (Windows 10 1809+ y Windows 11) los artefactos de dos versiones
 realmente compiladas, `scripts/Test-CleanWindows.ps1`, `Test-Bundle.ps1`, `Test-Server.ps1` y
 `Sign-Artifact.ps1`. Use una cuenta nueva sin instalación/datos de Semáforo.
 No instale Python, Git, pip ni SDK en esa VM:

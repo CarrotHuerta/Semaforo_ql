@@ -109,7 +109,7 @@ de Windows limpio verifica también el `unins000.exe` realmente instalado.
 
 El workflow manual `windows-production.yml` crea únicamente un borrador tras
 aprobar los entornos. No invoca `gh release edit --draft=false` ni publica nada.
-Complete las pruebas de Windows 11 limpio, incluidas actualización entre dos
+Complete las pruebas de Windows 10 1809+ y Windows 11 limpios, incluidas actualización entre dos
 versiones compiladas y firma del desinstalador instalado, antes de publicar
 manualmente. Compare hashes con SHA256SUMS.
 
