@@ -52,4 +52,24 @@ userdata/
 artifacts/
 *.pfx
 *.p12
+
+# Local legacy settings, databases, profile images and exports are not source.
+/backup/
+/config.json
+/models.json
+/img/
+/semaforo.sqlite3*
+/exchange_rates.json
+/evidencia-rf66.csv
+/basededatossql
+/_smoke_test_autostart.py
+/SemaforoIA.spec
+/AUDITORIA_RF_SEMAFORO_IA.md
+/VALIDACION.md
+/Grupo 4 - Documento 0.pdf
+/run_mlflow_server.bat
+/run_mlflow_server.sh
+/run_server.bat
+/run_server.sh
+/run_venv_server.bat
  
