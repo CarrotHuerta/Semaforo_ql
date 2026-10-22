@@ -1,5 +1,9 @@
 # Evidencia de validación Windows
 
+La build posterior 1.0.2 y su entrega para Windows 10 se documentan en
+[BUILD-1.0.2-WINDOWS10.md](BUILD-1.0.2-WINDOWS10.md). Esta página conserva la
+evidencia histórica de las builds 1.0.0/1.0.1.
+
 Fecha: 20 de octubre de 2026. Equipo real Windows 11 x64, build 26200,
 con herramientas de desarrollo instaladas. No equivale a una VM Windows limpia.
 No se publicó ninguna release pública ni se ejecutó el workflow de firma.

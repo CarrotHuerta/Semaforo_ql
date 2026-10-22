@@ -186,6 +186,20 @@ No instale Python, Git, pip ni SDK en esa VM:
   -Portable 'C:\artefactos\SemaforoIA-1.0.1-windows-x64-dev-portable.zip' -PurgeTestData
 ```
 
+Ese ejemplo histórico de actualización utiliza instaladores cuyo mínimo era
+Windows 11. La build 1.0.2 es la primera entrega compilada con el mínimo Windows
+10. Para comprobar su instalación inicial en una VM Windows 10 limpia:
+
+```powershell
+./Test-CleanWindows.ps1 -Setup 'C:\artefactos\SemaforoIA-1.0.2-windows-x64-dev-setup.exe' `
+  -Portable 'C:\artefactos\SemaforoIA-1.0.2-windows-x64-dev-portable.zip' -PurgeTestData
+```
+
+Para probar una actualización instalada en Windows 10, use como `-PreviousSetup`
+la build 1.0.2 y como `-Setup` y `-Portable` una versión posterior realmente
+compilada con el mismo mínimo. No reutilice las builds históricas que bloquean
+Windows 10. Ninguno de estos comandos implica una prueba de Windows 10 realizada.
+
 Para producción use los nombres sin `-dev`, configure las huellas/Subject
 públicos documentados en SIGNING.md y añada `-Production`. También pruebe
 interactivamente el checkbox de escritorio, apertura final, login, desinstalación
