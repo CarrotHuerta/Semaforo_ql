@@ -16,24 +16,22 @@ if exist "%VENV_PY%" (
 ) else (
   echo Venv not found. Creating one...
   call :find_python
-  if errorlevel 1 exit /b %ERRORLEVEL%
+  if errorlevel 1 exit /b 1
   "!PYTHON_CMD!" !PYTHON_ARGS! -m venv "%VENV_DIR%"
-  if errorlevel 1 exit /b %ERRORLEVEL%
+  if errorlevel 1 exit /b 1
 )
 
-REM Install deps if needed.
-if exist "%ROOT%requirements.txt" (
-  "%VENV_PY%" -m pip install --upgrade pip
-  "%VENV_PY%" -m pip install -r "%ROOT%requirements.txt"
-) else (
-  "%VENV_PY%" -m pip install --upgrade pip
-  "%VENV_PY%" -m pip install PySide6
+REM A normal launch stays offline. Install only missing/incompatible dependencies.
+"%VENV_PY%" "%ROOT%check_dependencies.py"
+if errorlevel 1 (
+  "%VENV_PY%" -m pip install --disable-pip-version-check -r "%ROOT%requirements.txt"
+  if errorlevel 1 exit /b 1
 )
 
 "%VENV_PY%" "%ROOT%main.py"
 
-endlocal
-exit /b %ERRORLEVEL%
+set "APP_EXIT_CODE=%ERRORLEVEL%"
+endlocal & exit /b %APP_EXIT_CODE%
 
 :find_python
 set "PYTHON_CMD="

@@ -1,0 +1,10 @@
+{
+  "files": [
+    "product.json", "defaults/config.json", "defaults/models.json",
+    "data/environmental_factors.json", "data/water_factors.json",
+    "data/recommendation_rules.json", "data/hardware.csv",
+    "data/intensidad_carbono.csv", "data/modelos_ia.csv", "data/finops_demo.csv",
+    "locales/translations.json", "export handler/report_config.json"
+  ],
+  "executables": ["SemaforoIA.exe", "SemaforoCLI.exe", "SemaforoServer.exe"]
+}

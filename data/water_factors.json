@@ -1,0 +1,14 @@
+{
+  "default_wue_l_kwh": 2.5,
+  "regions": {
+    "Chile (Sistema Eléctrico Nacional)": {"wue": 1.8, "wsi": 1.5},
+    "Chile (Padre Hurtado, RM)": {"wue": 2.5, "wsi": 2.5},
+    "Suecia": {"wue": 0.8, "wsi": 1.0},
+    "Francia": {"wue": 1.0, "wsi": 1.0},
+    "Canadá (Quebec)": {"wue": 1.2, "wsi": 1.0},
+    "EEUU (Virginia)": {"wue": 1.8, "wsi": 1.5},
+    "Alemania (Frankfurt)": {"wue": 1.4, "wsi": 1.0},
+    "Sudáfrica (Ciudad del Cabo)": {"wue": 2.2, "wsi": 3.0},
+    "India (Mumbai)": {"wue": 2.4, "wsi": 3.0}
+  }
+}

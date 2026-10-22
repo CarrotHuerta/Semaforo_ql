@@ -1,31 +1,71 @@
-import psycopg2
-import psycopg2.extras
+import csv
 import os
+import sqlite3
+from app_paths import resource_path, writable_path
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:  # pragma: no cover - graceful fallback for minimal environments
+    psycopg2 = None
+    psycopg2_extras = None
 
 DB_CONFIG = {
     "dbname": os.environ.get("DB_NAME", "greenops"),
-    "user": os.environ.get("DB_USER", "jules"),
-    "password": os.environ.get("DB_PASSWORD", "password"),
+    "user": os.environ.get("DB_USER", ""),
+    "password": os.environ.get("DB_PASSWORD", ""),
     "host": os.environ.get("DB_HOST", "localhost"),
     "port": os.environ.get("DB_PORT", "5432")
 }
 
+def _sqlite_path():
+    path = os.environ.get("DB_PATH", writable_path("semaforo.sqlite3"))
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory, exist_ok=True)
+    return path
+
+
+def _csv_fallback_rows(table_name):
+    csv_map = {
+        "hardware_csv": "hardware.csv",
+        "intensidad_carbono_csv": "intensidad_carbono.csv",
+        "modelos_ia_csv": "modelos_ia.csv",
+    }
+    path = resource_path("data", csv_map.get(table_name, ""))
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            return list(reader)
+    except (OSError, csv.Error):
+        return []
+
+
 def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+    mode = str(os.environ.get("DB_MODE", "sqlite")).strip().lower()
+    if mode == "postgres" and psycopg2 is not None:
+        try:
+            return psycopg2.connect(**DB_CONFIG)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("PostgreSQL no disponible; se utiliza el catálogo local: %s", type(exc).__name__)
+    return sqlite3.connect(_sqlite_path())
+
 
 def load_db_rows(table_name):
     try:
         with get_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                # The user's application logic previously relied entirely on CSVs.
-                # To minimize breakages for the presentation while genuinely
-                # adopting the SQL database schema provided, we will map the
-                # actual schema tables back to the exact format expected by the frontend.
-
+            if isinstance(conn, sqlite3.Connection):
+                return _csv_fallback_rows(table_name)
+            cursor_factory = getattr(psycopg2.extras, "DictCursor", None)
+            if cursor_factory is None:
+                return _csv_fallback_rows(table_name)
+            with conn.cursor(cursor_factory=cursor_factory) as cursor:
                 cleaned_rows = []
 
                 if table_name == "hardware_csv":
-                    # Maps to componente_hardware
                     cursor.execute("SELECT * FROM componente_hardware")
                     rows = cursor.fetchall()
                     for r in rows:
@@ -73,6 +113,6 @@ def load_db_rows(table_name):
                         })
 
                 return cleaned_rows
-    except Exception as e:
-        print(f"Database error loading {table_name}: {e}")
-        return []
+    except Exception as exc:
+        print(f"Database error loading {table_name}: {exc}")
+        return _csv_fallback_rows(table_name)

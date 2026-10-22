@@ -7,6 +7,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Archivos de sistema
 .DS_Store
@@ -17,3 +20,56 @@ config.local.json
 
 # Logs
 *.log
+
+# PyInstaller output
+build/
+build-cli/
+dist/
+*.exe
+*.pkg
+*.spec
+!packaging/*.spec
+*.toc
+*.pyz
+
+# Runtime-generated local data
+exchange_rates.json
+exports/
+error_reports/
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.bak
+*.sqlite3.pre_demo_backup
+
+# Local encryption keys and secrets (RF34)
+secrets/
+*.key
+
+# Local MLflow tracking server data (sqlite backend + artifacts)
+mlflow_data/
+userdata/
+.build-venv/
+artifacts/
+*.pfx
+*.p12
+
+# Local legacy settings, databases, profile images and exports are not source.
+/backup/
+/config.json
+/models.json
+/img/
+/semaforo.sqlite3*
+/exchange_rates.json
+/evidencia-rf66.csv
+/basededatossql
+/_smoke_test_autostart.py
+/SemaforoIA.spec
+/AUDITORIA_RF_SEMAFORO_IA.md
+/VALIDACION.md
+/Grupo 4 - Documento 0.pdf
+/run_mlflow_server.bat
+/run_mlflow_server.sh
+/run_server.bat
+/run_server.sh
+/run_venv_server.bat
+ 
